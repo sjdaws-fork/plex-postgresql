@@ -1588,7 +1588,7 @@ const char* my_sqlite3_column_decltype(sqlite3_stmt *pStmt, int idx) {
         }
         
         // PERFORMANCE FIX: Use cached flag instead of expensive strstr()
-        int is_count_query = pg_stmt->is_count_query;
+        int is_count_query = (pg_stmt && pg_stmt->is_count_query);
         if (is_count_query) {
             LOG_ERROR("ULTRA_DEBUG_DECLTYPE: idx=%d col='%s' oid=%u -> RETURNING '%s'",
                      idx, col_name ? col_name : "?", (unsigned)oid, decltype);
