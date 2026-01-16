@@ -162,6 +162,7 @@ typedef struct pg_stmt {
     int num_cols;
     int is_pg;                       // 0=skip, 1=write, 2=read, 3=no-op
     int is_cached;                   // 1 if from TLS (cached stmt)
+    int is_count_query;              // 1 if query contains "parents.parent_id,count(*)" (cached at prepare time)
     int needs_requery;               // 1 if reset() was called
     int write_executed;              // 1 if write has been executed (prevents duplicate execution)
     int read_done;                   // 1 if read has returned SQLITE_DONE (prevents re-execution)

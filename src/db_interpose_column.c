@@ -774,7 +774,7 @@ int my_sqlite3_column_int(sqlite3_stmt *pStmt, int idx) {
     pg_stmt_t *pg_stmt = pg_find_any_stmt(pStmt);
     
     // ULTRA-DEBUG: Log count query int reads
-    int is_count_query = (pg_stmt && pg_stmt->pg_sql && strstr(pg_stmt->pg_sql, "parents.parent_id,count(*)"));
+    int is_count_query = (pg_stmt && pg_stmt->is_count_query);
     if (is_count_query) {
         struct timeval tv;
         gettimeofday(&tv, NULL);
@@ -878,7 +878,7 @@ sqlite3_int64 my_sqlite3_column_int64(sqlite3_stmt *pStmt, int idx) {
     pg_stmt_t *pg_stmt = pg_find_any_stmt(pStmt);
     
     // ULTRA_DEBUG: Log all column_int64 calls for count query
-    int is_count_query = (pg_stmt && pg_stmt->pg_sql && strstr(pg_stmt->pg_sql, "parents.parent_id,count(*)"));
+    int is_count_query = (pg_stmt && pg_stmt->is_count_query);
     if (is_count_query) {
         LOG_ERROR("ULTRA_DEBUG_INT64: Called for count query! stmt=%p idx=%d", (void*)pStmt, idx);
     }
@@ -1086,8 +1086,9 @@ const unsigned char* my_sqlite3_column_text(sqlite3_stmt *pStmt, int idx) {
     
     pg_stmt_t *pg_stmt = pg_find_any_stmt(pStmt);
     
-    // ULTRA-DEBUG: Log EVERYTHING for count queries
-    int is_count_query = (pg_stmt && pg_stmt->pg_sql && strstr(pg_stmt->pg_sql, "parents.parent_id,count(*)"));
+    // PERFORMANCE FIX: Use cached flag instead of expensive strstr() on every column access
+    // This flag is set once at prepare time in db_interpose_prepare.c
+    int is_count_query = (pg_stmt && pg_stmt->is_count_query);
     
     if (is_count_query) {
         struct timeval tv;
@@ -1586,8 +1587,8 @@ const char* my_sqlite3_column_decltype(sqlite3_stmt *pStmt, int idx) {
                       pg_stmt->pg_sql ? pg_stmt->pg_sql : "?");
         }
         
-        // ULTRA-DEBUG: Log count query decltype returns
-        int is_count_query = (pg_stmt->pg_sql && strstr(pg_stmt->pg_sql, "parents.parent_id,count(*)"));
+        // PERFORMANCE FIX: Use cached flag instead of expensive strstr()
+        int is_count_query = pg_stmt->is_count_query;
         if (is_count_query) {
             LOG_ERROR("ULTRA_DEBUG_DECLTYPE: idx=%d col='%s' oid=%u -> RETURNING '%s'",
                      idx, col_name ? col_name : "?", (unsigned)oid, decltype);

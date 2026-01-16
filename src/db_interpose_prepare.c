@@ -9,6 +9,7 @@
 
 #include "db_interpose.h"
 #include <time.h>
+#include <sys/time.h>
 
 // ============================================================================
 // Query Loop Detection
@@ -558,6 +559,7 @@ int my_sqlite3_prepare_v2_internal(sqlite3 *db, const char *zSql, int nByte,
         }
     }
 
+
     pg_connection_t *pg_conn = skip_complex_processing ? NULL : pg_find_connection(db);
     int is_write = is_write_operation(zSql);
     int is_read = is_read_operation(zSql);
@@ -698,6 +700,11 @@ int my_sqlite3_prepare_v2_internal(sqlite3 *db, const char *zSql, int nByte,
 
                 if (trans.success && trans.sql) {
                     pg_stmt->pg_sql = strdup(trans.sql);
+                    
+                    // PERFORMANCE FIX: Cache count query detection at prepare time (not per-row)
+                    // This avoids expensive strstr() calls in my_sqlite3_column_text()
+                    pg_stmt->is_count_query = (pg_stmt->pg_sql && 
+                                                strstr(pg_stmt->pg_sql, "parents.parent_id,count(*)")) ? 1 : 0;
 
                     // Add RETURNING id to INSERT statements for proper ID retrieval
                     if (is_write && strncasecmp(zSql, "INSERT", 6) == 0 &&
