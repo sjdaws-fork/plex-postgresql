@@ -475,12 +475,18 @@ const char* my_sqlite3_bind_parameter_name(sqlite3_stmt *pStmt, int idx) {
 // sqlite3_bind_parameter_index returns the index of a named parameter.
 // Returns 0 if the parameter is not found.
 int my_sqlite3_bind_parameter_index(sqlite3_stmt *pStmt, const char *zName) {
-    LOG_DEBUG("BIND_PARAM_INDEX: stmt=%p name='%s'", (void*)pStmt, zName ? zName : "NULL");
     if (!pStmt || !zName) return 0;
 
     // Check if this is one of our PostgreSQL statements
     pg_stmt_t *pg_stmt = pg_find_stmt(pStmt);
     if (pg_stmt && pg_stmt->is_pg == 2) {
+        // If pg_stmt has no parameters, fall through to SQLite
+        // This handles cases where we have a pg_stmt but the query has no named params
+        if (!pg_stmt->param_names || pg_stmt->param_count == 0) {
+            LOG_DEBUG("BIND_PARAM_INDEX: pg_stmt has no params, falling through to SQLite for '%s'", zName);
+            goto fallback;
+        }
+        
         // Strip leading : @ or $ from name for comparison
         // SQLite bind_parameter_index expects :name, @name, or $name
         // But we store just the name without prefix in param_names
@@ -490,17 +496,17 @@ int my_sqlite3_bind_parameter_index(sqlite3_stmt *pStmt, const char *zName) {
         }
 
         // Search for the parameter name in our param_names array
-        if (pg_stmt->param_names) {
-            for (int i = 0; i < pg_stmt->param_count; i++) {
-                if (pg_stmt->param_names[i] && strcmp(pg_stmt->param_names[i], name_to_find) == 0) {
-                    LOG_DEBUG("BIND_PARAM_INDEX: found '%s' at index %d", zName, i + 1);
-                    return i + 1;  // SQLite uses 1-based indexing
-                }
+        for (int i = 0; i < pg_stmt->param_count; i++) {
+            if (pg_stmt->param_names[i] && strcmp(pg_stmt->param_names[i], name_to_find) == 0) {
+                LOG_DEBUG("BIND_PARAM_INDEX: found '%s' at index %d", zName, i + 1);
+                return i + 1;  // SQLite uses 1-based indexing
             }
         }
-        LOG_DEBUG("BIND_PARAM_INDEX: '%s' not found in pg_stmt", zName);
+        LOG_DEBUG("BIND_PARAM_INDEX: '%s' not found in pg_stmt (param_count=%d)", zName, pg_stmt->param_count);
         return 0;
     }
+
+fallback:
 
     // Pass through to real SQLite for non-PG statements
     if (orig_sqlite3_bind_parameter_index) {
