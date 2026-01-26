@@ -3053,6 +3053,14 @@ ALTER TABLE ONLY plex.statistics_bandwidth
 
 
 --
+-- Name: statistics_bandwidth statistics_bandwidth_unique; Type: CONSTRAINT; Schema: plex; Owner: -
+--
+
+ALTER TABLE ONLY plex.statistics_bandwidth
+    ADD CONSTRAINT statistics_bandwidth_unique UNIQUE (account_id, device_id, timespan, at, lan);
+
+
+--
 -- Name: statistics_media statistics_media_pkey; Type: CONSTRAINT; Schema: plex; Owner: -
 --
 

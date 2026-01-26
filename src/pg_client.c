@@ -503,9 +503,14 @@ static void pool_reap_idle_connections(void) {
                 LOG_INFO("Pool reaper: closing idle connection %d (idle %ld seconds)",
                         i, now - library_pool[i].last_used);
 
+                // CRITICAL: Lock mutex before PQfinish to prevent use-after-free
+                // Another thread may have a stale reference and call PQisBusy()
+                pthread_mutex_lock(&library_pool[i].conn->mutex);
                 if (library_pool[i].conn->conn) {
                     PQfinish(library_pool[i].conn->conn);
+                    library_pool[i].conn->conn = NULL;
                 }
+                pthread_mutex_unlock(&library_pool[i].conn->mutex);
                 pthread_mutex_destroy(&library_pool[i].conn->mutex);
                 free(library_pool[i].conn);
                 library_pool[i].conn = NULL;
@@ -606,10 +611,14 @@ static pg_connection_t* do_slot_reconnect(int slot_idx) {
     pg_stmt_cache_clear(conn);
 
     // Close old connection if exists
+    // CRITICAL: Lock mutex to prevent use-after-free - other threads may hold
+    // a reference to conn->conn and could call PQisBusy() while we PQfinish()
+    pthread_mutex_lock(&conn->mutex);
     if (conn->conn) {
         PQfinish(conn->conn);
         conn->conn = NULL;
     }
+    pthread_mutex_unlock(&conn->mutex);
 
     // Build connection string
     pg_conn_config_t *cfg = pg_config_get();

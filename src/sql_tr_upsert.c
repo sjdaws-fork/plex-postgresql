@@ -30,7 +30,7 @@ static const conflict_target_t conflict_targets[] = {
     {"tags", "id", 1},
     {"taggings", "id", 1},
     {"statistics_media", "id", 1},
-    {"statistics_bandwidth", "id", 1},
+    {"statistics_bandwidth", "account_id, device_id, timespan, at, lan", 1},
     {"statistics_resources", "id", 1},
     {"play_queue_generators", "id", 1},
     {"play_queue_items", "id", 1},
