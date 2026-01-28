@@ -646,15 +646,19 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                     
                     // CRITICAL FIX: Advance the sequence so last_insert_rowid() works
                     // This prevents Plex from throwing std::exception on timeline requests
-                    if (exec_conn && exec_conn->conn && PQstatus(exec_conn->conn) == CONNECTION_OK) {
+                    // CRITICAL FIX v0.9.4: Check NULL then lock BEFORE PQstatus (TOCTOU fix)
+                    if (exec_conn && exec_conn->conn) {
                         pthread_mutex_lock(&exec_conn->mutex);
-                        PGresult *seq_res = PQexec(exec_conn->conn, 
-                            "SELECT nextval('plex.statistics_media_id_seq')");
-                        if (PQresultStatus(seq_res) == PGRES_TUPLES_OK && PQntuples(seq_res) > 0) {
-                            const char *seq_val = PQgetvalue(seq_res, 0, 0);
-                            LOG_INFO("SKIP: Advanced sequence to %s", seq_val);
+                        // Now safe to check status while holding lock
+                        if (PQstatus(exec_conn->conn) == CONNECTION_OK) {
+                            PGresult *seq_res = PQexec(exec_conn->conn,
+                                "SELECT nextval('plex.statistics_media_id_seq')");
+                            if (PQresultStatus(seq_res) == PGRES_TUPLES_OK && PQntuples(seq_res) > 0) {
+                                const char *seq_val = PQgetvalue(seq_res, 0, 0);
+                                LOG_INFO("SKIP: Advanced sequence to %s", seq_val);
+                            }
+                            PQclear(seq_res);
                         }
-                        PQclear(seq_res);
                         pthread_mutex_unlock(&exec_conn->mutex);
                     }
                     
