@@ -7,16 +7,17 @@
 
 A shim library that intercepts Plex's SQLite calls and redirects them to PostgreSQL. Zero Plex modifications required.
 
-## 🎉 Latest Release: v0.9.7
+## 🎉 Latest Release: v0.9.8
 
-**Bug fix:** playQueues 500 errors resolved.
+**New:** Full blobs.db (thumbnails/artwork) PostgreSQL support.
 
-- ✅ **Fixed:** playQueues HTTP 500 errors (fallback to SQLite for edge cases)
-- ✅ **Fixed:** Consistent 60s statement_timeout after connection reset
-- ✅ **Improved:** Count query detection cached at prepare time for better performance
-- ✅ **Refactored:** Platform code now shares common modules (36% code reduction)
+- ✅ **NEW:** blobs.db routing to PostgreSQL (thumbnails, artwork, posters)
+- ✅ **NEW:** Migration scripts include blob data (hex encoding, no Python deps)
+- ✅ **Fixed:** Critical TOCTOU race conditions causing PQstatus crashes
+- ✅ **Fixed:** use-after-free crash in statistics_bandwidth
+- ✅ **Improved:** Docker LD_PRELOAD injection at build time
 
-[📥 Download v0.9.7](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.7) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.7)
+[📥 Download v0.9.8](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8)
 
 **Available for:** macOS ARM64 • Linux x86_64 • Linux ARM64 • Docker (multi-arch)
 
@@ -24,14 +25,14 @@ A shim library that intercepts Plex's SQLite calls and redirects them to Postgre
 
 **macOS:**
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.7/db_interpose_pg.dylib \
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg.dylib \
   -o /usr/local/lib/db_interpose_pg.dylib
 # Then configure DYLD_INSERT_LIBRARIES in Plex launchd plist
 ```
 
 **Linux (x86_64):**
 ```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.7/db_interpose_pg_linux_x86_64.so \
+sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg_linux_x86_64.so \
   -o /usr/local/lib/db_interpose_pg.so
 # Then configure LD_PRELOAD in systemd service
 ```
@@ -120,29 +121,37 @@ make benchmark
 
 For rclone/Real-Debrid setups with Kometa/PMM, **SQLite becomes unusable** during library scans. PostgreSQL handles it without issues.
 
-## What's New in v0.9.7
+## What's New in v0.9.8
 
-### Bug Fix: playQueues 500 Error
+### NEW: blobs.db PostgreSQL Support
 
-**Problem:** `/playQueues` endpoint returned HTTP 500 errors for certain edge cases.
+**Feature:** Full PostgreSQL support for `blobs.db` - thumbnails, artwork, and posters now stored in PostgreSQL.
 
-**Root Cause:** Some queries resulted in PostgreSQL statements without bound parameters (paramless pg_stmt), which caused issues during execution.
+**Implementation:**
+- `is_library_db_path()` now matches both `library.db` and `blobs.db`
+- blobs.db uses direct connections (separate from connection pool)
+- Migration scripts updated to include blob data via hex encoding
 
-**Solution:** Fallback to SQLite for these edge cases, ensuring all playQueues requests succeed.
+**Result:** All Plex database operations now route to PostgreSQL. No more SQLite dependencies.
 
-### Performance Improvements
+### Critical Bug Fixes
 
-- **Count query detection** cached at prepare time (was: per-step)
-- **Consistent statement_timeout** (60s) after connection reset
+- **TOCTOU race condition** (v0.9.4): Fixed PQstatus crashes caused by connection state changes between check and use
+- **Recursion prevention** (v0.9.3): Fixed infinite loops in pool cleanup
+- **use-after-free crash**: Fixed statistics_bandwidth duplicate spam causing crashes
+- **Docker reliability**: LD_PRELOAD now injected at build time for s6-overlay
 
-### Code Quality
+### Migration Updates
 
-- **36% code reduction** through platform code refactoring
-- Shared common module (`db_interpose_common.c`) for macOS and Linux
-- Platform-specific backtrace implementations abstracted via `platform_print_backtrace()`
-- Common signal handler and exception logging
+Migration scripts now include blob data:
+```bash
+./scripts/migrate_sqlite_to_pg.sh  # Migrates library.db + blobs.db
+```
 
-**See also:** [v0.9.2 Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.2) for timeline 500 fix details.
+- Blobs migrated via hex encoding (no Python/psycopg2 required)
+- Tested with 4,344 blobs (~233 MB)
+
+**See also:** [v0.9.8 Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8) for playQueues fix details.
 
 ### Easy Installation
 
@@ -182,7 +191,7 @@ docker-compose logs -f plex
 
 **What happens:**
 - ✅ PostgreSQL schema auto-created (empty)
-- ✅ v0.9.7 fixes active (playQueues + timeline errors fixed)
+- ✅ v0.9.8 fixes active (blobs.db + TOCTOU race conditions fixed)
 - ✅ Multi-arch support (x86_64 + ARM64)
 - ✅ All directories pre-created (Plug-ins, Metadata, Cache)
 - ✅ No crashes, stable operation
@@ -218,7 +227,8 @@ To migrate your existing Plex library to PostgreSQL:
 **Migration performs:**
 - ✅ Automatic detection of SQLite database
 - ✅ Full data migration (all tables, metadata, posters, etc.)
-- ✅ Tested: 34 tables, 89K+ items migrated successfully
+- ✅ **NEW in v0.9.8:** blobs.db migration (thumbnails, artwork) via hex encoding
+- ✅ Tested: 34 tables, 89K+ items + 4,344 blobs migrated successfully
 - ✅ Original SQLite database remains unchanged (read-only mount)
 - ✅ Automatic sequence updates
 - ✅ Progress reporting per table
@@ -255,11 +265,11 @@ volumes:
 
 ### Option 1: Pre-compiled Binary (Recommended)
 
-**Latest Release:** [v0.9.7](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.7) - Fixes playQueues + timeline errors
+**Latest Release:** [v0.9.8](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8) - Fixes playQueues + timeline errors
 
 ```bash
 # Download the shim
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.7/db_interpose_pg.dylib \
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg.dylib \
   -o /usr/local/lib/db_interpose_pg.dylib
 
 # Configure Plex environment
@@ -347,7 +357,7 @@ pkill -x "Plex Media Server" 2>/dev/null
 
 ### Option 1: Pre-compiled Binary (Recommended)
 
-**Latest Release:** [v0.9.7](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.7) - Fixes playQueues + timeline errors
+**Latest Release:** [v0.9.8](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8) - Fixes playQueues + timeline errors
 
 **Available architectures:**
 - ✅ x86_64 (Intel/AMD 64-bit)
@@ -371,14 +381,14 @@ sudo -u postgres psql -d plex -c "CREATE SCHEMA IF NOT EXISTS plex; ALTER SCHEMA
 
 **For x86_64 (Intel/AMD):**
 ```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.7/db_interpose_pg_linux_x86_64.so \
+sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg_linux_x86_64.so \
   -o /usr/local/lib/db_interpose_pg.so
 sudo chmod 644 /usr/local/lib/db_interpose_pg.so
 ```
 
 **For ARM64 (aarch64):**
 ```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.7/db_interpose_pg_linux_arm64.so \
+sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg_linux_arm64.so \
   -o /usr/local/lib/db_interpose_pg.so
 sudo chmod 644 /usr/local/lib/db_interpose_pg.so
 ```
@@ -421,7 +431,7 @@ sudo journalctl -u plexmediaserver -n 100 | grep -i postgres
 
 # Expected output:
 # "PostgreSQL connection established to localhost:5432/plex"
-# "PostgreSQL shim initialized (v0.9.7)"
+# "PostgreSQL shim initialized (v0.9.8)"
 
 # Verify shim is loaded
 sudo cat /proc/$(pgrep -f "Plex Media Server")/maps | grep db_interpose_pg
@@ -470,24 +480,22 @@ sudo ./scripts/uninstall_wrappers_linux.sh
 
 ## Migration from SQLite
 
-To migrate an existing Plex library to PostgreSQL:
+To migrate an existing Plex library to PostgreSQL (includes blobs.db since v0.9.8):
 
 ```bash
-# macOS
+# macOS / Linux
 ./scripts/migrate_sqlite_to_pg.sh
 
-# Docker (mount source database first)
-docker exec plex-postgresql bash -c '
-  export PGHOST=postgres PGUSER=plex PGPASSWORD=plex PGDATABASE=plex
-  SQLITE_DB="/source-db/com.plexapp.plugins.library.db"
-
-  for TABLE in $(sqlite3 "$SQLITE_DB" ".tables"); do
-    COLS=$(sqlite3 "$SQLITE_DB" "PRAGMA table_info($TABLE);" | cut -d"|" -f2 | tr "\n" ",")
-    sqlite3 -header -csv "$SQLITE_DB" "SELECT * FROM $TABLE;" > /tmp/$TABLE.csv
-    psql -c "\\copy plex.$TABLE($COLS) FROM /tmp/$TABLE.csv WITH CSV HEADER"
-  done
-'
+# The script migrates:
+# - library.db (metadata, media items, tags, etc.)
+# - blobs.db (thumbnails, artwork, posters)
 ```
+
+**What gets migrated:**
+- All 34+ tables from library.db
+- All blobs from blobs.db (thumbnails, artwork) via hex encoding
+- Sequences automatically updated
+- No Python dependencies required
 
 ## Configuration
 
