@@ -3726,17 +3726,85 @@ CREATE TRIGGER tags_search_update BEFORE INSERT OR UPDATE ON plex.tags FOR EACH 
 
 --
 -- Name: prevent_self_referential_parent(); Type: FUNCTION; Schema: plex; Owner: -
--- Prevents TV shows (metadata_type=2) from having parent_id = id (circular reference)
--- This caused infinite recursion crashes in Plex when using includeOnDeck=1
+-- Prevents circular references and invalid parent-child relationships in metadata_items
+-- Rules enforced:
+--   1. Item cannot be its own parent (parent_id = id)
+--   2. Shows (type 2) cannot have non-collection parents
+--   3. Seasons (type 3) must have show (type 2) as parent
+--   4. Episodes (type 4) must have season (type 3) or episode (type 4) as parent
+--   5. Direct circular references (A -> B -> A) are blocked
+--   6. Deep circular references (A -> B -> ... -> A) are blocked up to depth 20
+-- This prevents infinite recursion crashes in Plex (continueWatching, onDeck endpoints)
 --
 
 CREATE OR REPLACE FUNCTION plex.prevent_self_referential_parent() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
+DECLARE
+    current_id INTEGER;
+    parent_type INTEGER;
+    depth INTEGER := 0;
+    max_depth INTEGER := 20;
 BEGIN
-    IF NEW.metadata_type = 2 AND NEW.parent_id = NEW.id THEN
-        NEW.parent_id := NULL;
+    -- Skip if no parent_id
+    IF NEW.parent_id IS NULL THEN
+        RETURN NEW;
     END IF;
+
+    -- Rule 1: Item cannot be its own parent
+    IF NEW.parent_id = NEW.id THEN
+        NEW.parent_id := NULL;
+        RAISE WARNING 'Prevented self-referential parent for item %', NEW.id;
+        RETURN NEW;
+    END IF;
+    
+    -- Get parent's metadata_type
+    SELECT metadata_type INTO parent_type FROM plex.metadata_items WHERE id = NEW.parent_id;
+    
+    -- Rule 2-4: Validate parent-child type relationships
+    -- Valid: season(3)->show(2), episode(4)->season(3), episode(4)->episode(4), any->collection(18)
+    IF parent_type IS NOT NULL AND parent_type != 18 THEN  -- 18 = collection, always allowed
+        CASE NEW.metadata_type
+            WHEN 2 THEN  -- show: should NOT have a parent (except collection)
+                RAISE WARNING 'Prevented: Show % cannot have non-collection parent (type %)', NEW.id, parent_type;
+                NEW.parent_id := NULL;
+                RETURN NEW;
+            WHEN 3 THEN  -- season: parent must be show(2)
+                IF parent_type != 2 THEN
+                    RAISE WARNING 'Prevented: Season % must have show as parent, not type %', NEW.id, parent_type;
+                    NEW.parent_id := NULL;
+                    RETURN NEW;
+                END IF;
+            WHEN 4 THEN  -- episode: parent must be season(3) or episode(4)
+                IF parent_type NOT IN (3, 4) THEN
+                    RAISE WARNING 'Prevented: Episode % must have season/episode as parent, not type %', NEW.id, parent_type;
+                    NEW.parent_id := NULL;
+                    RETURN NEW;
+                END IF;
+            ELSE
+                NULL;  -- Other types (movies, etc): no restriction
+        END CASE;
+    END IF;
+    
+    -- Rule 5: Prevent direct circular reference (A -> B -> A)
+    IF EXISTS (SELECT 1 FROM plex.metadata_items WHERE id = NEW.parent_id AND parent_id = NEW.id) THEN
+        RAISE WARNING 'Prevented circular reference: % <-> %', NEW.id, NEW.parent_id;
+        NEW.parent_id := NULL;
+        RETURN NEW;
+    END IF;
+    
+    -- Rule 6: Prevent deeper circular references (walk up parent chain)
+    current_id := NEW.parent_id;
+    WHILE current_id IS NOT NULL AND depth < max_depth LOOP
+        IF current_id = NEW.id THEN
+            RAISE WARNING 'Prevented circular chain at depth %: id=%', depth, NEW.id;
+            NEW.parent_id := NULL;
+            RETURN NEW;
+        END IF;
+        SELECT parent_id INTO current_id FROM plex.metadata_items WHERE id = current_id;
+        depth := depth + 1;
+    END LOOP;
+    
     RETURN NEW;
 END;
 $$;
@@ -3747,6 +3815,48 @@ $$;
 --
 
 CREATE TRIGGER prevent_self_ref_parent BEFORE INSERT OR UPDATE ON plex.metadata_items FOR EACH ROW EXECUTE FUNCTION plex.prevent_self_referential_parent();
+
+
+--
+-- Name: prevent_cross_section_parent(); Type: FUNCTION; Schema: plex; Owner: -
+-- Prevents metadata_items from having parents in different library sections
+--
+
+CREATE OR REPLACE FUNCTION plex.prevent_cross_section_parent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    parent_section_id INTEGER;
+BEGIN
+    IF NEW.parent_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT library_section_id INTO parent_section_id
+    FROM plex.metadata_items
+    WHERE id = NEW.parent_id;
+
+    IF parent_section_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.library_section_id != parent_section_id THEN
+        RAISE EXCEPTION 'Cross-section parent link prevented: child section % cannot have parent in section %',
+            NEW.library_section_id, parent_section_id
+            USING HINT = 'Parent and child must be in the same library section',
+                  ERRCODE = '23514';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: metadata_items check_cross_section_parent; Type: TRIGGER; Schema: plex; Owner: -
+--
+
+CREATE TRIGGER check_cross_section_parent BEFORE INSERT OR UPDATE OF parent_id, library_section_id ON plex.metadata_items FOR EACH ROW WHEN (NEW.parent_id IS NOT NULL) EXECUTE FUNCTION plex.prevent_cross_section_parent();
 
 
 --

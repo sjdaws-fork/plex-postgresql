@@ -327,6 +327,63 @@ static const char* lookup_sqlite_decltype(pg_connection_t *pg_conn, const char *
 // IMPORTANT: Must be called after query execution when result is available.
 // Must NOT be called while holding pg_stmt->mutex if it needs to query PG.
 
+// ============================================================================
+// PERFORMANCE FIX v0.9.6: Global OID → Table Name Cache
+// ============================================================================
+// Problem: resolve_column_tables was called 10,000+ times for continueWatching,
+// each time doing a PQexec("SELECT oid, relname FROM pg_class WHERE oid IN (...)")
+// This caused massive latency (30+ seconds for a single API call).
+//
+// Solution: Cache OID → table name mappings globally. Table OIDs don't change
+// during a session, so we can cache them indefinitely.
+
+#define OID_CACHE_SIZE 512  // Should be enough for all Plex tables
+
+typedef struct {
+    Oid oid;
+    char name[64];
+} oid_cache_entry_t;
+
+static oid_cache_entry_t oid_table_cache[OID_CACHE_SIZE];
+static int oid_cache_count = 0;
+static pthread_mutex_t oid_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Lookup OID in cache - returns table name or NULL if not found
+static const char* oid_cache_lookup(Oid oid) {
+    // Fast path: check without lock first (read-only, atomic int read)
+    int count = oid_cache_count;
+    for (int i = 0; i < count && i < OID_CACHE_SIZE; i++) {
+        if (oid_table_cache[i].oid == oid) {
+            return oid_table_cache[i].name;
+        }
+    }
+    return NULL;
+}
+
+// Add OID → name mapping to cache
+static void oid_cache_add(Oid oid, const char *name) {
+    pthread_mutex_lock(&oid_cache_mutex);
+    
+    // Check if already exists (race condition check)
+    for (int i = 0; i < oid_cache_count && i < OID_CACHE_SIZE; i++) {
+        if (oid_table_cache[i].oid == oid) {
+            pthread_mutex_unlock(&oid_cache_mutex);
+            return;  // Already cached
+        }
+    }
+    
+    // Add new entry if space available
+    if (oid_cache_count < OID_CACHE_SIZE) {
+        oid_table_cache[oid_cache_count].oid = oid;
+        strncpy(oid_table_cache[oid_cache_count].name, name, 63);
+        oid_table_cache[oid_cache_count].name[63] = '\0';
+        oid_cache_count++;
+        LOG_DEBUG("OID_CACHE: Added oid=%u -> '%s' (total: %d)", oid, name, oid_cache_count);
+    }
+    
+    pthread_mutex_unlock(&oid_cache_mutex);
+}
+
 // Helper: Auto-clear recursion flag on function exit
 static inline void resolve_tables_cleanup(int *dummy) {
     (void)dummy;
@@ -357,9 +414,13 @@ int resolve_column_tables(pg_stmt_t *pg_stmt, pg_connection_t *pg_conn) {
         return 0;  // No columns or too many - skip, not an error
     }
 
-    // Collect unique table OIDs that need name resolution
+    // PERFORMANCE FIX v0.9.6: First try to resolve ALL columns from cache
+    // This avoids PQexec entirely if all OIDs are already cached
     Oid table_oids[MAX_PARAMS];
+    int uncached_oids[MAX_PARAMS];
     int num_unique_tables = 0;
+    int num_uncached = 0;
+    int cache_hits = 0;
 
     for (int i = 0; i < num_cols; i++) {
         Oid table_oid = PQftable(pg_stmt->result, i);
@@ -367,7 +428,16 @@ int resolve_column_tables(pg_stmt_t *pg_stmt, pg_connection_t *pg_conn) {
             continue;  // Computed column, no source table
         }
 
-        // Check if we already have this OID
+        // Check cache first
+        const char *cached_name = oid_cache_lookup(table_oid);
+        if (cached_name) {
+            // Cache hit! Assign directly without PQexec
+            pg_stmt->col_table_names[i] = strdup(cached_name);
+            cache_hits++;
+            continue;
+        }
+
+        // Check if we already have this OID in uncached list
         int found = 0;
         for (int j = 0; j < num_unique_tables; j++) {
             if (table_oids[j] == table_oid) {
@@ -376,31 +446,45 @@ int resolve_column_tables(pg_stmt_t *pg_stmt, pg_connection_t *pg_conn) {
             }
         }
         if (!found && num_unique_tables < MAX_PARAMS) {
-            table_oids[num_unique_tables++] = table_oid;
+            table_oids[num_unique_tables] = table_oid;
+            uncached_oids[num_uncached++] = num_unique_tables;
+            num_unique_tables++;
         }
     }
 
-    if (num_unique_tables == 0) {
+    // If all OIDs were cached, we're done - no PQexec needed!
+    if (num_uncached == 0) {
         pg_stmt->col_tables_resolved = 1;
-        return 0;  // No tables to resolve - success/skip
+        if (cache_hits > 0) {
+            LOG_DEBUG("RESOLVE_TABLES: All %d columns resolved from cache (0 queries)", cache_hits);
+        }
+        return 0;
     }
 
-    // Build query to get table names for all OIDs in one round-trip
-    char query[4096];
-    int offset = snprintf(query, sizeof(query),
+    // Need to query PostgreSQL for uncached OIDs
+    // STACK OVERFLOW FIX v0.9.6: Allocate query buffer on HEAP instead of stack
+    char *query = malloc(4096);
+    if (!query) {
+        LOG_ERROR("RESOLVE_TABLES: malloc failed for query buffer");
+        pg_stmt->col_tables_resolved = 1;
+        return -1;
+    }
+    
+    int offset = snprintf(query, 4096,
         "SELECT oid, relname FROM pg_class WHERE oid IN (");
 
     for (int i = 0; i < num_unique_tables; i++) {
         if (i > 0) {
-            offset += snprintf(query + offset, sizeof(query) - offset, ",");
+            offset += snprintf(query + offset, 4096 - offset, ",");
         }
-        offset += snprintf(query + offset, sizeof(query) - offset, "%u", table_oids[i]);
+        offset += snprintf(query + offset, 4096 - offset, "%u", table_oids[i]);
     }
-    snprintf(query + offset, sizeof(query) - offset, ")");
+    snprintf(query + offset, 4096 - offset, ")");
 
     // Execute query to get table names (need connection)
     if (!pg_conn || !pg_conn->conn) {
         LOG_DEBUG("RESOLVE_TABLES: No connection available");
+        free(query);
         pg_stmt->col_tables_resolved = 1;
         return -1;
     }
@@ -408,6 +492,10 @@ int resolve_column_tables(pg_stmt_t *pg_stmt, pg_connection_t *pg_conn) {
     pthread_mutex_lock(&pg_conn->mutex);
     PGresult *res = PQexec(pg_conn->conn, query);
     pthread_mutex_unlock(&pg_conn->mutex);
+    
+    // Query buffer no longer needed after PQexec
+    free(query);
+    query = NULL;
 
     if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
         LOG_ERROR("RESOLVE_TABLES: Query failed: %s",
@@ -417,26 +505,41 @@ int resolve_column_tables(pg_stmt_t *pg_stmt, pg_connection_t *pg_conn) {
         return -1;
     }
 
-    // Build OID -> name map
+    // Build OID -> name map and add to cache
     int num_results = PQntuples(res);
-    Oid result_oids[MAX_PARAMS];
-    char result_names[MAX_PARAMS][64];
+    
+    // STACK OVERFLOW FIX v0.9.6: Allocate result_names on HEAP instead of stack
+    Oid result_oids[MAX_PARAMS];  // 1KB on stack - acceptable
+    char (*result_names)[64] = malloc(MAX_PARAMS * 64);
+    if (!result_names) {
+        LOG_ERROR("RESOLVE_TABLES: malloc failed for result_names buffer");
+        PQclear(res);
+        pg_stmt->col_tables_resolved = 1;
+        return -1;
+    }
 
     for (int i = 0; i < num_results && i < MAX_PARAMS; i++) {
         result_oids[i] = (Oid)atol(PQgetvalue(res, i, 0));
         strncpy(result_names[i], PQgetvalue(res, i, 1), 63);
         result_names[i][63] = '\0';
+        
+        // PERFORMANCE FIX v0.9.6: Add to global cache for future queries
+        oid_cache_add(result_oids[i], result_names[i]);
     }
     PQclear(res);
 
-    // Now assign table names to each column
+    // Now assign table names to columns that weren't resolved from cache
     for (int i = 0; i < num_cols && i < MAX_PARAMS; i++) {
+        if (pg_stmt->col_table_names[i]) {
+            continue;  // Already resolved from cache
+        }
+        
         Oid table_oid = PQftable(pg_stmt->result, i);
         if (table_oid == InvalidOid) {
             continue;  // Computed column
         }
 
-        // Find matching table name
+        // Find matching table name from query results
         for (int j = 0; j < num_results; j++) {
             if (result_oids[j] == table_oid) {
                 pg_stmt->col_table_names[i] = strdup(result_names[j]);
@@ -446,10 +549,13 @@ int resolve_column_tables(pg_stmt_t *pg_stmt, pg_connection_t *pg_conn) {
             }
         }
     }
+    
+    // Cleanup heap allocation
+    free(result_names);
 
     pg_stmt->col_tables_resolved = 1;
-    LOG_INFO("RESOLVE_TABLES: Resolved %d columns from %d unique tables",
-             num_cols, num_unique_tables);
+    LOG_INFO("RESOLVE_TABLES: Resolved %d columns (%d from cache, %d from query)",
+             num_cols, cache_hits, num_unique_tables);
     return 0;
 }
 
@@ -702,7 +808,7 @@ static void validate_type_consistency(sqlite3_stmt *pStmt, int idx, const char *
             }
         
         if (expected_for_decltype != -1 && col_type != SQLITE_NULL && col_type != expected_for_decltype) {
-            LOG_ERROR("TYPE_MISMATCH: accessor=%s col='%s' idx=%d decltype='%s' expects %s but column_type returned %s (OID=%u)",
+            LOG_DEBUG("TYPE_MISMATCH: accessor=%s col='%s' idx=%d decltype='%s' expects %s but column_type returned %s (OID=%u)",
                       accessor_name, col_name ? col_name : "?", idx,
                       col_decltype, sqlite_type_name(expected_for_decltype),
                       sqlite_type_name(col_type), (unsigned)oid);
@@ -804,25 +910,9 @@ int my_sqlite3_column_int(sqlite3_stmt *pStmt, int idx) {
     validate_type_consistency(pStmt, idx, "column_int");
     pg_stmt_t *pg_stmt = pg_find_any_stmt(pStmt);
     
-    // ULTRA-DEBUG: Log count query int reads
-    int is_count_query = (pg_stmt && pg_stmt->is_count_query);
-    if (is_count_query) {
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        LOG_ERROR("[%ld.%06ld] ULTRA_DEBUG_INT: stmt=%p idx=%d thread=%p", 
-                 tv.tv_sec, tv.tv_usec, (void*)pStmt, idx, (void*)pthread_self());
-    }
-    
     // Handle all PostgreSQL statements
     if (pg_stmt && pg_stmt->is_pg) {
         pthread_mutex_lock(&pg_stmt->mutex);
-        
-        if (is_count_query) {
-            const char *col_name = (pg_stmt->result && idx >= 0 && idx < pg_stmt->num_cols) ? 
-                                   PQfname(pg_stmt->result, idx) : "?";
-            LOG_ERROR("ULTRA_DEBUG_INT: col='%s' row=%d/%d", 
-                     col_name, pg_stmt->current_row, pg_stmt->num_rows);
-        }
 
         // QUERY CACHE: Check for cached result first
         if (pg_stmt->cached_result) {
@@ -908,11 +998,6 @@ sqlite3_int64 my_sqlite3_column_int64(sqlite3_stmt *pStmt, int idx) {
     validate_type_consistency(pStmt, idx, "column_int64");
     pg_stmt_t *pg_stmt = pg_find_any_stmt(pStmt);
     
-    // ULTRA_DEBUG: Log all column_int64 calls for count query
-    int is_count_query = (pg_stmt && pg_stmt->is_count_query);
-    if (is_count_query) {
-        LOG_ERROR("ULTRA_DEBUG_INT64: Called for count query! stmt=%p idx=%d", (void*)pStmt, idx);
-    }
     // Handle all PostgreSQL statements
     if (pg_stmt && pg_stmt->is_pg) {
         pthread_mutex_lock(&pg_stmt->mutex);
@@ -1118,41 +1203,10 @@ const unsigned char* my_sqlite3_column_text(sqlite3_stmt *pStmt, int idx) {
     pg_stmt_t *pg_stmt = pg_find_any_stmt(pStmt);
     
     // PERFORMANCE FIX: Use cached flag instead of expensive strstr() on every column access
-    // This flag is set once at prepare time in db_interpose_prepare.c
-    int is_count_query = (pg_stmt && pg_stmt->is_count_query);
-    
-    if (is_count_query) {
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        LOG_ERROR("[%ld.%06ld] ULTRA_DEBUG_TEXT: stmt=%p idx=%d thread=%p", 
-                 tv.tv_sec, tv.tv_usec, (void*)pStmt, idx, (void*)pthread_self());
-    }
-    
     // Handle all PostgreSQL statements
     if (pg_stmt && pg_stmt->is_pg) {
         pthread_mutex_lock(&pg_stmt->mutex);
         
-        if (is_count_query) {
-            const char *col_name = (pg_stmt->result && idx >= 0 && idx < pg_stmt->num_cols) ?
-                                   PQfname(pg_stmt->result, idx) : "?";
-            int row = pg_stmt->current_row;
-            const char *preview = NULL;
-            if (pg_stmt->result && row >= 0 && row < pg_stmt->num_rows && 
-                idx >= 0 && idx < pg_stmt->num_cols && 
-                !PQgetisnull(pg_stmt->result, row, idx)) {
-                preview = PQgetvalue(pg_stmt->result, row, idx);
-            }
-            LOG_ERROR("ULTRA_DEBUG_TEXT: col='%s' row=%d/%d value='%s' (hex:", 
-                     col_name, pg_stmt->current_row, pg_stmt->num_rows, 
-                     preview ? preview : "(null)");
-            if (preview) {
-                for (int i = 0; i < 20 && preview[i]; i++) {
-                    fprintf(stderr, " %02x", (unsigned char)preview[i]);
-                }
-            }
-            fprintf(stderr, ")\n");
-            fflush(stderr);
-        }
         LOG_DEBUG("COLUMN_TEXT: locked mutex, result=%p row=%d cols=%d",
                  (void*)pg_stmt->result, pg_stmt->current_row, pg_stmt->num_cols);
 
@@ -1252,7 +1306,7 @@ const unsigned char* my_sqlite3_column_text(sqlite3_stmt *pStmt, int idx) {
                         snprintf(column_text_buffers[buf_idx], TEXT_BUFFER_SIZE, "%d", val);
                     }
                     
-                    LOG_ERROR("COLUMN_TEXT_AGGREGATE_REFORMAT: col='%s' '%s' -> '%s'", 
+                    LOG_DEBUG("COLUMN_TEXT_AGGREGATE_REFORMAT: col='%s' '%s' -> '%s'", 
                              col_name, source_value, column_text_buffers[buf_idx]);
                     pthread_mutex_unlock(&pg_stmt->mutex);
                     return (const unsigned char*)column_text_buffers[buf_idx];
@@ -1616,13 +1670,6 @@ const char* my_sqlite3_column_decltype(sqlite3_stmt *pStmt, int idx) {
             LOG_DEBUG("DECLTYPE_INT: col='%s' idx=%d oid=%u -> '%s' sql=%.100s",
                       col_name ? col_name : "?", idx, (unsigned)oid, decltype,
                       pg_stmt->pg_sql ? pg_stmt->pg_sql : "?");
-        }
-        
-        // PERFORMANCE FIX: Use cached flag instead of expensive strstr()
-        int is_count_query = (pg_stmt && pg_stmt->is_count_query);
-        if (is_count_query) {
-            LOG_ERROR("ULTRA_DEBUG_DECLTYPE: idx=%d col='%s' oid=%u -> RETURNING '%s'",
-                     idx, col_name ? col_name : "?", (unsigned)oid, decltype);
         }
         
         LOG_DEBUG("DECLTYPE_CACHED: idx=%d col='%s' -> '%s' sql=%.100s",

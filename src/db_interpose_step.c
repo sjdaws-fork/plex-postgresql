@@ -431,7 +431,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                 // QUERY RESULT CACHE: Check if we have cached results
                 // This is critical for Plex's OnDeck which runs 2000+ identical queries
                 // ============================================================
-                #if 1  // Re-enabled with proper caching in column_text
+                #if 0  // DISABLED: Cache causes infinite loop on continueWatching
                 LOG_DEBUG("CACHE_LOOKUP: checking cache for sql=%.60s", pg_stmt->pg_sql ? pg_stmt->pg_sql : "NULL");
                 cached_result_t *cached = pg_query_cache_lookup(pg_stmt);
                 LOG_DEBUG("CACHE_LOOKUP: result=%p", (void*)cached);
@@ -529,10 +529,13 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                 }
 
                 // Use prepared statements for better performance (skip parse/plan overhead)
-                // TEMP DEBUG: Force PQexecParams path to test if prepared statements cause crash
-                if (0 && pg_stmt->use_prepared && pg_stmt->stmt_name[0]) {
-                    LOG_DEBUG("PREPARED PATH: use_prepared=%d stmt_name=%s sql=%.60s",
-                             pg_stmt->use_prepared, pg_stmt->stmt_name, pg_stmt->pg_sql);
+                // v0.9.7: Re-enabled with better error handling
+                // Planning overhead (2ms/query) causes 48s delay on 24k queries
+                LOG_INFO("PREPARED CHECK: use_prepared=%d stmt_name[0]=%d pg_sql=%p",
+                         pg_stmt->use_prepared, (int)pg_stmt->stmt_name[0], (void*)pg_stmt->pg_sql);
+                if (pg_stmt->use_prepared && pg_stmt->stmt_name[0] && pg_stmt->pg_sql) {
+                    LOG_INFO("PREPARED PATH: stmt_name=%s sql=%.60s",
+                             pg_stmt->stmt_name, pg_stmt->pg_sql);
                     const char *cached_name = NULL;
                     int is_cached = pg_stmt_cache_lookup(exec_conn, pg_stmt->sql_hash, &cached_name);
 
@@ -544,25 +547,23 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                             pg_stmt_cache_add(exec_conn, pg_stmt->sql_hash, pg_stmt->stmt_name, pg_stmt->param_count);
                             cached_name = pg_stmt->stmt_name;
                             is_cached = 1;
-                            LOG_DEBUG("PREPARED_STMT: New statement %s (params=%d)", pg_stmt->stmt_name, pg_stmt->param_count);
+                            LOG_INFO("PREPARED_STMT: New statement %s (params=%d)", pg_stmt->stmt_name, pg_stmt->param_count);
                         } else {
                             // Prepare failed - fall back to PQexecParams
-                            LOG_DEBUG("PQprepare failed for %s: %s", pg_stmt->stmt_name, PQerrorMessage(exec_conn->conn));
+                            LOG_ERROR("PQprepare failed for %s: %s", pg_stmt->stmt_name, PQerrorMessage(exec_conn->conn));
                         }
                         PQclear(prep_res);
                     } else {
-                        LOG_DEBUG("PREPARED_STMT: Cache hit for %s", cached_name);
+                        LOG_INFO("PREPARED_STMT: Cache hit for %s", cached_name);
                     }
 
                     if (is_cached && cached_name) {
                         // Execute prepared statement
-                        LOG_DEBUG("EXEC_PREPARED: stmt=%s params=%d p0=%s p1=%s",
-                                 cached_name, pg_stmt->param_count,
-                                 (pg_stmt->param_count > 0 && paramValues[0]) ? paramValues[0] : "NULL",
-                                 (pg_stmt->param_count > 1 && paramValues[1]) ? paramValues[1] : "NULL");
+                        LOG_INFO("EXEC_PREPARED: stmt=%s params=%d",
+                                 cached_name, pg_stmt->param_count);
                         pg_stmt->result = PQexecPrepared(exec_conn->conn, cached_name,
                             pg_stmt->param_count, paramValues, NULL, NULL, 0);
-                        LOG_DEBUG("EXEC_PREPARED DONE: result=%p status=%d",
+                        LOG_INFO("EXEC_PREPARED DONE: result=%p status=%d",
                                  (void*)pg_stmt->result,
                                  pg_stmt->result ? (int)PQresultStatus(pg_stmt->result) : -1);
                     } else {
@@ -609,7 +610,8 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                     pg_stmt->metadata_only_result = 0;
 
                     // QUERY RESULT CACHE: Store result for potential reuse
-                    // pg_query_cache_store(pg_stmt, pg_stmt->result);  // DISABLED
+                    // DISABLED: Cache causes infinite loop on continueWatching
+                    // pg_query_cache_store(pg_stmt, pg_stmt->result);
                 } else {
                     const char *err = (exec_conn && exec_conn->conn) ? PQerrorMessage(exec_conn->conn) : "NULL connection";
                     log_sql_fallback(pg_stmt->sql, pg_stmt->pg_sql,
