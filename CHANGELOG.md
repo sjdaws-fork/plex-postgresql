@@ -5,6 +5,31 @@ All notable changes to plex-postgresql will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.10] - 2026-02-02
+
+### Fixed
+- **CRITICAL: Kernel panic caused by fflush(NULL) deadlock** - System crash prevention
+  - ROOT CAUSE: `fflush(NULL)` in `db_interpose_step.c:653` flushed ALL stdio streams while holding log mutex
+  - 14+ postgres processes blocked on `_fwalk → sflush_locked → flockfile`
+  - Triggered WindowServer watchdog timeout (120s) and kernel panic
+  - Solution: Removed `fflush(NULL)` call - logging already flushes per-line
+  - File: `src/db_interpose_step.c`
+
+- **CRITICAL: SOCI "Null value not allowed for this type" exceptions** - HTTP 500 errors
+  - ROOT CAUSE: `column_type()` returned `SQLITE_NULL` for NULL column values
+  - SOCI checks `column_type()` BEFORE calling `column_int()`, throws exception on NULL
+  - Affected endpoints: `/library/all/top`, `/hubs/promoted`, `/library/metadata/*`
+  - Specifically: MetadataCounterCache query with NULL `parent_id` values
+  - Solution: Return declared column type (INTEGER, TEXT, etc) instead of `SQLITE_NULL`
+  - `column_int()` already returns 0 for NULL (matching SQLite behavior)
+  - File: `src/db_interpose_column.c` (both cached and non-cached paths)
+
+### Technical Notes
+- The NULL handling fix does NOT break existing behavior
+- SQLite's `column_int()` returns 0 for NULL values - our shim does the same
+- SOCI's strict type checking is the real issue, this is a workaround
+- Similar to v0.8.12 aggregate function TEXT workaround
+
 ## [0.8.13] - 2026-01-13
 
 ### Changed

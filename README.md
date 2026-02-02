@@ -7,17 +7,17 @@
 
 A shim library that intercepts Plex's SQLite calls and redirects them to PostgreSQL. Zero Plex modifications required.
 
-## 🎉 Latest Release: v0.9.8
+## 🎉 Latest Release: v0.9.10
 
-**New:** Full blobs.db (thumbnails/artwork) PostgreSQL support.
+**Stability fixes:** Kernel panic prevention and SOCI NULL handling.
 
-- ✅ **NEW:** blobs.db routing to PostgreSQL (thumbnails, artwork, posters)
-- ✅ **NEW:** Migration scripts include blob data (hex encoding, no Python deps)
-- ✅ **Fixed:** Critical TOCTOU race conditions causing PQstatus crashes
-- ✅ **Fixed:** use-after-free crash in statistics_bandwidth
-- ✅ **Improved:** Docker LD_PRELOAD injection at build time
+- ✅ **Fixed:** Kernel panic caused by fflush(NULL) deadlock with log mutex
+- ✅ **Fixed:** SOCI "Null value not allowed" errors on TV shows endpoints
+- ✅ **Fixed:** HTTP 500 on /library/all/top, /hubs/promoted, /library/metadata/*
+- ✅ blobs.db routing to PostgreSQL (thumbnails, artwork, posters)
+- ✅ Migration scripts include blob data (hex encoding, no Python deps)
 
-[📥 Download v0.9.8](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8)
+[📥 Download v0.9.10](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.10) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.10)
 
 **Available for:** macOS ARM64 • Linux x86_64 • Linux ARM64 • Docker (multi-arch)
 
@@ -25,14 +25,14 @@ A shim library that intercepts Plex's SQLite calls and redirects them to Postgre
 
 **macOS:**
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg.dylib \
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.10/db_interpose_pg.dylib \
   -o /usr/local/lib/db_interpose_pg.dylib
 # Then configure DYLD_INSERT_LIBRARIES in Plex launchd plist
 ```
 
 **Linux (x86_64):**
 ```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg_linux_x86_64.so \
+sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.10/db_interpose_pg_linux_x86_64.so \
   -o /usr/local/lib/db_interpose_pg.so
 # Then configure LD_PRELOAD in systemd service
 ```
@@ -121,9 +121,22 @@ make benchmark
 
 For rclone/Real-Debrid setups with Kometa/PMM, **SQLite becomes unusable** during library scans. PostgreSQL handles it without issues.
 
-## What's New in v0.9.8
+## What's New in v0.9.10
 
-### NEW: blobs.db PostgreSQL Support
+### Critical Stability Fixes
+
+**Kernel Panic Prevention (v0.9.10):**
+- Removed `fflush(NULL)` call that caused deadlock with log mutex
+- 14+ postgres processes blocked on `_fwalk → sflush_locked → flockfile`
+- Triggered WindowServer watchdog timeout and kernel panic
+
+**SOCI NULL Value Handling (v0.9.10):**
+- Fixed "Null value not allowed for this type" SOCI exceptions
+- `column_type()` now returns declared type instead of `SQLITE_NULL` for NULL values
+- Fixes HTTP 500 on `/library/all/top`, `/hubs/promoted`, `/library/metadata/*`
+- Root cause: SOCI checks `column_type()` before calling `column_int()`, throws exception on `SQLITE_NULL`
+
+### blobs.db PostgreSQL Support (v0.9.8)
 
 **Feature:** Full PostgreSQL support for `blobs.db` - thumbnails, artwork, and posters now stored in PostgreSQL.
 
@@ -134,7 +147,7 @@ For rclone/Real-Debrid setups with Kometa/PMM, **SQLite becomes unusable** durin
 
 **Result:** All Plex database operations now route to PostgreSQL. No more SQLite dependencies.
 
-### Critical Bug Fixes
+### Previous Bug Fixes
 
 - **TOCTOU race condition** (v0.9.4): Fixed PQstatus crashes caused by connection state changes between check and use
 - **Recursion prevention** (v0.9.3): Fixed infinite loops in pool cleanup
@@ -150,8 +163,6 @@ Migration scripts now include blob data:
 
 - Blobs migrated via hex encoding (no Python/psycopg2 required)
 - Tested with 4,344 blobs (~233 MB)
-
-**See also:** [v0.9.8 Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8) for playQueues fix details.
 
 ### Easy Installation
 
@@ -265,11 +276,11 @@ volumes:
 
 ### Option 1: Pre-compiled Binary (Recommended)
 
-**Latest Release:** [v0.9.8](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8) - Fixes playQueues + timeline errors
+**Latest Release:** [v0.9.10](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.10) - Kernel panic fix + SOCI NULL handling
 
 ```bash
 # Download the shim
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg.dylib \
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.10/db_interpose_pg.dylib \
   -o /usr/local/lib/db_interpose_pg.dylib
 
 # Configure Plex environment
@@ -357,7 +368,7 @@ pkill -x "Plex Media Server" 2>/dev/null
 
 ### Option 1: Pre-compiled Binary (Recommended)
 
-**Latest Release:** [v0.9.8](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.8) - Fixes playQueues + timeline errors
+**Latest Release:** [v0.9.10](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.10) - Kernel panic fix + SOCI NULL handling
 
 **Available architectures:**
 - ✅ x86_64 (Intel/AMD 64-bit)
@@ -381,14 +392,14 @@ sudo -u postgres psql -d plex -c "CREATE SCHEMA IF NOT EXISTS plex; ALTER SCHEMA
 
 **For x86_64 (Intel/AMD):**
 ```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg_linux_x86_64.so \
+sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.10/db_interpose_pg_linux_x86_64.so \
   -o /usr/local/lib/db_interpose_pg.so
 sudo chmod 644 /usr/local/lib/db_interpose_pg.so
 ```
 
 **For ARM64 (aarch64):**
 ```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.8/db_interpose_pg_linux_arm64.so \
+sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.10/db_interpose_pg_linux_arm64.so \
   -o /usr/local/lib/db_interpose_pg.so
 sudo chmod 644 /usr/local/lib/db_interpose_pg.so
 ```
@@ -431,7 +442,7 @@ sudo journalctl -u plexmediaserver -n 100 | grep -i postgres
 
 # Expected output:
 # "PostgreSQL connection established to localhost:5432/plex"
-# "PostgreSQL shim initialized (v0.9.8)"
+# "PostgreSQL shim initialized (v0.9.10)"
 
 # Verify shim is loaded
 sudo cat /proc/$(pgrep -f "Plex Media Server")/maps | grep db_interpose_pg
