@@ -649,8 +649,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                 pthread_mutex_unlock(&pg_stmt->mutex);
                 LOG_DEBUG("RETURNING SQLITE_ROW for stmt=%p pg_stmt=%p thread=%p sql=%.50s",
                           (void*)pStmt, (void*)pg_stmt, (void*)pthread_self(), pg_stmt->sql ? pg_stmt->sql : "NULL");
-                // Flush log to ensure it's written before potential crash
-                fflush(NULL);
+                // NOTE: Removed fflush(NULL) - it caused deadlock with log mutex and was root cause of kernel panic
                 return SQLITE_ROW;
             }
         } else if (pg_stmt->is_pg == 1) {  // WRITE
