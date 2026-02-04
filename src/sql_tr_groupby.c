@@ -581,3 +581,95 @@ char* fix_group_by_strict_complete(const char *sql) {
 
     return result;
 }
+
+// ============================================================================
+// Add ORDER BY NULLS FIRST for GROUP BY queries without ORDER BY
+// ============================================================================
+// 
+// SOCI determines column types by examining the first row of results.
+// When a GROUP BY query returns NULL values, PostgreSQL may return them
+// in any order (undefined). SQLite tends to return NULLs first.
+// 
+// If SOCI sees a non-NULL value first, it determines the column type (e.g., INTEGER).
+// When a NULL row appears later, SOCI's post_fetch() throws "Null value not allowed"
+// if no indicator is used.
+// 
+// By adding "ORDER BY 1 NULLS FIRST", we ensure NULL values come first,
+// so SOCI detects the column as nullable (defaults to db_string for NULL).
+// ============================================================================
+
+char* add_nulls_first_ordering(const char *sql) {
+    if (!sql) return NULL;
+    
+    // Quick check: must have GROUP BY
+    const char *group_by_pos = strcasestr(sql, "group by");
+    if (!group_by_pos) {
+        return strdup(sql);
+    }
+    
+    // Check if there's already an ORDER BY
+    const char *order_by_pos = strcasestr(sql, "order by");
+    if (order_by_pos) {
+        // Already has ORDER BY - need to add NULLS FIRST to existing ORDER BY
+        // This is more complex, skip for now
+        return strdup(sql);
+    }
+    
+    // Check for LIMIT/OFFSET - ORDER BY should come before these
+    const char *limit_pos = strcasestr(group_by_pos, " limit ");
+    const char *offset_pos = strcasestr(group_by_pos, " offset ");
+    const char *having_pos = strcasestr(group_by_pos, " having ");
+    
+    // Find the insertion point (after GROUP BY, before LIMIT/OFFSET)
+    const char *insert_pos = group_by_pos + strlen(group_by_pos); // End of string
+    
+    if (having_pos && having_pos < insert_pos) {
+        // HAVING comes after GROUP BY, insert after HAVING clause
+        // Find end of HAVING clause (next keyword or end)
+        const char *having_end = having_pos + 8; // Skip " having "
+        // Skip to end of HAVING condition (simplified: until LIMIT/OFFSET, semicolon or end)
+        while (*having_end && strncasecmp(having_end, " limit ", 7) != 0 && 
+               strncasecmp(having_end, " offset ", 8) != 0 &&
+               *having_end != ';') {
+            having_end++;
+        }
+        insert_pos = having_end;
+    } else {
+        // No HAVING, find end of GROUP BY clause
+        const char *gb_end = group_by_pos + 8; // Skip "group by"
+        while (*gb_end && isspace(*gb_end)) gb_end++;
+        // Skip GROUP BY columns (simplified: until space + keyword, semicolon or end)
+        while (*gb_end) {
+            if (strncasecmp(gb_end, " limit ", 7) == 0 ||
+                strncasecmp(gb_end, " offset ", 8) == 0 ||
+                strncasecmp(gb_end, " having ", 8) == 0 ||
+                *gb_end == ';') {
+                break;
+            }
+            gb_end++;
+        }
+        insert_pos = gb_end;
+    }
+    
+    if (limit_pos && limit_pos < insert_pos) insert_pos = limit_pos;
+    if (offset_pos && offset_pos < insert_pos) insert_pos = offset_pos;
+    
+    // Build new query with ORDER BY 1 NULLS FIRST inserted
+    size_t prefix_len = insert_pos - sql;
+    size_t suffix_len = strlen(insert_pos);
+    const char *order_clause = " ORDER BY 1 NULLS FIRST";
+    size_t order_len = strlen(order_clause);
+    
+    char *result = malloc(prefix_len + order_len + suffix_len + 1);
+    if (!result) {
+        return strdup(sql);
+    }
+    
+    memcpy(result, sql, prefix_len);
+    memcpy(result + prefix_len, order_clause, order_len);
+    memcpy(result + prefix_len + order_len, insert_pos, suffix_len + 1);
+    
+    LOG_DEBUG("NULLS_FIRST: Added ORDER BY 1 NULLS FIRST to GROUP BY query");
+    
+    return result;
+}
