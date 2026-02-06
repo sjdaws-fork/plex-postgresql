@@ -986,7 +986,7 @@ int my_sqlite3_column_int(sqlite3_stmt *pStmt, int idx) {
             if (col_name && (strcmp(col_name, "metadata_items_metadata_type") == 0 || 
                             strcmp(col_name, "metadata_type") == 0)) {
                 if (result_val == 18) {
-                    LOG_ERROR("TYPE18_WORKAROUND: Converting metadata_type 18 (collection) to 0 for row %d to prevent std::bad_cast", row);
+                    LOG_DEBUG("TYPE18_WORKAROUND: Converting metadata_type 18 (collection) to 0 for row %d to prevent std::bad_cast", row);
                     result_val = 0;  // Return 0 (invalid type) so Plex will skip
                 }
             }

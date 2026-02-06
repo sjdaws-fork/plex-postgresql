@@ -31,7 +31,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
 
     // Skip statements
     if (pg_stmt && pg_stmt->is_pg == 3) {
-        LOG_ERROR("[RACE_DEBUG] STEP_END thread=%p stmt=%p rc=%d reason=skip", 
+        LOG_DEBUG("[RACE_DEBUG] STEP_END thread=%p stmt=%p rc=%d reason=skip", 
                   (void*)pthread_self(), (void*)pStmt, SQLITE_DONE);
         return SQLITE_DONE;
     }
@@ -55,9 +55,9 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
             if (sql && is_write_operation(sql) && !should_skip_sql(sql) && !should_skip_sql(orig_sql)) {
                 // Debug: log cached INSERT for metadata_items
                 if (sql && strcasestr(sql, "INSERT") && strcasestr(sql, "metadata_items")) {
-                    LOG_ERROR("CACHED INSERT metadata_items:");
-                    LOG_ERROR("  expanded_sql=%s", expanded_sql ? "YES" : "NO");
-                    LOG_ERROR("  sql (first 300): %.300s", sql ? sql : "(null)");
+                    LOG_DEBUG("CACHED INSERT metadata_items:");
+                    LOG_DEBUG("  expanded_sql=%s", expanded_sql ? "YES" : "NO");
+                    LOG_DEBUG("  sql (first 300): %.300s", sql ? sql : "(null)");
                 }
                 // CRITICAL FIX: Check if this cached write was already executed
                 pg_stmt_t *cached = pg_find_cached_stmt(pStmt);
@@ -93,7 +93,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
 
                     // Log cached INSERT on play_queue_generators
                     if (strstr(sql, "play_queue_generators")) {
-                        LOG_INFO("CACHED INSERT play_queue_generators on thread %p conn %p",
+                        LOG_DEBUG("CACHED INSERT play_queue_generators on thread %p conn %p",
                                 (void*)pthread_self(), (void*)cached_exec_conn);
                     }
 
@@ -531,10 +531,10 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                 // Use prepared statements for better performance (skip parse/plan overhead)
                 // v0.9.7: Re-enabled with better error handling
                 // Planning overhead (2ms/query) causes 48s delay on 24k queries
-                LOG_INFO("PREPARED CHECK: use_prepared=%d stmt_name[0]=%d pg_sql=%p",
+                LOG_DEBUG("PREPARED CHECK: use_prepared=%d stmt_name[0]=%d pg_sql=%p",
                          pg_stmt->use_prepared, (int)pg_stmt->stmt_name[0], (void*)pg_stmt->pg_sql);
                 if (pg_stmt->use_prepared && pg_stmt->stmt_name[0] && pg_stmt->pg_sql) {
-                    LOG_INFO("PREPARED PATH: stmt_name=%s sql=%.60s",
+                    LOG_DEBUG("PREPARED PATH: stmt_name=%s sql=%.60s",
                              pg_stmt->stmt_name, pg_stmt->pg_sql);
                     const char *cached_name = NULL;
                     int is_cached = pg_stmt_cache_lookup(exec_conn, pg_stmt->sql_hash, &cached_name);
@@ -547,23 +547,23 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                             pg_stmt_cache_add(exec_conn, pg_stmt->sql_hash, pg_stmt->stmt_name, pg_stmt->param_count);
                             cached_name = pg_stmt->stmt_name;
                             is_cached = 1;
-                            LOG_INFO("PREPARED_STMT: New statement %s (params=%d)", pg_stmt->stmt_name, pg_stmt->param_count);
+                            LOG_DEBUG("PREPARED_STMT: New statement %s (params=%d)", pg_stmt->stmt_name, pg_stmt->param_count);
                         } else {
                             // Prepare failed - fall back to PQexecParams
                             LOG_ERROR("PQprepare failed for %s: %s", pg_stmt->stmt_name, PQerrorMessage(exec_conn->conn));
                         }
                         PQclear(prep_res);
                     } else {
-                        LOG_INFO("PREPARED_STMT: Cache hit for %s", cached_name);
+                        LOG_DEBUG("PREPARED_STMT: Cache hit for %s", cached_name);
                     }
 
                     if (is_cached && cached_name) {
                         // Execute prepared statement
-                        LOG_INFO("EXEC_PREPARED: stmt=%s params=%d",
+                        LOG_DEBUG("EXEC_PREPARED: stmt=%s params=%d",
                                  cached_name, pg_stmt->param_count);
                         pg_stmt->result = PQexecPrepared(exec_conn->conn, cached_name,
                             pg_stmt->param_count, paramValues, NULL, NULL, 0);
-                        LOG_INFO("EXEC_PREPARED DONE: result=%p status=%d",
+                        LOG_DEBUG("EXEC_PREPARED DONE: result=%p status=%d",
                                  (void*)pg_stmt->result,
                                  pg_stmt->result ? (int)PQresultStatus(pg_stmt->result) : -1);
                     } else {
@@ -573,11 +573,11 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                     }
                 } else {
                     // No prepared statement support for this query
-                    LOG_INFO("EXEC_PARAMS READ: conn=%p params=%d sql=%.60s",
+                    LOG_DEBUG("EXEC_PARAMS READ: conn=%p params=%d sql=%.60s",
                              (void*)exec_conn, pg_stmt->param_count, pg_stmt->pg_sql);
                     pg_stmt->result = PQexecParams(exec_conn->conn, pg_stmt->pg_sql,
                         pg_stmt->param_count, NULL, paramValues, NULL, NULL, 0);
-                    LOG_INFO("EXEC_PARAMS READ DONE: conn=%p result=%p",
+                    LOG_DEBUG("EXEC_PARAMS READ DONE: conn=%p result=%p",
                              (void*)exec_conn, (void*)pg_stmt->result);
                 }
 
@@ -637,7 +637,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                 // STEP TRACE: Log iteration for media_items/media_streams queries
                 // This helps debug MDE file analysis issues
                 if (pg_stmt->sql && (strstr(pg_stmt->sql, "media_items") || strstr(pg_stmt->sql, "media_streams"))) {
-                    LOG_INFO("STEP_TRACE: media query row=%d/%d stmt=%p sql=%.80s",
+                    LOG_DEBUG("STEP_TRACE: media query row=%d/%d stmt=%p sql=%.80s",
                              pg_stmt->current_row, pg_stmt->num_rows, (void*)pStmt,
                              pg_stmt->sql ? pg_stmt->sql : "?");
                 }
@@ -649,7 +649,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                     
                     // STEP TRACE: Log when done iterating media queries
                     if (pg_stmt->sql && (strstr(pg_stmt->sql, "media_items") || strstr(pg_stmt->sql, "media_streams"))) {
-                        LOG_INFO("STEP_DONE: media query complete total_rows=%d stmt=%p",
+                        LOG_DEBUG("STEP_DONE: media query complete total_rows=%d stmt=%p",
                                  pg_stmt->num_rows, (void*)pStmt);
                     }
                     
@@ -666,7 +666,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                 
                 // STEP TRACE: Log ROW return for media queries
                 if (pg_stmt->sql && (strstr(pg_stmt->sql, "media_items") || strstr(pg_stmt->sql, "media_streams"))) {
-                    LOG_INFO("STEP_ROW: media query returning row=%d/%d stmt=%p",
+                    LOG_DEBUG("STEP_ROW: media query returning row=%d/%d stmt=%p",
                              pg_stmt->current_row, pg_stmt->num_rows, (void*)pStmt);
                 }
                 
@@ -687,15 +687,15 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
 
             // Log INSERT on play_queue_generators for debugging
             if (pg_stmt->pg_sql && strstr(pg_stmt->pg_sql, "play_queue_generators")) {
-                LOG_INFO("INSERT play_queue_generators on thread %p conn %p",
+                LOG_DEBUG("INSERT play_queue_generators on thread %p conn %p",
                         (void*)pthread_self(), (void*)exec_conn);
             }
 
             // Debug: log INSERT params for troubleshooting
             if (pg_stmt->sql && strcasestr(pg_stmt->sql, "INSERT INTO metadata_items")) {
-                LOG_ERROR("STEP metadata_items INSERT: param_count=%d", pg_stmt->param_count);
+                LOG_DEBUG("STEP metadata_items INSERT: param_count=%d", pg_stmt->param_count);
                 // CRITICAL FIX: Only access paramValues within bounds
-                LOG_ERROR("  PARAMS: [0]=%s [1]=%s [2]=%s [8]=%s [9]=%s",
+                LOG_DEBUG("  PARAMS: [0]=%s [1]=%s [2]=%s [8]=%s [9]=%s",
                          (pg_stmt->param_count > 0 && paramValues[0]) ? paramValues[0] : "NULL",
                          (pg_stmt->param_count > 1 && paramValues[1]) ? paramValues[1] : "NULL",
                          (pg_stmt->param_count > 2 && paramValues[2]) ? paramValues[2] : "NULL",
@@ -704,14 +704,14 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
             }
             // Debug: log play_queue_generators INSERT params
             if (pg_stmt->sql && strcasestr(pg_stmt->sql, "play_queue_generators")) {
-                LOG_ERROR("STEP play_queue_generators INSERT: param_count=%d", pg_stmt->param_count);
+                LOG_DEBUG("STEP play_queue_generators INSERT: param_count=%d", pg_stmt->param_count);
                 // CRITICAL FIX: Only access paramValues within bounds
-                LOG_ERROR("  PARAMS: [0]=%s [1]=%s [2]=%s [3]=%s",
+                LOG_DEBUG("  PARAMS: [0]=%s [1]=%s [2]=%s [3]=%s",
                          (pg_stmt->param_count > 0 && paramValues[0]) ? paramValues[0] : "NULL",  // playlist_id
                          (pg_stmt->param_count > 1 && paramValues[1]) ? paramValues[1] : "NULL",  // metadata_item_id
                          (pg_stmt->param_count > 2 && paramValues[2]) ? paramValues[2] : "NULL",  // uri
                          (pg_stmt->param_count > 3 && paramValues[3]) ? paramValues[3] : "NULL"); // limit
-                LOG_ERROR("  SQL: %.300s", pg_stmt->pg_sql ? pg_stmt->pg_sql : "NULL");
+                LOG_DEBUG("  SQL: %.300s", pg_stmt->pg_sql ? pg_stmt->pg_sql : "NULL");
             }
 
             // VALIDATION: Skip statistics_media INSERTs with empty count AND duration
@@ -724,7 +724,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                 int duration_empty = !duration_val || strcmp(duration_val, "0") == 0;
                 
                 if (count_empty && duration_empty) {
-                    LOG_INFO("SKIP statistics_media INSERT: count=%s duration=%s (empty)",
+                    LOG_DEBUG("SKIP statistics_media INSERT: count=%s duration=%s (empty)",
                             count_val ? count_val : "NULL", duration_val ? duration_val : "NULL");
                     
                     // CRITICAL FIX: Advance the sequence so last_insert_rowid() works
@@ -741,7 +741,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                                 "SELECT nextval('plex.statistics_media_id_seq')");
                             if (PQresultStatus(seq_res) == PGRES_TUPLES_OK && PQntuples(seq_res) > 0) {
                                 const char *seq_val = PQgetvalue(seq_res, 0, 0);
-                                LOG_INFO("SKIP: Advanced sequence to %s", seq_val);
+                                LOG_DEBUG("SKIP: Advanced sequence to %s", seq_val);
                             }
                             PQclear(seq_res);
                         }
@@ -865,7 +865,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
                     const char *id_str = PQgetvalue(res, 0, 0);
                     if (id_str && *id_str) {
                         if (pg_stmt->pg_sql && strstr(pg_stmt->pg_sql, "play_queue_generators")) {
-                            LOG_INFO("STEP play_queue_generators: RETURNING id = %s on thread %p conn %p",
+                            LOG_DEBUG("STEP play_queue_generators: RETURNING id = %s on thread %p conn %p",
                                     id_str, (void*)pthread_self(), (void*)exec_conn);
                         }
                         sqlite3_int64 meta_id = extract_metadata_id_from_generator_sql(pg_stmt->sql);
@@ -903,7 +903,7 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
         int is_playqueue = (strstr(pg_stmt->pg_sql, "play_queue") != NULL);
         
         if (is_count || is_playqueue) {
-            LOG_ERROR("DEBUG_TRACE: STEP_EXIT - rows=%d cols=%d sql=%.100s",
+            LOG_DEBUG("DEBUG_TRACE: STEP_EXIT - rows=%d cols=%d sql=%.100s",
                       pg_stmt->num_rows, pg_stmt->num_cols, pg_stmt->pg_sql);
         }
     }
