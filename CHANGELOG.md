@@ -5,6 +5,28 @@ All notable changes to plex-postgresql will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.12] - 2026-02-06
+
+### Fixed
+- **CRITICAL: Excessive logging causing system freeze and kernel panic**
+  - ROOT CAUSE: 18 debug/trace `LOG_ERROR` and `LOG_INFO` calls on hot paths fired on every database query
+  - Even at `PLEX_PG_LOG_LEVEL=ERROR`, debug statements like `RACE_DEBUG`, `CACHED INSERT metadata_items`, `STEP metadata_items INSERT`, `play_queue_generators` params, `DEBUG_TRACE STEP_EXIT`, `PREPARED CHECK/PATH/STMT`, `EXEC_PREPARED`, `STEP_TRACE/DONE/ROW` were logged
+  - Each log call: malloc(4KB) + mutex lock + unbuffered write syscall + mutex unlock + free
+  - At thousands of queries/second this caused 34+ GB/day disk writes and severe mutex contention
+  - Thread starvation led to 63 GB memory exhaustion, 29 swap files, WindowServer watchdog timeout, and kernel panic
+  - Solution: Demoted all debug/trace statements to `LOG_DEBUG` so they are completely skipped at ERROR level (no malloc, no mutex, no syscall)
+  - Files: `src/db_interpose_step.c`, `src/db_interpose_column.c`
+
+## [0.9.11] - 2026-02-04
+
+### Fixed
+- **Stack overflow from circular parent_id references in metadata_items**
+- **ORDER BY syntax error in GROUP BY query translation**
+
+### Added
+- Database triggers to prevent circular parent references
+- Triggers to auto-fix orphan seasons on episode insert
+
 ## [0.9.10] - 2026-02-02
 
 ### Fixed

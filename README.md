@@ -7,18 +7,15 @@
 
 A shim library that intercepts Plex's SQLite calls and redirects them to PostgreSQL. Zero Plex modifications required.
 
-## 🎉 Latest Release: v0.9.11
+## 🎉 Latest Release: v0.9.12
 
-**Major fix:** Circular parent references causing 2+ minute timeouts on continueWatching/onDeck.
+**Critical fix:** Excessive shim logging causing system freeze, memory exhaustion, and kernel panic.
 
-- ✅ **Fixed:** Stack overflow from circular parent_id references in metadata_items
-- ✅ **Fixed:** ORDER BY syntax error in GROUP BY query translation
-- ✅ **New:** Database triggers to prevent circular parent references
-- ✅ **New:** Triggers to auto-fix orphan seasons on episode insert
-- ✅ Reduced logging to ERROR level for production (was flooding logs)
-- ✅ Prepared statement caching enabled (99% cache hit rate)
+- ✅ **Fixed:** Debug log statements firing on every query at ERROR log level, causing 34+ GB/day disk writes
+- ✅ **Fixed:** Mutex contention on log lock causing thread starvation and 63 GB memory exhaustion
+- ✅ **Fixed:** System freeze → WindowServer watchdog timeout → kernel panic cycle
 
-[📥 Download v0.9.11](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.11) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.11)
+[📥 Download v0.9.12](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.12) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.12)
 
 **Available for:** macOS ARM64 • Linux x86_64 • Linux ARM64 • Docker (multi-arch)
 
@@ -26,14 +23,14 @@ A shim library that intercepts Plex's SQLite calls and redirects them to Postgre
 
 **macOS:**
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.11/db_interpose_pg.dylib \
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.12/db_interpose_pg.dylib \
   -o /usr/local/lib/db_interpose_pg.dylib
 # Then configure DYLD_INSERT_LIBRARIES in Plex launchd plist
 ```
 
 **Linux (x86_64):**
 ```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.11/db_interpose_pg-linux-x86_64.so \
+sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.12/db_interpose_pg-linux-x86_64.so \
   -o /usr/local/lib/db_interpose_pg.so
 # Then configure LD_PRELOAD in systemd service
 ```
