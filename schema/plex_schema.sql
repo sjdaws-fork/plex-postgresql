@@ -1118,6 +1118,7 @@ CREATE TABLE plex.metadata_items (
     edition_title character varying(255),
     slug character varying(255),
     user_clear_logo_url text,
+    user_square_art_url text,
     is_adult integer,
     metadata_agent_provider_group_id integer,
     search_vector tsvector,
@@ -2482,7 +2483,8 @@ CREATE TABLE plex.schema_migrations (
     version character varying(255) NOT NULL,
     rollback_sql text,
     optimize_on_rollback integer,
-    min_version text
+    min_version text,
+    id serial NOT NULL
 );
 
 

@@ -346,6 +346,28 @@ check "trg_fix_orphan_season_media" \
     "CREATE TRIGGER trg_fix_orphan_season_media AFTER INSERT ON $PG_SCHEMA.media_parts FOR EACH ROW EXECUTE FUNCTION $PG_SCHEMA.fix_orphan_season_on_media_part_insert();"
 
 # ============================================================================
+# Schema migrations (columns added in newer Plex versions)
+# ============================================================================
+echo ""
+echo "Schema migrations:"
+
+check_column() {
+    local table="$1"
+    local column="$2"
+    local coltype="${3:-text}"
+
+    check "$table.$column" \
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = '$PG_SCHEMA' AND table_name = '$table' AND column_name = '$column');" \
+        "ALTER TABLE $PG_SCHEMA.$table ADD COLUMN $column $coltype;"
+}
+
+# Plex 1.43.0 additions
+check_column "metadata_items" "user_square_art_url" "text"
+check_column "schema_migrations" "id" "serial"
+
+echo ""
+
+# ============================================================================
 # Data integrity
 # ============================================================================
 echo ""
