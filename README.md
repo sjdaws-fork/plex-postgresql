@@ -62,96 +62,18 @@ SQLite is great for most Plex installations, but has one major limitation: **dat
 - **Large libraries** - PostgreSQL's query optimizer handles 10K+ movies and 50K+ episodes efficiently.
 - **Standard tooling** - pg_dump for backups, replication, any PostgreSQL client for debugging.
 
-## Benchmark Results
+## Benchmarks
 
-### Concurrent Access (The Real Problem)
+Under concurrent load (Plex + Kometa + PMM + 4 streams), **82% of SQLite writes fail**. PostgreSQL: **zero errors**.
 
-Real-world test: **Plex + Kometa + PMM + 4 concurrent streams** (7 separate processes, 15 seconds):
+| Metric | SQLite | PostgreSQL |
+|--------|--------|------------|
+| Write Errors (15s test) | 8,019,177 (82%) | **0** |
+| Shim overhead (cached) | — | 0.11 µs (<1%) |
 
-| Metric | SQLite | PostgreSQL (TCP) |
-|--------|--------|------------------|
-| Total Writes | 1,698,690 | 26,110 |
-| **Write Errors** | **8,019,177 (82%)** | **0** |
-| Total Reads | 5,014 | 1,125 |
-| Read Errors | 0 | 0 |
+Full results and how to run them: **[wiki/Benchmarks](https://github.com/cgnl/plex-postgresql/wiki/Benchmarks)**
 
-**What this means:**
-- SQLite: 82% of writes fail due to database locking
-- SQLite: ~32 million errors per minute under load
-- PostgreSQL: Zero errors, everything works simultaneously
-
-### Query Latency Comparison
-
-| Query Type | SQLite | PostgreSQL (Socket) | Overhead |
-|------------|--------|---------------------|----------|
-| SELECT (PK lookup) | 3.5 µs | 16.5 µs | 4.8x |
-| INSERT (batched) | 0.6 µs | 14.3 µs | 23.8x |
-| Range Query | 28.2 µs | 41.4 µs | 1.5x |
-
-PostgreSQL is slower per-query, but **never locks**. For Plex + rclone/Real-Debrid, smooth playback matters more than raw speed.
-
-### Shim Overhead
-
-| Component | Latency | Throughput |
-|-----------|---------|------------|
-| SQL Translation (uncached) | 0.28 µs | 3.6M/sec |
-| **SQL Translation (cached)** | **0.11 µs** | **9.0M/sec** |
-| Cache Lookup | 1.2 ns | 815M/sec |
-
-The thread-local translation cache provides **2.5x speedup** for repeated queries. Shim overhead is **<1% of total query time**.
-
-### Run Benchmarks
-
-```bash
-# Multi-process stress test (the definitive proof)
-PLEX_PG_SOCKET=/tmp python3 scripts/benchmark_multiprocess.py
-
-# SQLite vs PostgreSQL latency comparison
-python3 tests/bench_sqlite_vs_pg.py
-
-# Shim component micro-benchmarks
-make benchmark
-
-# Cache implementation comparison (mutex vs thread-local)
-./tests/bin/bench_cache
-```
-
-For rclone/Real-Debrid setups with Kometa/PMM, **SQLite becomes unusable** during library scans. PostgreSQL handles it without issues.
-
-## What's New in v0.9.10
-
-### Critical Stability Fixes
-
-**Kernel Panic Prevention (v0.9.10):**
-- Removed `fflush(NULL)` call that caused deadlock with log mutex
-- 14+ postgres processes blocked on `_fwalk → sflush_locked → flockfile`
-- Triggered WindowServer watchdog timeout and kernel panic
-
-**SOCI NULL Value Handling (v0.9.10):**
-- Fixed "Null value not allowed for this type" SOCI exceptions
-- `column_type()` now returns declared type instead of `SQLITE_NULL` for NULL values
-- Fixes HTTP 500 on `/library/all/top`, `/hubs/promoted`, `/library/metadata/*`
-- Root cause: SOCI checks `column_type()` before calling `column_int()`, throws exception on `SQLITE_NULL`
-
-### blobs.db PostgreSQL Support (v0.9.8)
-
-**Feature:** Full PostgreSQL support for `blobs.db` - thumbnails, artwork, and posters now stored in PostgreSQL.
-
-**Implementation:**
-- `is_library_db_path()` now matches both `library.db` and `blobs.db`
-- blobs.db uses direct connections (separate from connection pool)
-- Migration scripts updated to include blob data via hex encoding
-
-**Result:** All Plex database operations now route to PostgreSQL. No more SQLite dependencies.
-
-### Previous Bug Fixes
-
-- **TOCTOU race condition** (v0.9.4): Fixed PQstatus crashes caused by connection state changes between check and use
-- **Recursion prevention** (v0.9.3): Fixed infinite loops in pool cleanup
-- **use-after-free crash**: Fixed statistics_bandwidth duplicate spam causing crashes
-- **Docker reliability**: LD_PRELOAD now injected at build time for s6-overlay
-
-### Migration & Maintenance
+## Migration & Maintenance
 
 ```bash
 ./scripts/migrate_sqlite_to_pg.sh   # SQLite → PostgreSQL
@@ -180,19 +102,6 @@ Data:
 ```
 
 Flags: `--check` (only report, don't fix anything), `--fix` (fix everything without asking).
-
-### Easy Installation
-
-New interactive installer script:
-```bash
-./install.sh  # One command, handles everything
-```
-
-Features:
-- Automatic Plex binary backup
-- Creates start/stop scripts
-- Generates uninstall script
-- Architecture and OS validation
 
 ## Quick Start (Docker)
 
@@ -554,181 +463,25 @@ The performance difference is minimal - the real benefit of PostgreSQL is zero l
 
 ## How It Works
 
-```
-macOS:  Plex → SQLite API → DYLD_INTERPOSE shim → SQL Translator → PostgreSQL
-Linux:  Plex → SQLite API → LD_PRELOAD shim    → SQL Translator → PostgreSQL
-Docker: Plex → SQLite API → LD_PRELOAD shim    → SQL Translator → PostgreSQL (container)
-```
-
-The shim intercepts all `sqlite3_*` calls, translates SQL syntax (placeholders, functions, types), and executes on PostgreSQL via libpq.
-
-### Architecture
-
-The codebase uses a modular architecture with platform-specific cores and shared common code:
-
-```
-src/
-├── db_interpose_common.c      # Shared: function pointers, exception handling, fork handlers
-├── db_interpose_common.h      # Common declarations
-├── db_interpose_core.c        # macOS: fishhook + execinfo.h backtrace (368 lines)
-├── db_interpose_core_linux.c  # Linux: LD_PRELOAD + /proc/maps backtrace (646 lines)
-├── db_interpose_*.c           # Shared: open, exec, prepare, bind, step, column, metadata
-├── sql_translator.c           # SQLite → PostgreSQL SQL translation
-├── sql_tr_*.c                 # Translation modules: functions, types, quotes, etc.
-└── pg_*.c                     # PostgreSQL client, connection pool, statement cache
-```
-
-**Code sharing:** Platform-specific code reduced by 36% (2889 → 1844 lines) through extraction of common modules.
-
-### Key Features
-
-- **Connection pooling** - Efficient reuse of PostgreSQL connections
-- **SQL translation** - Automatic SQLite → PostgreSQL syntax conversion
-- **Prepared statements** - Query caching for performance
-- **Schema initialization** - Auto-creates PostgreSQL schema on first run
-- **Circular reference protection** - Trigger prevents self-referential parent_id crashes
-- **Stack overflow protection** - Multi-layer defense against crashes (see below)
-- **Auto-build** - Wrapper automatically rebuilds shim if dylib is missing
-
-### SQL Translation Features
-
-The translator handles SQLite-specific syntax automatically:
-
-| SQLite | PostgreSQL |
-|--------|------------|
-| `COLLATE NOCASE` | `LOWER()` comparisons |
-| `WHERE column LIKE '%x%' COLLATE NOCASE` | `WHERE column ILIKE '%x%'` |
-| `WHERE 0` / `WHERE 1` | `WHERE FALSE` / `WHERE TRUE` |
-| `iif(cond, a, b)` | `CASE WHEN cond THEN a ELSE b END` |
-| `strftime('%s', x)` | `EXTRACT(EPOCH FROM x)::bigint` |
-| `IFNULL(a, b)` | `COALESCE(a, b)` |
-| `title MATCH 'action -comedy'` | FTS with `!` negation |
-| `title MATCH 'term1 AND term2'` | FTS with `&` operator |
-| `title MATCH '"exact phrase"'` | FTS with `<->` adjacency |
-| `?` placeholders | `$1, $2, ...` numbered params |
-
-### Stack Protection
-
-Plex uses small thread stacks (544KB) which can overflow during complex queries. The shim provides multi-layer protection:
-
-| Layer | Threshold | Action |
-|-------|-----------|--------|
-| Worker delegation | < 400KB remaining | Delegate to 8MB worker thread |
-| Hard protection (normal) | < 64KB remaining | Return SQLITE_NOMEM |
-| Hard protection (worker) | < 32KB remaining | Return SQLITE_NOMEM |
-
-This prevents stack overflow crashes that occurred with deep recursive queries (e.g., OnDeck with 218 recursive frames).
+The shim intercepts all `sqlite3_*` calls, translates SQL syntax, and executes on PostgreSQL via libpq. Architecture, SQL translation tables, stack protection details: **[wiki/How It Works](https://github.com/cgnl/plex-postgresql/wiki/How-It-Works)**
 
 ## Testing
 
-Run unit tests to validate the shim:
-
 ```bash
-# All unit tests (87 tests total)
-make unit-test
-
-# Individual test suites
-make test-recursion      # Recursion guards, loop detection (11 tests)
-make test-crash          # Production crash scenarios (21 tests)
-make test-sql            # SQL translation (32 tests)
-make test-cache          # Query cache logic (16 tests)
-make test-tls            # Thread-local storage (7 tests)
-
-# Benchmarks
-make benchmark           # Shim component micro-benchmarks
+make unit-test       # All 87 unit tests
+make benchmark       # Shim micro-benchmarks
 ```
-
-### Benchmarks
-
-Compare SQLite vs PostgreSQL (TCP and Unix socket) performance:
-
-```bash
-# Multi-process stress test (the definitive proof)
-PLEX_PG_SOCKET=/tmp python3 scripts/benchmark_multiprocess.py
-
-# Library scan + playback simulation  
-PLEX_PG_SOCKET=/tmp python3 scripts/benchmark_plex_stress.py
-
-# Concurrent writers test
-PLEX_PG_SOCKET=/tmp python3 scripts/benchmark_locking.py
-
-# Query performance comparison
-python3 scripts/benchmark_compare.py
-
-# Bash benchmark (use --socket for Unix socket mode)
-./scripts/benchmark.sh           # TCP mode
-./scripts/benchmark.sh --socket  # Unix socket mode
-```
-
-The stack protection test validates all protection layers by simulating low-stack conditions without running Plex.
-
-## Known Issues
-
-### ✅ FIXED in v0.9.2: Timeline 500 Error
-
-**Status:** Fixed in v0.9.2  
-**Issue:** `/:/timeline` endpoint returned HTTP 500 errors during playback with `std::exception`  
-**Root Cause:** `sqlite3_last_insert_rowid()` called with different database handle, causing NULL connection lookup  
-**Solution:** Fallback connection lookup + sequence advancement before skipping empty INSERTs  
-**Action:** Update to v0.9.2 or later
-
-See [What's New](#whats-new-in-v092) for details.
-
-### ✅ FIXED in v0.8.12: TV Shows HTTP 500 Error
-
-**Status:** Fixed in v0.8.12  
-**Issue:** TV shows endpoint returned HTTP 500 with `std::bad_cast` exceptions  
-**Root Cause:** Plex's SOCI library bug with BIGINT aggregate functions (count, sum, etc.)  
-**Solution:** Aggregate functions declare as TEXT type to bypass SOCI's strict integer type checking  
-**Impact:** TV shows now load correctly, MetadataCounterCache rebuilds work
-
-## Known Limitations
-
-### PostgreSQL Type Mapping
-
-The shim translates SQLite types to PostgreSQL equivalents:
-
-- **INTEGER** → INT4 (32-bit) or INT8 (64-bit based on context)
-- **BIGINT** → INT8 (64-bit) - ✅ Fixed in v0.8.12
-- **Aggregate functions** (count, sum, max, min, avg) → Declared as TEXT with 64-bit values
-  - **Why TEXT?** Workaround for SOCI Issue #1190 - forces SOCI to use text-to-integer conversion which works correctly
-  - **Impact:** None - values are still 64-bit integers, just declared differently to SOCI
-
-### SOCI Type System Workaround
-
-**Background:** Plex uses SOCI ORM which has a bug (SOCI Issue #1190) parsing BIGINT values from aggregate functions.
-
-**Our solution (v0.8.12+):**
-- Aggregate functions declare as TEXT type to SOCI
-- Data is still 64-bit integers from PostgreSQL
-- SOCI's text-to-int conversion works correctly
-- Bypasses SOCI's buggy native BIGINT handling
-
-**Impact:** Transparent to Plex - all functionality works correctly.
 
 ## Troubleshooting
 
 ```bash
-# Check PostgreSQL
-pg_isready -h localhost -U plex
-
-# Check logs (macOS)
-tail -50 /tmp/plex_redirect_pg.log
-
-# Check logs (Docker)
-docker-compose logs -f plex
-
-# Analyze fallbacks
-./scripts/analyze_fallbacks.sh
+pg_isready -h localhost -U plex          # Check PostgreSQL
+./scripts/doctor.sh                       # Check and fix schema + data
+tail -50 /tmp/plex_redirect_pg.log       # Check logs (macOS)
+docker-compose logs -f plex              # Check logs (Docker)
 ```
 
-### Common Issues
-
-**Plex won't start**: Check if PostgreSQL is running and accessible.
-
-**Database errors**: Ensure the schema exists: `psql -U plex -d plex -c "CREATE SCHEMA IF NOT EXISTS plex;"`
-
-**Docker port conflict**: Change port in `docker-compose.yml` if 8080 is in use.
+More: **[wiki/Troubleshooting](https://github.com/cgnl/plex-postgresql/wiki/Troubleshooting)**
 
 ## License
 
