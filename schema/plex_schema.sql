@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict prQ1zinOfl7cVlT1T5opKqaR8ST4uowaqTTlABa8Q4HC2Bxa22yxTWQdRFvSMTD
+\restrict k1FTTexA8Xe4WPWhJLvkzFfK77e8SGscLqfdbjfaYwEAOAK1wzzj90sahsatJMU
 
 -- Dumped from database version 15.15 (Homebrew)
 -- Dumped by pg_dump version 15.15 (Homebrew)
@@ -22,13 +22,242 @@ SET row_security = off;
 -- Name: plex; Type: SCHEMA; Schema: -; Owner: -
 --
 
-CREATE SCHEMA IF NOT EXISTS plex;
+CREATE SCHEMA plex;
+
 
 --
--- Name: pg_trgm; Type: EXTENSION; Schema: -; Owner: -
+-- Name: clean_old_statistics_bandwidth(); Type: FUNCTION; Schema: plex; Owner: -
 --
 
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE FUNCTION plex.clean_old_statistics_bandwidth() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    cutoff_time BIGINT;
+    deleted_count INTEGER;
+BEGIN
+    -- Only run cleanup every 1000 inserts (check using random)
+    -- This prevents running on every single insert
+    IF random() > 0.001 THEN
+        RETURN NEW;
+    END IF;
+    
+    -- Calculate cutoff: 7 days ago in unix timestamp
+    cutoff_time := EXTRACT(EPOCH FROM (NOW() - INTERVAL '7 days'))::BIGINT;
+    
+    -- Delete old rows (limit to prevent long locks)
+    DELETE FROM statistics_bandwidth 
+    WHERE id IN (
+        SELECT id FROM statistics_bandwidth 
+        WHERE at < cutoff_time 
+        LIMIT 10000
+    );
+    
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    
+    IF deleted_count > 0 THEN
+        RAISE NOTICE 'Cleaned % old statistics_bandwidth rows', deleted_count;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: clean_old_statistics_resources(); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.clean_old_statistics_resources() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    cutoff_time BIGINT;
+BEGIN
+    IF random() > 0.001 THEN
+        RETURN NEW;
+    END IF;
+    
+    cutoff_time := EXTRACT(EPOCH FROM (NOW() - INTERVAL '7 days'))::BIGINT;
+    
+    DELETE FROM statistics_resources 
+    WHERE id IN (
+        SELECT id FROM statistics_resources 
+        WHERE at < cutoff_time 
+        LIMIT 10000
+    );
+    
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: cleanup_statistics_bandwidth(integer); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.cleanup_statistics_bandwidth(days_to_keep integer DEFAULT 7) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    cutoff_time BIGINT;
+    total_deleted INTEGER := 0;
+    batch_deleted INTEGER;
+BEGIN
+    cutoff_time := EXTRACT(EPOCH FROM (NOW() - (days_to_keep || ' days')::INTERVAL))::BIGINT;
+    
+    -- Delete in batches to prevent long locks
+    LOOP
+        DELETE FROM statistics_bandwidth 
+        WHERE id IN (
+            SELECT id FROM statistics_bandwidth 
+            WHERE at < cutoff_time 
+            LIMIT 50000
+        );
+        
+        GET DIAGNOSTICS batch_deleted = ROW_COUNT;
+        total_deleted := total_deleted + batch_deleted;
+        
+        EXIT WHEN batch_deleted = 0;
+        
+        -- Small pause between batches
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+    
+    RETURN total_deleted;
+END;
+$$;
+
+
+--
+-- Name: fix_orphan_season_on_episode_insert(); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.fix_orphan_season_on_episode_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    season_parent_id INTEGER;
+    episode_file TEXT;
+    show_name TEXT;
+    found_show_id INTEGER;
+    season_library_id INTEGER;
+BEGIN
+    IF NEW.metadata_type != 4 OR NEW.parent_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    SELECT parent_id, library_section_id 
+    INTO season_parent_id, season_library_id
+    FROM plex.metadata_items 
+    WHERE id = NEW.parent_id AND metadata_type = 3;
+    
+    IF season_parent_id IS NOT NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    SELECT mp.file INTO episode_file
+    FROM plex.media_items med
+    JOIN plex.media_parts mp ON mp.media_item_id = med.id
+    WHERE med.metadata_item_id = NEW.id
+    LIMIT 1;
+    
+    IF episode_file IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    show_name := TRIM((regexp_match(episode_file, '/([^/]+)\s*\(\d{4}\)'))[1]);
+    
+    IF show_name IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    -- ALLEEN dezelfde library
+    SELECT id INTO found_show_id
+    FROM plex.metadata_items
+    WHERE metadata_type = 2
+      AND library_section_id = season_library_id
+      AND title ILIKE show_name
+    LIMIT 1;
+    
+    IF found_show_id IS NOT NULL THEN
+        UPDATE plex.metadata_items 
+        SET parent_id = found_show_id 
+        WHERE id = NEW.parent_id AND parent_id IS NULL;
+        
+        RAISE NOTICE 'Fixed orphan season % -> show %', NEW.parent_id, found_show_id;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: fix_orphan_season_on_media_part_insert(); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.fix_orphan_season_on_media_part_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    episode_id INTEGER;
+    season_id INTEGER;
+    season_parent_id INTEGER;
+    season_library_id INTEGER;
+    show_name TEXT;
+    found_show_id INTEGER;
+BEGIN
+    SELECT med.metadata_item_id INTO episode_id
+    FROM plex.media_items med
+    WHERE med.id = NEW.media_item_id;
+    
+    IF episode_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    SELECT mi.parent_id INTO season_id
+    FROM plex.metadata_items mi
+    WHERE mi.id = episode_id AND mi.metadata_type = 4;
+    
+    IF season_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    SELECT parent_id, library_section_id 
+    INTO season_parent_id, season_library_id
+    FROM plex.metadata_items 
+    WHERE id = season_id AND metadata_type = 3;
+    
+    IF season_parent_id IS NOT NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    show_name := TRIM((regexp_match(NEW.file, '/([^/]+)\s*\(\d{4}\)'))[1]);
+    
+    IF show_name IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    -- ALLEEN dezelfde library
+    SELECT id INTO found_show_id
+    FROM plex.metadata_items
+    WHERE metadata_type = 2
+      AND library_section_id = season_library_id
+      AND title ILIKE show_name
+    LIMIT 1;
+    
+    IF found_show_id IS NOT NULL THEN
+        UPDATE plex.metadata_items 
+        SET parent_id = found_show_id 
+        WHERE id = season_id AND parent_id IS NULL;
+        
+        RAISE NOTICE 'Fixed orphan season % -> show %', season_id, found_show_id;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
 
 
 --
@@ -111,6 +340,61 @@ $$;
 
 
 --
+-- Name: integer_equals_text(integer, text); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.integer_equals_text(integer, text) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $_$
+    SELECT $1 = $2::integer;
+$_$;
+
+
+--
+-- Name: maybe_cleanup_statistics(); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.maybe_cleanup_statistics() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    ctrl maintenance_control%ROWTYPE;
+    cutoff_time BIGINT;
+    deleted_count INTEGER;
+BEGIN
+    -- Get control record for this table
+    SELECT * INTO ctrl FROM maintenance_control WHERE table_name = TG_TABLE_NAME;
+    
+    -- Skip if no control record or cleanup not due yet
+    IF ctrl IS NULL OR ctrl.last_cleanup + ctrl.cleanup_interval > NOW() THEN
+        RETURN NEW;
+    END IF;
+    
+    -- Calculate cutoff
+    cutoff_time := EXTRACT(EPOCH FROM (NOW() - (ctrl.retention_days || ' days')::INTERVAL))::BIGINT;
+    
+    -- Perform cleanup
+    IF TG_TABLE_NAME = 'statistics_bandwidth' THEN
+        DELETE FROM statistics_bandwidth WHERE at < cutoff_time;
+    ELSIF TG_TABLE_NAME = 'statistics_resources' THEN
+        DELETE FROM statistics_resources WHERE at < cutoff_time;
+    END IF;
+    
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    
+    -- Update last cleanup time
+    UPDATE maintenance_control SET last_cleanup = NOW() WHERE table_name = TG_TABLE_NAME;
+    
+    IF deleted_count > 0 THEN
+        RAISE LOG 'Cleaned % rows from %', deleted_count, TG_TABLE_NAME;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: metadata_items_search_trigger(); Type: FUNCTION; Schema: plex; Owner: -
 --
 
@@ -128,6 +412,121 @@ $$;
 
 
 --
+-- Name: prevent_cross_section_parent(); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.prevent_cross_section_parent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    parent_section_id INTEGER;
+BEGIN
+    -- If parent_id is NULL, allow it
+    IF NEW.parent_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    -- Get parent's library_section_id
+    SELECT library_section_id INTO parent_section_id
+    FROM plex.metadata_items
+    WHERE id = NEW.parent_id;
+    
+    -- If parent not found, allow (will fail on FK constraint anyway)
+    IF parent_section_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    
+    -- Check if sections match
+    IF NEW.library_section_id != parent_section_id THEN
+        RAISE EXCEPTION 'Cross-section parent link prevented: child section % cannot have parent in section %', 
+            NEW.library_section_id, parent_section_id
+            USING HINT = 'Parent and child must be in the same library section',
+                  ERRCODE = '23514';  -- check_violation
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: prevent_self_referential_parent(); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.prevent_self_referential_parent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    current_id INTEGER;
+    parent_type INTEGER;
+    depth INTEGER := 0;
+    max_depth INTEGER := 20;
+BEGIN
+    -- Skip if no parent_id
+    IF NEW.parent_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    -- Rule 1: Item cannot be its own parent
+    IF NEW.parent_id = NEW.id THEN
+        NEW.parent_id := NULL;
+        RAISE WARNING 'Prevented self-referential parent for item %', NEW.id;
+        RETURN NEW;
+    END IF;
+    
+    -- Get parent's metadata_type
+    SELECT metadata_type INTO parent_type FROM metadata_items WHERE id = NEW.parent_id;
+    
+    -- Rule 2: Validate parent-child type relationships
+    -- Valid: season(3)->show(2), episode(4)->season(3), episode(4)->episode(4), any->collection(18)
+    IF parent_type IS NOT NULL AND parent_type != 18 THEN  -- 18 = collection, always allowed as parent
+        CASE NEW.metadata_type
+            WHEN 2 THEN  -- show: should NOT have a parent (except collection)
+                RAISE WARNING 'Prevented: Show % cannot have non-collection parent (type %)', NEW.id, parent_type;
+                NEW.parent_id := NULL;
+                RETURN NEW;
+            WHEN 3 THEN  -- season: parent must be show(2)
+                IF parent_type != 2 THEN
+                    RAISE WARNING 'Prevented: Season % must have show as parent, not type %', NEW.id, parent_type;
+                    NEW.parent_id := NULL;
+                    RETURN NEW;
+                END IF;
+            WHEN 4 THEN  -- episode: parent must be season(3) or episode(4)
+                IF parent_type NOT IN (3, 4) THEN
+                    RAISE WARNING 'Prevented: Episode % must have season/episode as parent, not type %', NEW.id, parent_type;
+                    NEW.parent_id := NULL;
+                    RETURN NEW;
+                END IF;
+            ELSE
+                NULL;  -- Other types: no restriction
+        END CASE;
+    END IF;
+    
+    -- Rule 3: Prevent direct circular reference (A -> B -> A)
+    IF EXISTS (SELECT 1 FROM metadata_items WHERE id = NEW.parent_id AND parent_id = NEW.id) THEN
+        RAISE WARNING 'Prevented circular reference: % <-> %', NEW.id, NEW.parent_id;
+        NEW.parent_id := NULL;
+        RETURN NEW;
+    END IF;
+    
+    -- Rule 4: Prevent deeper circular references
+    current_id := NEW.parent_id;
+    WHILE current_id IS NOT NULL AND depth < max_depth LOOP
+        IF current_id = NEW.id THEN
+            RAISE WARNING 'Prevented circular chain at depth %: id=%', depth, NEW.id;
+            NEW.parent_id := NULL;
+            RETURN NEW;
+        END IF;
+        SELECT parent_id INTO current_id FROM metadata_items WHERE id = current_id;
+        depth := depth + 1;
+    END LOOP;
+    
+    RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: reject_empty_statistics(); Type: FUNCTION; Schema: plex; Owner: -
 --
 
@@ -139,6 +538,41 @@ BEGIN
     RETURN NULL;
   END IF;
   RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: run_statistics_cleanup(integer); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.run_statistics_cleanup(p_days_to_keep integer DEFAULT NULL::integer) RETURNS TABLE(table_name text, rows_deleted bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    cutoff_time BIGINT;
+    ctrl maintenance_control%ROWTYPE;
+    del_count BIGINT;
+BEGIN
+    FOR ctrl IN SELECT * FROM maintenance_control LOOP
+        -- Use parameter if provided, otherwise use table's retention setting
+        cutoff_time := EXTRACT(EPOCH FROM (NOW() - (COALESCE(p_days_to_keep, ctrl.retention_days) || ' days')::INTERVAL))::BIGINT;
+        
+        IF ctrl.table_name = 'statistics_bandwidth' THEN
+            DELETE FROM statistics_bandwidth WHERE at < cutoff_time;
+        ELSIF ctrl.table_name = 'statistics_resources' THEN
+            DELETE FROM statistics_resources WHERE at < cutoff_time;
+        END IF;
+        
+        GET DIAGNOSTICS del_count = ROW_COUNT;
+        
+        -- Update last cleanup time
+        UPDATE maintenance_control SET last_cleanup = NOW() WHERE maintenance_control.table_name = ctrl.table_name;
+        
+        table_name := ctrl.table_name;
+        rows_deleted := del_count;
+        RETURN NEXT;
+    END LOOP;
 END;
 $$;
 
@@ -193,6 +627,17 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+
+--
+-- Name: text_equals_integer(text, integer); Type: FUNCTION; Schema: plex; Owner: -
+--
+
+CREATE FUNCTION plex.text_equals_integer(text, integer) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $_$
+    SELECT $1::integer = $2;
+$_$;
 
 
 --
@@ -251,136 +696,27 @@ CREATE AGGREGATE plex.group_concat(text) (
 
 
 --
--- Name: fix_orphan_season_on_episode_insert(); Type: FUNCTION; Schema: plex; Owner: -
--- Description: When an episode is inserted, check if its parent season is an orphan
---              and fix it by finding the matching show based on file path.
+-- Name: =; Type: OPERATOR; Schema: plex; Owner: -
 --
 
-CREATE FUNCTION plex.fix_orphan_season_on_episode_insert() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    season_parent_id INTEGER;
-    episode_file TEXT;
-    show_name TEXT;
-    found_show_id INTEGER;
-    season_library_id INTEGER;
-BEGIN
-    IF NEW.metadata_type != 4 OR NEW.parent_id IS NULL THEN
-        RETURN NEW;
-    END IF;
-    
-    SELECT parent_id, library_section_id 
-    INTO season_parent_id, season_library_id
-    FROM plex.metadata_items 
-    WHERE id = NEW.parent_id AND metadata_type = 3;
-    
-    IF season_parent_id IS NOT NULL THEN
-        RETURN NEW;
-    END IF;
-    
-    SELECT mp.file INTO episode_file
-    FROM plex.media_items med
-    JOIN plex.media_parts mp ON mp.media_item_id = med.id
-    WHERE med.metadata_item_id = NEW.id
-    LIMIT 1;
-    
-    IF episode_file IS NULL THEN
-        RETURN NEW;
-    END IF;
-    
-    show_name := TRIM((regexp_match(episode_file, '/([^/]+)\s*\(\d{4}\)'))[1]);
-    
-    IF show_name IS NULL THEN
-        RETURN NEW;
-    END IF;
-    
-    SELECT id INTO found_show_id
-    FROM plex.metadata_items
-    WHERE metadata_type = 2
-      AND library_section_id = season_library_id
-      AND title ILIKE show_name
-    LIMIT 1;
-    
-    IF found_show_id IS NOT NULL THEN
-        UPDATE plex.metadata_items 
-        SET parent_id = found_show_id 
-        WHERE id = NEW.parent_id AND parent_id IS NULL;
-        
-        RAISE NOTICE 'Fixed orphan season % -> show %', NEW.parent_id, found_show_id;
-    END IF;
-    
-    RETURN NEW;
-END;
-$$;
+CREATE OPERATOR plex.= (
+    FUNCTION = plex.integer_equals_text,
+    LEFTARG = integer,
+    RIGHTARG = text,
+    COMMUTATOR = OPERATOR(plex.=)
+);
 
 
 --
--- Name: fix_orphan_season_on_media_part_insert(); Type: FUNCTION; Schema: plex; Owner: -
--- Description: When a media_part (file) is inserted, check if the episode's parent season
---              is an orphan and fix it by finding the matching show based on file path.
+-- Name: =; Type: OPERATOR; Schema: plex; Owner: -
 --
 
-CREATE FUNCTION plex.fix_orphan_season_on_media_part_insert() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    episode_id INTEGER;
-    season_id INTEGER;
-    season_parent_id INTEGER;
-    season_library_id INTEGER;
-    show_name TEXT;
-    found_show_id INTEGER;
-BEGIN
-    SELECT med.metadata_item_id INTO episode_id
-    FROM plex.media_items med
-    WHERE med.id = NEW.media_item_id;
-    
-    IF episode_id IS NULL THEN
-        RETURN NEW;
-    END IF;
-    
-    SELECT mi.parent_id INTO season_id
-    FROM plex.metadata_items mi
-    WHERE mi.id = episode_id AND mi.metadata_type = 4;
-    
-    IF season_id IS NULL THEN
-        RETURN NEW;
-    END IF;
-    
-    SELECT parent_id, library_section_id 
-    INTO season_parent_id, season_library_id
-    FROM plex.metadata_items 
-    WHERE id = season_id AND metadata_type = 3;
-    
-    IF season_parent_id IS NOT NULL THEN
-        RETURN NEW;
-    END IF;
-    
-    show_name := TRIM((regexp_match(NEW.file, '/([^/]+)\s*\(\d{4}\)'))[1]);
-    
-    IF show_name IS NULL THEN
-        RETURN NEW;
-    END IF;
-    
-    SELECT id INTO found_show_id
-    FROM plex.metadata_items
-    WHERE metadata_type = 2
-      AND library_section_id = season_library_id
-      AND title ILIKE show_name
-    LIMIT 1;
-    
-    IF found_show_id IS NOT NULL THEN
-        UPDATE plex.metadata_items 
-        SET parent_id = found_show_id 
-        WHERE id = season_id AND parent_id IS NULL;
-        
-        RAISE NOTICE 'Fixed orphan season % -> show %', season_id, found_show_id;
-    END IF;
-    
-    RETURN NEW;
-END;
-$$;
+CREATE OPERATOR plex.= (
+    FUNCTION = plex.text_equals_integer,
+    LEFTARG = text,
+    RIGHTARG = integer,
+    COMMUTATOR = OPERATOR(plex.=)
+);
 
 
 SET default_tablespace = '';
@@ -495,19 +831,6 @@ CREATE SEQUENCE plex.blobs_id_seq
 ALTER SEQUENCE plex.blobs_id_seq OWNED BY plex.blobs.id;
 
 
---
--- Name: byteas; Type: TABLE; Schema: plex; Owner: -
---
-
-CREATE TABLE plex.byteas (
-    id integer,
-    bytea bytea,
-    linked_type character varying(255),
-    linked_id integer,
-    linked_guid character varying(255),
-    created_at bigint,
-    bytea_type integer
-);
 
 
 --
@@ -1117,6 +1440,18 @@ CREATE TABLE plex.locations_parent (
 CREATE TABLE plex.locations_rowid (
     rowid integer,
     nodeno integer
+);
+
+
+--
+-- Name: maintenance_control; Type: TABLE; Schema: plex; Owner: -
+--
+
+CREATE TABLE plex.maintenance_control (
+    table_name text NOT NULL,
+    last_cleanup timestamp without time zone DEFAULT '1970-01-01 00:00:00'::timestamp without time zone,
+    cleanup_interval interval DEFAULT '01:00:00'::interval,
+    retention_days integer DEFAULT 7
 );
 
 
@@ -1834,14 +2169,6 @@ CREATE SEQUENCE plex.metadata_items_id_seq
 ALTER SEQUENCE plex.metadata_items_id_seq OWNED BY plex.metadata_items.id;
 
 
---
--- Name: metadata_items_parent_backup; Type: TABLE; Schema: plex; Owner: -
---
-
-CREATE TABLE plex.metadata_items_parent_backup (
-    id integer,
-    parent_id integer
-);
 
 
 --
@@ -2194,6 +2521,8 @@ CREATE SEQUENCE plex.section_locations_id_seq
 ALTER SEQUENCE plex.section_locations_id_seq OWNED BY plex.section_locations.id;
 
 
+
+
 --
 -- Name: statistics_bandwidth; Type: TABLE; Schema: plex; Owner: -
 --
@@ -2358,6 +2687,8 @@ CREATE SEQUENCE plex.tags_id_seq
 --
 
 ALTER SEQUENCE plex.tags_id_seq OWNED BY plex.tags.id;
+
+
 
 
 --
@@ -2922,6 +3253,14 @@ ALTER TABLE ONLY plex.locations
 
 
 --
+-- Name: maintenance_control maintenance_control_pkey; Type: CONSTRAINT; Schema: plex; Owner: -
+--
+
+ALTER TABLE ONLY plex.maintenance_control
+    ADD CONSTRAINT maintenance_control_pkey PRIMARY KEY (table_name);
+
+
+--
 -- Name: media_grabs media_grabs_pkey; Type: CONSTRAINT; Schema: plex; Owner: -
 --
 
@@ -3178,19 +3517,27 @@ ALTER TABLE ONLY plex.section_locations
 
 
 --
+-- Name: sqlite_column_types sqlite_column_types_pkey; Type: CONSTRAINT; Schema: plex; Owner: -
+--
+
+ALTER TABLE ONLY plex.sqlite_column_types
+    ADD CONSTRAINT sqlite_column_types_pkey PRIMARY KEY (table_name, column_name);
+
+
+--
+-- Name: statistics_bandwidth statistics_bandwidth_account_id_device_id_timespan_at_lan_key; Type: CONSTRAINT; Schema: plex; Owner: -
+--
+
+ALTER TABLE ONLY plex.statistics_bandwidth
+    ADD CONSTRAINT statistics_bandwidth_account_id_device_id_timespan_at_lan_key UNIQUE (account_id, device_id, timespan, at, lan);
+
+
+--
 -- Name: statistics_bandwidth statistics_bandwidth_pkey; Type: CONSTRAINT; Schema: plex; Owner: -
 --
 
 ALTER TABLE ONLY plex.statistics_bandwidth
     ADD CONSTRAINT statistics_bandwidth_pkey PRIMARY KEY (id);
-
-
---
--- Name: statistics_bandwidth statistics_bandwidth_unique; Type: CONSTRAINT; Schema: plex; Owner: -
---
-
-ALTER TABLE ONLY plex.statistics_bandwidth
-    ADD CONSTRAINT statistics_bandwidth_unique UNIQUE (account_id, device_id, timespan, at, lan);
 
 
 --
@@ -3223,6 +3570,14 @@ ALTER TABLE ONLY plex.taggings
 
 ALTER TABLE ONLY plex.tags
     ADD CONSTRAINT tags_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: test test_pkey; Type: CONSTRAINT; Schema: plex; Owner: -
+--
+
+ALTER TABLE ONLY plex.test
+    ADD CONSTRAINT test_pkey PRIMARY KEY (id);
 
 
 --
@@ -3529,6 +3884,13 @@ CREATE INDEX idx_metadata_items_added_at ON plex.metadata_items USING btree (add
 
 
 --
+-- Name: idx_metadata_items_changed_at; Type: INDEX; Schema: plex; Owner: -
+--
+
+CREATE INDEX idx_metadata_items_changed_at ON plex.metadata_items USING btree (changed_at DESC);
+
+
+--
 -- Name: idx_metadata_items_fts; Type: INDEX; Schema: plex; Owner: -
 --
 
@@ -3547,6 +3909,13 @@ CREATE INDEX idx_metadata_items_guid ON plex.metadata_items USING btree (guid);
 --
 
 CREATE INDEX idx_metadata_items_hash ON plex.metadata_items USING btree (hash);
+
+
+--
+-- Name: idx_metadata_items_id_section; Type: INDEX; Schema: plex; Owner: -
+--
+
+CREATE INDEX idx_metadata_items_id_section ON plex.metadata_items USING btree (id, library_section_id);
 
 
 --
@@ -3732,20 +4101,6 @@ CREATE INDEX idx_section_locations_library_section_id ON plex.section_locations 
 
 
 --
--- Name: idx_statistics_bandwidth_account_id; Type: INDEX; Schema: plex; Owner: -
---
-
-CREATE INDEX idx_statistics_bandwidth_account_id ON plex.statistics_bandwidth USING btree (account_id);
-
-
---
--- Name: idx_statistics_bandwidth_at; Type: INDEX; Schema: plex; Owner: -
---
-
-CREATE INDEX idx_statistics_bandwidth_at ON plex.statistics_bandwidth USING btree (at);
-
-
---
 -- Name: idx_statistics_media_at; Type: INDEX; Schema: plex; Owner: -
 --
 
@@ -3795,6 +4150,13 @@ CREATE INDEX idx_taggings_tag_id ON plex.taggings USING btree (tag_id);
 
 
 --
+-- Name: idx_taggings_tag_metadata; Type: INDEX; Schema: plex; Owner: -
+--
+
+CREATE INDEX idx_taggings_tag_metadata ON plex.taggings USING btree (tag_id, metadata_item_id);
+
+
+--
 -- Name: idx_tags_fts; Type: INDEX; Schema: plex; Owner: -
 --
 
@@ -3830,6 +4192,13 @@ CREATE INDEX idx_tags_tag_type ON plex.tags USING btree (tag_type);
 
 
 --
+-- Name: metadata_items check_cross_section_parent; Type: TRIGGER; Schema: plex; Owner: -
+--
+
+CREATE TRIGGER check_cross_section_parent BEFORE INSERT OR UPDATE OF parent_id, library_section_id ON plex.metadata_items FOR EACH ROW WHEN ((new.parent_id IS NOT NULL)) EXECUTE FUNCTION plex.prevent_cross_section_parent();
+
+
+--
 -- Name: metadata_items metadata_items_search_update; Type: TRIGGER; Schema: plex; Owner: -
 --
 
@@ -3841,6 +4210,13 @@ CREATE TRIGGER metadata_items_search_update BEFORE INSERT OR UPDATE ON plex.meta
 --
 
 CREATE TRIGGER metadata_items_set_available_at BEFORE INSERT ON plex.metadata_items FOR EACH ROW EXECUTE FUNCTION plex.set_available_at();
+
+
+--
+-- Name: metadata_items prevent_self_ref_parent; Type: TRIGGER; Schema: plex; Owner: -
+--
+
+CREATE TRIGGER prevent_self_ref_parent BEFORE INSERT OR UPDATE ON plex.metadata_items FOR EACH ROW EXECUTE FUNCTION plex.prevent_self_referential_parent();
 
 
 --
@@ -3858,143 +4234,14 @@ CREATE TRIGGER tags_search_update BEFORE INSERT OR UPDATE ON plex.tags FOR EACH 
 
 
 --
--- Name: prevent_self_referential_parent(); Type: FUNCTION; Schema: plex; Owner: -
--- Prevents circular references and invalid parent-child relationships in metadata_items
--- Rules enforced:
---   1. Item cannot be its own parent (parent_id = id)
---   2. Shows (type 2) cannot have non-collection parents
---   3. Seasons (type 3) must have show (type 2) as parent
---   4. Episodes (type 4) must have season (type 3) or episode (type 4) as parent
---   5. Direct circular references (A -> B -> A) are blocked
---   6. Deep circular references (A -> B -> ... -> A) are blocked up to depth 20
--- This prevents infinite recursion crashes in Plex (continueWatching, onDeck endpoints)
+-- Name: statistics_resources trg_clean_statistics_resources; Type: TRIGGER; Schema: plex; Owner: -
 --
 
-CREATE OR REPLACE FUNCTION plex.prevent_self_referential_parent() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    current_id INTEGER;
-    parent_type INTEGER;
-    depth INTEGER := 0;
-    max_depth INTEGER := 20;
-BEGIN
-    -- Skip if no parent_id
-    IF NEW.parent_id IS NULL THEN
-        RETURN NEW;
-    END IF;
-
-    -- Rule 1: Item cannot be its own parent
-    IF NEW.parent_id = NEW.id THEN
-        NEW.parent_id := NULL;
-        RAISE WARNING 'Prevented self-referential parent for item %', NEW.id;
-        RETURN NEW;
-    END IF;
-    
-    -- Get parent's metadata_type
-    SELECT metadata_type INTO parent_type FROM plex.metadata_items WHERE id = NEW.parent_id;
-    
-    -- Rule 2-4: Validate parent-child type relationships
-    -- Valid: season(3)->show(2), episode(4)->season(3), episode(4)->episode(4), any->collection(18)
-    IF parent_type IS NOT NULL AND parent_type != 18 THEN  -- 18 = collection, always allowed
-        CASE NEW.metadata_type
-            WHEN 2 THEN  -- show: should NOT have a parent (except collection)
-                RAISE WARNING 'Prevented: Show % cannot have non-collection parent (type %)', NEW.id, parent_type;
-                NEW.parent_id := NULL;
-                RETURN NEW;
-            WHEN 3 THEN  -- season: parent must be show(2)
-                IF parent_type != 2 THEN
-                    RAISE WARNING 'Prevented: Season % must have show as parent, not type %', NEW.id, parent_type;
-                    NEW.parent_id := NULL;
-                    RETURN NEW;
-                END IF;
-            WHEN 4 THEN  -- episode: parent must be season(3) or episode(4)
-                IF parent_type NOT IN (3, 4) THEN
-                    RAISE WARNING 'Prevented: Episode % must have season/episode as parent, not type %', NEW.id, parent_type;
-                    NEW.parent_id := NULL;
-                    RETURN NEW;
-                END IF;
-            ELSE
-                NULL;  -- Other types (movies, etc): no restriction
-        END CASE;
-    END IF;
-    
-    -- Rule 5: Prevent direct circular reference (A -> B -> A)
-    IF EXISTS (SELECT 1 FROM plex.metadata_items WHERE id = NEW.parent_id AND parent_id = NEW.id) THEN
-        RAISE WARNING 'Prevented circular reference: % <-> %', NEW.id, NEW.parent_id;
-        NEW.parent_id := NULL;
-        RETURN NEW;
-    END IF;
-    
-    -- Rule 6: Prevent deeper circular references (walk up parent chain)
-    current_id := NEW.parent_id;
-    WHILE current_id IS NOT NULL AND depth < max_depth LOOP
-        IF current_id = NEW.id THEN
-            RAISE WARNING 'Prevented circular chain at depth %: id=%', depth, NEW.id;
-            NEW.parent_id := NULL;
-            RETURN NEW;
-        END IF;
-        SELECT parent_id INTO current_id FROM plex.metadata_items WHERE id = current_id;
-        depth := depth + 1;
-    END LOOP;
-    
-    RETURN NEW;
-END;
-$$;
-
-
---
--- Name: metadata_items prevent_self_ref_parent; Type: TRIGGER; Schema: plex; Owner: -
---
-
-CREATE TRIGGER prevent_self_ref_parent BEFORE INSERT OR UPDATE ON plex.metadata_items FOR EACH ROW EXECUTE FUNCTION plex.prevent_self_referential_parent();
-
-
---
--- Name: prevent_cross_section_parent(); Type: FUNCTION; Schema: plex; Owner: -
--- Prevents metadata_items from having parents in different library sections
---
-
-CREATE OR REPLACE FUNCTION plex.prevent_cross_section_parent() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    parent_section_id INTEGER;
-BEGIN
-    IF NEW.parent_id IS NULL THEN
-        RETURN NEW;
-    END IF;
-
-    SELECT library_section_id INTO parent_section_id
-    FROM plex.metadata_items
-    WHERE id = NEW.parent_id;
-
-    IF parent_section_id IS NULL THEN
-        RETURN NEW;
-    END IF;
-
-    IF NEW.library_section_id != parent_section_id THEN
-        RAISE EXCEPTION 'Cross-section parent link prevented: child section % cannot have parent in section %',
-            NEW.library_section_id, parent_section_id
-            USING HINT = 'Parent and child must be in the same library section',
-                  ERRCODE = '23514';
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
-
---
--- Name: metadata_items check_cross_section_parent; Type: TRIGGER; Schema: plex; Owner: -
---
-
-CREATE TRIGGER check_cross_section_parent BEFORE INSERT OR UPDATE OF parent_id, library_section_id ON plex.metadata_items FOR EACH ROW WHEN (NEW.parent_id IS NOT NULL) EXECUTE FUNCTION plex.prevent_cross_section_parent();
+CREATE TRIGGER trg_clean_statistics_resources AFTER INSERT ON plex.statistics_resources FOR EACH STATEMENT EXECUTE FUNCTION plex.maybe_cleanup_statistics();
 
 
 --
 -- Name: metadata_items trg_fix_orphan_season; Type: TRIGGER; Schema: plex; Owner: -
--- Description: Fix orphan seasons when episodes are inserted
 --
 
 CREATE TRIGGER trg_fix_orphan_season AFTER INSERT ON plex.metadata_items FOR EACH ROW EXECUTE FUNCTION plex.fix_orphan_season_on_episode_insert();
@@ -4002,7 +4249,6 @@ CREATE TRIGGER trg_fix_orphan_season AFTER INSERT ON plex.metadata_items FOR EAC
 
 --
 -- Name: media_parts trg_fix_orphan_season_media; Type: TRIGGER; Schema: plex; Owner: -
--- Description: Fix orphan seasons when media files are inserted
 --
 
 CREATE TRIGGER trg_fix_orphan_season_media AFTER INSERT ON plex.media_parts FOR EACH ROW EXECUTE FUNCTION plex.fix_orphan_season_on_media_part_insert();
@@ -4012,34 +4258,10 @@ CREATE TRIGGER trg_fix_orphan_season_media AFTER INSERT ON plex.media_parts FOR 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict prQ1zinOfl7cVlT1T5opKqaR8ST4uowaqTTlABa8Q4HC2Bxa22yxTWQdRFvSMTD
+\unrestrict k1FTTexA8Xe4WPWhJLvkzFfK77e8SGscLqfdbjfaYwEAOAK1wzzj90sahsatJMU
 
 
 -- schema_migrations data
---
--- PostgreSQL database dump
---
-
-\restrict RgMZNQiGswc5GaeFy9akDnvWbouqV1tBBvr5dZBigwjZf307CZedb9Jz1Jq2OEo
-
--- Dumped from database version 15.15 (Homebrew)
--- Dumped by pg_dump version 15.15 (Homebrew)
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
-
---
--- Data for Name: schema_migrations; Type: TABLE DATA; Schema: plex; Owner: -
---
-
 COPY plex.schema_migrations (version, rollback_sql, optimize_on_rollback, min_version) FROM stdin;
 pg_adapter_1.0.0	\N	\N	\N
 20090909023322	\N	\N	\N
@@ -4487,11 +4709,3 @@ pg_adapter_1.0.0	\N	\N	\N
 202507011200	\N	\N	\N
 202507311200	\N	\N	\N
 \.
-
-
---
--- PostgreSQL database dump complete
---
-
-\unrestrict RgMZNQiGswc5GaeFy9akDnvWbouqV1tBBvr5dZBigwjZf307CZedb9Jz1Jq2OEo
-

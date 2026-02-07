@@ -68,26 +68,25 @@ SQLite is great for most Plex installations, but has one major limitation: **dat
 
 Real-world test: **Plex + Kometa + PMM + 4 concurrent streams** (7 separate processes, 15 seconds):
 
-| Metric | SQLite | PostgreSQL (TCP) | PostgreSQL (Socket) |
-|--------|--------|------------------|---------------------|
-| Total Writes | 727,330 | 25,851 | 27,543 |
-| **Write Errors** | **592,664 (81%)** | **0** | **0** |
-| Total Reads | 5,173 | 1,115 | 1,121 |
-| Read Errors | 0 | 0 | 0 |
+| Metric | SQLite | PostgreSQL (TCP) |
+|--------|--------|------------------|
+| Total Writes | 1,698,690 | 26,110 |
+| **Write Errors** | **8,019,177 (82%)** | **0** |
+| Total Reads | 5,014 | 1,125 |
+| Read Errors | 0 | 0 |
 
 **What this means:**
-- SQLite: 81% of writes fail due to database locking
-- SQLite: ~2.4 million errors per minute under load
+- SQLite: 82% of writes fail due to database locking
+- SQLite: ~32 million errors per minute under load
 - PostgreSQL: Zero errors, everything works simultaneously
-- Unix socket: ~6% faster than TCP (negligible for most setups)
 
 ### Query Latency Comparison
 
 | Query Type | SQLite | PostgreSQL (Socket) | Overhead |
 |------------|--------|---------------------|----------|
-| SELECT (PK lookup) | 3.9 µs | 18.2 µs | 4.6x |
-| INSERT (batched) | 0.7 µs | 15.5 µs | 22x |
-| Range Query | 22.0 µs | 45.2 µs | 2.1x |
+| SELECT (PK lookup) | 3.5 µs | 16.5 µs | 4.8x |
+| INSERT (batched) | 0.6 µs | 14.3 µs | 23.8x |
+| Range Query | 28.2 µs | 41.4 µs | 1.5x |
 
 PostgreSQL is slower per-query, but **never locks**. For Plex + rclone/Real-Debrid, smooth playback matters more than raw speed.
 
@@ -95,11 +94,11 @@ PostgreSQL is slower per-query, but **never locks**. For Plex + rclone/Real-Debr
 
 | Component | Latency | Throughput |
 |-----------|---------|------------|
-| SQL Translation (uncached) | 17.5 µs | 57K/sec |
-| **SQL Translation (cached)** | **0.12 µs** | **8.5M/sec** |
-| Cache Lookup | 22.6 ns | 354M/sec |
+| SQL Translation (uncached) | 0.28 µs | 3.6M/sec |
+| **SQL Translation (cached)** | **0.11 µs** | **9.0M/sec** |
+| Cache Lookup | 1.2 ns | 815M/sec |
 
-The thread-local translation cache provides **145x speedup** for repeated queries. Shim overhead is **<1% of total query time**.
+The thread-local translation cache provides **2.5x speedup** for repeated queries. Shim overhead is **<1% of total query time**.
 
 ### Run Benchmarks
 
