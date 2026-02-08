@@ -5,7 +5,7 @@
 
 **Run Plex Media Server with PostgreSQL instead of SQLite.**
 
-A shim library that intercepts Plex's SQLite calls and redirects them to PostgreSQL. Zero Plex modifications required.
+A small shim library that catches Plex SQLite calls and sends them to PostgreSQL. You do not need to change Plex source code.
 
 ## 🎉 Latest Release: v0.9.16
 
@@ -64,16 +64,16 @@ See detailed installation instructions below for each platform.
 
 ## Why PostgreSQL?
 
-SQLite is great for most Plex installations, but has one major limitation: **database locking**.
+SQLite works well for many Plex setups, but it can lock the full database during writes.
 
-- **No more locking** - SQLite locks the entire database during writes. Library scans block playback. Concurrent scans queue up. With PostgreSQL, everything runs simultaneously - scan your libraries while streaming without interruption.
-- **Remote storage** - Better I/O patterns for rclone, Real-Debrid, or cloud storage setups.
-- **Large libraries** - PostgreSQL's query optimizer handles 10K+ movies and 50K+ episodes efficiently.
-- **Standard tooling** - pg_dump for backups, replication, any PostgreSQL client for debugging.
+- **Fewer locks:** scans and playback can run together more smoothly.
+- **Better for remote media:** useful for rclone and similar cloud setups.
+- **Better at scale:** handles large libraries more easily.
+- **Better tools:** backups and checks are easier with standard PostgreSQL tools.
 
 ## Benchmarks
 
-Under concurrent load (Plex + Kometa + PMM + 4 streams), **82% of SQLite writes fail**. PostgreSQL: **zero errors**.
+In one stress test (Plex + Kometa + PMM + 4 streams), **82% of SQLite writes failed**. PostgreSQL had **zero errors**.
 
 | Metric | SQLite | PostgreSQL |
 |--------|--------|------------|
@@ -90,7 +90,7 @@ Full results and how to run them: **[wiki/Benchmarks](https://github.com/cgnl/pl
 ./scripts/doctor.sh                  # Check and fix schema + data
 ```
 
-**doctor.sh** checks your database for missing triggers, functions, and tables that may have been added since your initial migration, and fixes them automatically. It also detects and repairs bad data (self-referential parents, cross-section parents, orphan seasons). Data changes require confirmation unless you pass `--fix`.
+`doctor.sh` checks for missing tables, functions, and triggers, then fixes them. It also finds common data issues (self-parent rows, cross-section parents, orphan seasons). Data fixes ask for confirmation unless you use `--fix`.
 
 ```
 $ ./scripts/doctor.sh
@@ -114,7 +114,7 @@ Flags: `--check` (only report, don't fix anything), `--fix` (fix everything with
 
 ## Quick Start (Docker)
 
-The easiest way to run Plex with PostgreSQL - works on **all platforms** (Linux, macOS, Windows).
+This is the easiest setup. It works on **Linux, macOS, and Windows**.
 
 ### Fresh Installation (No Existing Plex Database)
 
@@ -133,7 +133,7 @@ docker-compose logs -f plex
 1. Open http://localhost:8080/web
 2. Claim your server with Plex account
 3. Add libraries via web interface
-4. Done! Your libraries are stored in PostgreSQL
+4. Done. Your library data now lives in PostgreSQL.
 
 **What happens:**
 - ✅ PostgreSQL schema auto-created (empty)
@@ -144,7 +144,7 @@ docker-compose logs -f plex
 
 ### Migration from Existing SQLite Database
 
-To migrate your existing Plex library to PostgreSQL:
+If you already have a Plex library in SQLite, do this:
 
 1. **Edit `docker-compose.yml`**, uncomment and update the source database path:
    ```yaml
@@ -170,14 +170,13 @@ To migrate your existing Plex library to PostgreSQL:
    docker-compose logs -f plex | grep -E "migration|Migration"
    ```
 
-**Migration performs:**
-- ✅ Automatic detection of SQLite database
-- ✅ Full data migration (all tables, metadata, posters, etc.)
-- ✅ **NEW in v0.9.8:** blobs.db migration (thumbnails, artwork) via hex encoding
-- ✅ Tested: 34 tables, 89K+ items + 4,344 blobs migrated successfully
-- ✅ Original SQLite database remains unchanged (read-only mount)
-- ✅ Automatic sequence updates
-- ✅ Progress reporting per table
+**Migration includes:**
+- ✅ Detect SQLite database automatically
+- ✅ Move full library data (tables, metadata, posters)
+- ✅ Move `blobs.db` data (thumbnails and artwork)
+- ✅ Keep source SQLite unchanged (read-only mount)
+- ✅ Update PostgreSQL sequences automatically
+- ✅ Show progress per table
 
 ### Configuration
 
@@ -209,224 +208,60 @@ volumes:
 
 ## Quick Start (macOS)
 
-### Option 1: Pre-compiled Binary (Recommended)
-
-**Latest Release:** [v0.9.10](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.10) - Kernel panic fix + SOCI NULL handling
+Use the latest macOS zip and run the wrapper installer.
 
 ```bash
-# Download the shim
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.10/db_interpose_pg.dylib \
-  -o /usr/local/lib/db_interpose_pg.dylib
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.16/plex-postgresql-v0.9.16-macos.zip -o /tmp/plex-pg-macos.zip
+mkdir -p /tmp/plex-pg-macos
+cd /tmp/plex-pg-macos
+unzip /tmp/plex-pg-macos.zip
 
-# Configure Plex environment
-sudo nano /Library/LaunchDaemons/com.plexapp.plexmediaserver.plist
-```
-
-Add environment variables to the plist file:
-```xml
-<key>EnvironmentVariables</key>
-<dict>
-  <key>DYLD_INSERT_LIBRARIES</key>
-  <string>/usr/local/lib/db_interpose_pg.dylib</string>
-  <key>PLEX_PG_HOST</key>
-  <string>localhost</string>
-  <key>PLEX_PG_PORT</key>
-  <string>5432</string>
-  <key>PLEX_PG_DATABASE</key>
-  <string>plex</string>
-  <key>PLEX_PG_USER</key>
-  <string>plex</string>
-  <key>PLEX_PG_PASSWORD</key>
-  <string>your_password</string>
-  <key>PLEX_PG_SCHEMA</key>
-  <string>plex</string>
-</dict>
-```
-
-Restart Plex:
-```bash
-sudo launchctl unload /Library/LaunchDaemons/com.plexapp.plexmediaserver.plist
-sudo launchctl load /Library/LaunchDaemons/com.plexapp.plexmediaserver.plist
-```
-
-**Requirements:**
-- macOS 11+ (Big Sur or later)
-- Apple Silicon (M1/M2/M3/M4)
-- Plex Media Server 1.40+
-- PostgreSQL 12+ server running
-- Plex database already migrated to PostgreSQL
-
-### Option 2: Build from Source
-
-#### 1. Setup PostgreSQL
-
-```bash
-brew install postgresql@15
-brew services start postgresql@15
-
-createuser plex
-createdb -O plex plex
-psql -d plex -c "ALTER USER plex PASSWORD 'plex';"
-psql -U plex -d plex -c "CREATE SCHEMA plex;"
-```
-
-#### 2. Build & Install
-
-```bash
-git clone https://github.com/cgnl/plex-postgresql.git
-cd plex-postgresql
-make clean && make
-
-# Stop Plex, install wrappers
-pkill -x "Plex Media Server" 2>/dev/null
+pkill -f "Plex Media Server" 2>/dev/null || true
 ./scripts/install_wrappers.sh
-```
-
-#### 3. Start Plex
-
-```bash
 open "/Applications/Plex Media Server.app"
 ```
 
-The shim is auto-injected. Check logs: `tail -f /tmp/plex_redirect_pg.log`
-
-### Uninstall
+To uninstall:
 
 ```bash
-pkill -x "Plex Media Server" 2>/dev/null
+pkill -f "Plex Media Server" 2>/dev/null || true
 ./scripts/uninstall_wrappers.sh
 ```
 
 ## Quick Start (Linux Native)
 
-**Recommended for production Linux installations** - better performance than Docker.
-
-### Option 1: Pre-compiled Binary (Recommended)
-
-**Latest Release:** [v0.9.10](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.10) - Kernel panic fix + SOCI NULL handling
-
-**Available architectures:**
-- ✅ x86_64 (Intel/AMD 64-bit)
-- ✅ ARM64 (aarch64, Raspberry Pi 4/5, ARM servers)
-
-#### Step 1: Setup PostgreSQL
+Use the latest Linux zip and install the binary for your CPU.
 
 ```bash
-# Install PostgreSQL
-sudo apt install postgresql-15  # Ubuntu/Debian
-# or: sudo yum install postgresql15-server  # RHEL/CentOS
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.16/plex-postgresql-v0.9.16-linux.zip -o /tmp/plex-pg-linux.zip
+mkdir -p /tmp/plex-pg-linux
+cd /tmp/plex-pg-linux
+unzip /tmp/plex-pg-linux.zip
 
-# Create database and user
-sudo -u postgres createuser plex
-sudo -u postgres createdb -O plex plex
-sudo -u postgres psql -c "ALTER USER plex PASSWORD 'yourpassword';"
-sudo -u postgres psql -d plex -c "CREATE SCHEMA IF NOT EXISTS plex; ALTER SCHEMA plex OWNER TO plex;"
-```
+sudo mkdir -p /usr/local/lib/plex-postgresql
+if [ "$(uname -m)" = "x86_64" ]; then
+  sudo install -m 755 db_interpose_pg-linux-x86_64.so /usr/local/lib/plex-postgresql/db_interpose_pg.so
+else
+  sudo install -m 755 db_interpose_pg-linux-aarch64.so /usr/local/lib/plex-postgresql/db_interpose_pg.so
+fi
 
-#### Step 2: Download and Install Shim
-
-**For x86_64 (Intel/AMD):**
-```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.10/db_interpose_pg_linux_x86_64.so \
-  -o /usr/local/lib/db_interpose_pg.so
-sudo chmod 644 /usr/local/lib/db_interpose_pg.so
-```
-
-**For ARM64 (aarch64):**
-```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.10/db_interpose_pg_linux_arm64.so \
-  -o /usr/local/lib/db_interpose_pg.so
-sudo chmod 644 /usr/local/lib/db_interpose_pg.so
-```
-
-#### Step 3: Configure Plex systemd Service
-
-```bash
-# Create systemd override directory
-sudo mkdir -p /etc/systemd/system/plexmediaserver.service.d
-
-# Create environment configuration
-sudo nano /etc/systemd/system/plexmediaserver.service.d/postgresql.conf
-```
-
-Add the following content:
-```ini
-[Service]
-Environment="LD_PRELOAD=/usr/local/lib/db_interpose_pg.so"
-Environment="PLEX_PG_HOST=localhost"
-Environment="PLEX_PG_PORT=5432"
-Environment="PLEX_PG_DATABASE=plex"
-Environment="PLEX_PG_USER=plex"
-Environment="PLEX_PG_PASSWORD=yourpassword"
-Environment="PLEX_PG_SCHEMA=plex"
-Environment="PLEX_PG_LOG_LEVEL=INFO"
-```
-
-#### Step 4: Restart Plex
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart plexmediaserver
-```
-
-#### Step 5: Verify Installation
-
-```bash
-# Check Plex logs for PostgreSQL connection
-sudo journalctl -u plexmediaserver -n 100 | grep -i postgres
-
-# Expected output:
-# "PostgreSQL connection established to localhost:5432/plex"
-# "PostgreSQL shim initialized (v0.9.10)"
-
-# Verify shim is loaded
-sudo cat /proc/$(pgrep -f "Plex Media Server")/maps | grep db_interpose_pg
-# Should show: /usr/local/lib/db_interpose_pg.so
-```
-
-**Requirements:**
-- Linux x86_64 or ARM64
-- Plex Media Server 1.40+
-- PostgreSQL 12+ server running
-- glibc 2.28+ (Ubuntu 18.04+, Debian 10+, RHEL 8+)
-- Root access (for systemd configuration)
-
-### Option 2: Build from Source
-
-```bash
-# Install dependencies
-sudo apt install build-essential libsqlite3-dev libpq-dev postgresql-15
-
-# Setup PostgreSQL
-sudo -u postgres createuser plex
-sudo -u postgres createdb -O plex plex
-sudo -u postgres psql -c "ALTER USER plex PASSWORD 'plex';"
-
-# Build and install
-git clone https://github.com/cgnl/plex-postgresql.git
-cd plex-postgresql
-make linux
-sudo make install
-
-# Install wrappers (auto-migrates database)
 sudo systemctl stop plexmediaserver
 sudo ./scripts/install_wrappers_linux.sh
-
-# Configure and start
-sudo nano /etc/default/plexmediaserver  # Add PLEX_PG_* variables
 sudo systemctl start plexmediaserver
 ```
 
-### Uninstall
+To uninstall:
 
 ```bash
 sudo systemctl stop plexmediaserver
 sudo ./scripts/uninstall_wrappers_linux.sh
 ```
 
+For full steps (PostgreSQL setup, environment variables, troubleshooting), see `INSTALL.md`.
+
 ## Migration from SQLite
 
-To migrate an existing Plex library to PostgreSQL (includes blobs.db since v0.9.8):
+Use this command to migrate an existing Plex library to PostgreSQL:
 
 ```bash
 # macOS / Linux
@@ -468,11 +303,11 @@ export PLEX_PG_HOST=/tmp  # or /var/run/postgresql on Linux
 export PLEX_PG_HOST=localhost
 ```
 
-The performance difference is minimal - the real benefit of PostgreSQL is zero locking, not connection speed.
+The speed difference is small. The main win is fewer database locks.
 
 ## How It Works
 
-The shim intercepts all `sqlite3_*` calls, translates SQL syntax, and executes on PostgreSQL via libpq. Architecture, SQL translation tables, stack protection details: **[wiki/How It Works](https://github.com/cgnl/plex-postgresql/wiki/How-It-Works)**
+The shim catches `sqlite3_*` calls, rewrites SQLite SQL to PostgreSQL SQL, and runs it through libpq. More technical details are in **[wiki/How It Works](https://github.com/cgnl/plex-postgresql/wiki/How-It-Works)**.
 
 ## Testing
 
