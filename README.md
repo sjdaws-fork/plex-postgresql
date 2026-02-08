@@ -25,15 +25,18 @@ Linux release binaries are built by GitHub Actions on tag push via `.github/work
 
 **macOS:**
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.15/db_interpose_pg.dylib \
-  -o /usr/local/lib/db_interpose_pg.dylib
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.15/plex-postgresql-v0.9.15-macos.zip \
+  -o /tmp/plex-postgresql-macos.zip
+unzip -j /tmp/plex-postgresql-macos.zip db_interpose_pg.dylib -d /usr/local/lib
 # Then configure DYLD_INSERT_LIBRARIES in Plex launchd plist
 ```
 
 **Linux (x86_64):**
 ```bash
-sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.15/db_interpose_pg-linux-x86_64.so \
-  -o /usr/local/lib/db_interpose_pg.so
+sudo curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.15/plex-postgresql-v0.9.15-linux.zip \
+  -o /tmp/plex-postgresql-linux.zip
+sudo unzip -j /tmp/plex-postgresql-linux.zip db_interpose_pg-linux-x86_64.so -d /usr/local/lib
+sudo mv /usr/local/lib/db_interpose_pg-linux-x86_64.so /usr/local/lib/db_interpose_pg.so
 # Then configure LD_PRELOAD in systemd service
 ```
 
