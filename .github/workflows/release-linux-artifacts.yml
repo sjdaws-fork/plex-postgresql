@@ -69,15 +69,17 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  upload-release:
-    name: Upload artifacts to GitHub Release
+  package-linux-zip:
+    name: Package Linux zip bundle
     runs-on: ubuntu-latest
     needs: build
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          path: release-assets
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Determine tag
         id: tag
@@ -89,12 +91,51 @@ jobs:
             echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Download Linux build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Build Linux zip
+        run: |
+          set -eux
+          TAG="${{ steps.tag.outputs.value }}"
+          STAGE="linux-zip"
+          OUT="plex-postgresql-${TAG}-linux.zip"
+
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/scripts"
+
+          cp release-assets/linux-x86_64/db_interpose_pg-linux-x86_64.so "$STAGE/"
+          cp release-assets/linux-aarch64/db_interpose_pg-linux-aarch64.so "$STAGE/"
+          cp release-assets/linux-aarch64/libpq.so.5 "$STAGE/"
+
+          cp README.md CHANGELOG.md INSTALL.md LICENSE "$STAGE/"
+          cp -R scripts/* "$STAGE/scripts/"
+
+          (cd "$STAGE" && zip -r "../$OUT" .)
+
+      - name: Upload packaged zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-zip
+          path: plex-postgresql-*-linux.zip
+          if-no-files-found: error
+
+  upload-release:
+    name: Upload artifacts to GitHub Release
+    runs-on: ubuntu-latest
+    needs: package-linux-zip
+    steps:
+      - name: Download zip artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.value }}
+          tag_name: ${{ needs.package-linux-zip.outputs.tag }}
           files: |
-            release-assets/linux-x86_64/db_interpose_pg-linux-x86_64.so
-            release-assets/linux-aarch64/db_interpose_pg-linux-aarch64.so
-            release-assets/linux-aarch64/libpq.so.5
+            release-assets/linux-release-zip/plex-postgresql-*-linux.zip
           overwrite_files: true

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  scripts:
+    name: Validate shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: |
+          set -eu
+          shopt -s nullglob
+          files=(scripts/*.sh)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No scripts found under scripts/"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            echo "Checking $f"
+            bash -n "$f"
+          done
+
+  linux-build-amd64:
+    name: Build Linux amd64 shim
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build builder rootfs (linux/amd64)
+        run: |
+          set -eux
+          mkdir -p out
+          docker buildx build \
+            --platform linux/amd64 \
+            --target builder \
+            --output type=local,dest=out \
+            .
+
+      - name: Verify build outputs
+        run: |
+          set -eux
+          test -f out/libs/db_interpose_pg.so
+          test -f out/libs/libpq.so.5

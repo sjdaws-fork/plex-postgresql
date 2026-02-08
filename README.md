@@ -17,7 +17,8 @@ A shim library that intercepts Plex's SQLite calls and redirects them to Postgre
 
 [📥 Download v0.9.16](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.16) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.16)
 
-Linux release binaries are built by GitHub Actions on tag push via `.github/workflows/release-linux-artifacts.yml`.
+Linux and macOS release zips are built by GitHub Actions on tag push via `.github/workflows/release-linux-artifacts.yml` and `.github/workflows/release-macos-artifacts.yml`.
+Pull requests and `main` pushes run `.github/workflows/ci.yml` (script validation + Linux amd64 build check).
 
 **Available for:** macOS ARM64 • Linux x86_64 • Linux ARM64 • Docker (multi-arch)
 

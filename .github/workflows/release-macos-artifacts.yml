@@ -1,0 +1,134 @@
+name: Release macOS Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (for example: v0.9.16)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build macOS ${{ matrix.arch }} dylib
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+            target: release-arm64
+            output: db_interpose_pg-arm64.dylib
+          - arch: x86_64
+            runner: macos-13
+            target: release-x86_64
+            output: db_interpose_pg-x86_64.dylib
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install PostgreSQL headers/libs
+        run: |
+          set -eux
+          brew install postgresql@15
+
+      - name: Build ${{ matrix.arch }} dylib
+        run: |
+          set -eux
+          PG_PREFIX="$(brew --prefix postgresql@15)"
+          make "${{ matrix.target }}" \
+            CFLAGS="-Wall -Wextra -O2 -I${PG_PREFIX}/include -Iinclude -Isrc -fvisibility=hidden" \
+            LDFLAGS="-L${PG_PREFIX}/lib -lpq"
+          test -f "${{ matrix.output }}"
+
+      - name: Upload architecture artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: ${{ matrix.output }}
+          if-no-files-found: error
+
+  package-macos-zip:
+    name: Package macOS zip bundle
+    runs-on: macos-14
+    needs: build
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Determine tag
+        id: tag
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download architecture artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Build universal dylib and zip
+        run: |
+          set -eux
+          TAG="${{ steps.tag.outputs.value }}"
+          OUT="plex-postgresql-${TAG}-macos.zip"
+          STAGE="macos-zip"
+
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/scripts"
+
+          cp release-assets/macos-arm64/db_interpose_pg-arm64.dylib "$STAGE/"
+          cp release-assets/macos-x86_64/db_interpose_pg-x86_64.dylib "$STAGE/"
+
+          lipo -create \
+            "$STAGE/db_interpose_pg-arm64.dylib" \
+            "$STAGE/db_interpose_pg-x86_64.dylib" \
+            -output "$STAGE/db_interpose_pg.dylib"
+
+          cp README.md CHANGELOG.md INSTALL.md LICENSE "$STAGE/"
+          cp -R scripts/* "$STAGE/scripts/"
+
+          (cd "$STAGE" && zip -r "../$OUT" .)
+
+      - name: Upload macOS zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-zip
+          path: plex-postgresql-*-macos.zip
+          if-no-files-found: error
+
+  upload-release:
+    name: Upload macOS zip to GitHub Release
+    runs-on: ubuntu-latest
+    needs: package-macos-zip
+    steps:
+      - name: Download zip artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.package-macos-zip.outputs.tag }}
+          files: |
+            release-assets/macos-release-zip/plex-postgresql-*-macos.zip
+          overwrite_files: true
