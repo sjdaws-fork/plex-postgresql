@@ -20,7 +20,7 @@ WORKDIR /build
 RUN curl -L https://ftp.postgresql.org/pub/source/v15.10/postgresql-15.10.tar.gz | tar xz
 RUN cd postgresql-15.10 && \
     # Configure WITHOUT OpenSSL to avoid ENGINE symbol conflicts
-    ./configure --prefix=/usr/local/pgsql \
+    CFLAGS='-O0 -mno-sse4.2' ac_cv_func_getaddrinfo=yes ./configure --prefix=/usr/local/pgsql \
         --without-readline \
         --without-zlib \
         --without-openssl \
@@ -82,22 +82,14 @@ RUN mkdir -p /libs && \
 FROM linuxserver/plex:latest
 
 # Install PostgreSQL client for health checks, sqlite3 for schema fixes, gdb for debugging
-# Also install locales - required for boost::locale in Plex
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     sqlite3 \
     gdb \
-    locales \
-    && rm -rf /var/lib/apt/lists/* \
-    && echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen \
-    && locale-gen en_US.UTF-8
+    && rm -rf /var/lib/apt/lists/*
 
-# Set locale environment variables for boost::locale compatibility
-# CHARSET is required for boost::locale to work correctly (prevents invalid_charset_error)
-ENV LANG=en_US.UTF-8
-ENV LC_ALL=en_US.UTF-8
-ENV LANGUAGE=en_US.UTF-8
-ENV CHARSET=UTF-8
+# NOTE: Do NOT set LANG/LC_ALL/CHARSET here — Plex's bundled musl+boost::locale
+# handles locale internally. Setting these can interfere with exception handling.
 
 RUN mkdir -p /usr/local/lib/plex-postgresql
 
@@ -121,6 +113,7 @@ COPY --from=builder /libs/*.so* /usr/local/lib/plex-postgresql/
 
 COPY schema/plex_schema.sql /usr/local/lib/plex-postgresql/
 COPY schema/sqlite_schema.sql /usr/local/lib/plex-postgresql/
+COPY schema/sqlite_column_types.sql /usr/local/lib/plex-postgresql/
 COPY scripts/migrate_lib.sh /usr/local/lib/plex-postgresql/
 
 # Copy the initialization script for s6-overlay
@@ -138,9 +131,17 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-plex-postgresql && \
     mkdir -p /etc/s6-overlay/s6-rc.d/svc-plex/dependencies.d && \
     touch /etc/s6-overlay/s6-rc.d/svc-plex/dependencies.d/init-plex-postgresql
 
+# Replace CrashUploader with no-op to prevent SIGCHLD crashes
+# When CrashUploader exits, it sends SIGCHLD to Plex. With LD_PRELOAD active,
+# libpq's pqsignal() interferes with Plex's signal handling, causing
+# "Received unexpected async signal 17" crashes.
+RUN mv /usr/lib/plexmediaserver/CrashUploader /usr/lib/plexmediaserver/CrashUploader.real 2>/dev/null || true && \
+    printf '#!/bin/sh\nexit 0\n' > /usr/lib/plexmediaserver/CrashUploader && \
+    chmod +x /usr/lib/plexmediaserver/CrashUploader
+
 # Modify Plex run script at BUILD TIME to inject LD_PRELOAD
 # This must be done at build time because s6-rc compiles services before oneshots run
 # We use a heredoc approach via a temp file since sed multiline is tricky in Dockerfile
-RUN SHIM_INJECT='# PostgreSQL shim injection\nexport LD_LIBRARY_PATH="/usr/local/lib/plex-postgresql:/usr/lib/plexmediaserver/lib:$LD_LIBRARY_PATH"\nexport LD_PRELOAD="/usr/local/lib/plex-postgresql/db_interpose_pg.so"\n# Locale settings for boost::locale\nexport LANG="en_US.UTF-8"\nexport LC_ALL="en_US.UTF-8"\nexport CHARSET="UTF-8"' && \
+RUN SHIM_INJECT='# PostgreSQL shim injection\nexport LD_LIBRARY_PATH="/usr/local/lib/plex-postgresql:/usr/lib/plexmediaserver/lib:$LD_LIBRARY_PATH"\nexport LD_PRELOAD="/usr/local/lib/plex-postgresql/db_interpose_pg.so"' && \
     sed -i "2i\\${SHIM_INJECT}" /etc/s6-overlay/s6-rc.d/svc-plex/run && \
     cat /etc/s6-overlay/s6-rc.d/svc-plex/run

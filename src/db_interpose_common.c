@@ -122,6 +122,7 @@ pthread_mutex_t fake_value_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Initialization flag
 int shim_initialized = 0;
+int shim_passthrough_only = 0;
 
 // Global context tracking for exception debugging
 VISIBLE const char * volatile last_query_being_processed = NULL;

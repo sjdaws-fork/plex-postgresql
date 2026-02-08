@@ -1,0 +1,65 @@
+# docker-compose for plex-postgresql standalone (plexinc/pms-docker)
+#
+# Usage:
+#   docker compose -f docker-compose.standalone.yml up -d
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: plex-postgres
+    environment:
+      POSTGRES_USER: plex
+      POSTGRES_PASSWORD: plex
+      POSTGRES_DB: plex
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_socket:/var/run/postgresql
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=128MB
+      -c unix_socket_directories=/var/run/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plex"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - plex-network
+
+  plex:
+    build:
+      context: .
+      dockerfile: Dockerfile.standalone
+    container_name: plex-postgresql-standalone
+    environment:
+      - TZ=Europe/Amsterdam
+      # PostgreSQL via Unix socket
+      - PLEX_PG_HOST=/var/run/postgresql
+      - PLEX_PG_DATABASE=plex
+      - PLEX_PG_USER=plex
+      - PLEX_PG_PASSWORD=plex
+      - PLEX_PG_SCHEMA=plex
+      - PLEX_PG_POOL_SIZE=50
+      - PLEX_PG_LOG_LEVEL=ERROR
+    volumes:
+      - plex_config:/config
+      - postgres_socket:/var/run/postgresql
+    ports:
+      - "8083:32400"
+      - "8083:32400/udp"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - plex-network
+
+volumes:
+  postgres_data:
+  postgres_socket:
+  plex_config:
+
+networks:
+  plex-network:
+    driver: bridge

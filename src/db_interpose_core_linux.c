@@ -5,6 +5,7 @@
  * - LD_PRELOAD wrapper functions
  * - Linux-specific backtrace/exception handling
  * - __cxa_throw interception
+ * - sigaction() interception (prevents libpq from altering signal handlers)
  * - Constructor/destructor
  *
  * Common code is in db_interpose_common.c
@@ -17,6 +18,37 @@
 #include <signal.h>
 #include <dlfcn.h>
 
+// ============================================================================
+// sigaction() Interception (SIGCHLD guard)
+// ============================================================================
+//
+// Plex crashes with "Received unexpected async signal 17" when child processes
+// exit under LD_PRELOAD. To prevent this, we force SIGCHLD to SIG_IGN in the
+// main Plex Server/Scanner processes. This makes child exit notifications
+// auto-reaped by kernel and avoids Plex's fragile async signal path.
+
+static int (*orig_sigaction)(int, const struct sigaction *, struct sigaction *) = NULL;
+static volatile int force_ignore_sigchld = 0;
+
+int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
+    if (__builtin_expect(!orig_sigaction, 0)) {
+        orig_sigaction = dlsym(RTLD_NEXT, "sigaction");
+        if (!orig_sigaction) return -1;
+    }
+
+    if (force_ignore_sigchld && signum == SIGCHLD && act != NULL) {
+        if (oldact) orig_sigaction(SIGCHLD, NULL, oldact);
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = SIG_IGN;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_NOCLDSTOP;
+        return orig_sigaction(SIGCHLD, &sa, NULL);
+    }
+
+    return orig_sigaction(signum, act, oldact);
+}
+
 // execinfo.h is glibc-specific, not available on musl
 #ifdef __GLIBC__
 #include <execinfo.h>
@@ -28,12 +60,27 @@
 // ============================================================================
 // C++ Exception Interception (Linux via direct override)
 // ============================================================================
+//
+// IMPORTANT: The __cxa_throw override is DISABLED by default on Linux.
+// Even a trivial passthrough override causes Plex to crash on aarch64/musl
+// because the C-compiled wrapper interferes with C++ exception unwinding.
+//
+// To enable at runtime, set PLEX_PG_EXCEPTION_LOG=1 AND rebuild with:
+//   -DENABLE_CXA_THROW_OVERRIDE
+//
+// On macOS, the equivalent functionality uses Objective-C interposing which
+// doesn't have this issue.
 
+#ifdef ENABLE_CXA_THROW_OVERRIDE
 // Original __cxa_throw function pointer
 static void (*orig_cxa_throw)(void*, void*, void(*)(void*)) = NULL;
 
 // Thread-local recursion prevention
 static __thread int in_exception_handler = 0;
+
+// Whether __cxa_throw interception is enabled at runtime
+static int exception_log_enabled = 0;
+#endif
 
 // Thread-local counters and demangle function are in db_interpose_common.c
 
@@ -279,7 +326,22 @@ void platform_print_backtrace(const char *reason, int skip_frames) {
 // __cxa_throw Override (Linux)
 // ============================================================================
 
+#ifdef ENABLE_CXA_THROW_OVERRIDE
+__attribute__((noreturn))
 void __cxa_throw(void *thrown_exception, void *tinfo, void (*dest)(void*)) {
+    // Load original on first call
+    if (__builtin_expect(!orig_cxa_throw, 0)) {
+        orig_cxa_throw = (void (*)(void*, void*, void(*)(void*)))dlsym(RTLD_NEXT, "__cxa_throw");
+    }
+
+    // When exception logging is disabled at runtime, pass through immediately
+    if (__builtin_expect(!exception_log_enabled, 1)) {
+        if (orig_cxa_throw) {
+            orig_cxa_throw(thrown_exception, tinfo, dest);
+        }
+        __builtin_unreachable();
+    }
+
     int should_call_original = 1;
     
     // Use common exception handling logic
@@ -288,12 +350,7 @@ void __cxa_throw(void *thrown_exception, void *tinfo, void (*dest)(void*)) {
         if (orig_cxa_throw) {
             orig_cxa_throw(thrown_exception, tinfo, dest);
         }
-        abort();
-    }
-    
-    // Load original if needed (Linux-specific: via RTLD_NEXT)
-    if (!orig_cxa_throw) {
-        orig_cxa_throw = (void (*)(void*, void*, void(*)(void*)))dlsym(RTLD_NEXT, "__cxa_throw");
+        __builtin_unreachable();
     }
     
     // Call original
@@ -301,8 +358,9 @@ void __cxa_throw(void *thrown_exception, void *tinfo, void (*dest)(void*)) {
         orig_cxa_throw(thrown_exception, tinfo, dest);
     }
 
-    abort();
+    __builtin_unreachable();
 }
+#endif /* ENABLE_CXA_THROW_OVERRIDE */
 
 // Signal handler uses common implementation from db_interpose_common.c
 
@@ -443,18 +501,69 @@ static void shim_init(void) {
     fprintf(stderr, "[SHIM_INIT] Constructor starting (Linux)...\n");
     fflush(stderr);
 
+#ifdef ENABLE_CXA_THROW_OVERRIDE
+    // Check if exception logging is enabled at runtime (only relevant when compiled with override)
+    // Set PLEX_PG_EXCEPTION_LOG=1 to enable diagnostic C++ exception interception
+    {
+        const char *exc_log = getenv(ENV_PG_EXCEPTION_LOG);
+        if (exc_log && (exc_log[0] == '1' || exc_log[0] == 'y' || exc_log[0] == 'Y')) {
+            exception_log_enabled = 1;
+            fprintf(stderr, "[SHIM_INIT] C++ exception logging ENABLED via %s\n", ENV_PG_EXCEPTION_LOG);
+        }
+    }
+#endif
+
+    // On Linux, LD_PRELOAD is inherited by ALL child processes (plugins, CrashUploader, etc.)
+    // Unlike macOS where DYLD_INSERT_LIBRARIES is stripped by Sequoia at every execv.
+    // Only fully initialize the shim for "Plex Media Server" and "Plex Media Scanner".
+    // Other processes (Python plugins, CrashUploader) must be completely skipped —
+    // no fork handlers, no signal handlers, no SQLite loading, nothing.
+    {
+        char proc_name[256] = {0};
+        FILE *cmdline = fopen("/proc/self/cmdline", "r");
+        if (cmdline) {
+            size_t n = fread(proc_name, 1, sizeof(proc_name) - 1, cmdline);
+            fclose(cmdline);
+            const char *base = proc_name;
+            for (size_t i = 0; i < n && proc_name[i]; i++) {
+                if (proc_name[i] == '/') base = &proc_name[i + 1];
+            }
+            if (strstr(base, "Plex Media Server") == NULL &&
+                strstr(base, "Plex Media Scanner") == NULL) {
+                // Non-target process: stay in passthrough mode.
+                // We still must resolve original SQLite symbols so any sqlite3_*
+                // calls from this process (plugins, helpers) continue to work.
+                force_ignore_sigchld = 0;
+                shim_passthrough_only = 1;
+                load_original_functions();
+                shim_initialized = 1;
+                fprintf(stderr, "[SHIM_INIT] Not Plex Server/Scanner ('%s'), skipping entirely (PID %d)\n",
+                        base, getpid());
+                fflush(stderr);
+                return;
+            }
+
+            force_ignore_sigchld = 1;
+        }
+    }
+
     // Detect fork and reset state if needed
     common_check_fork();
 
-    // Install signal handlers (using common implementation)
-    signal(SIGSEGV, common_signal_handler);
-    signal(SIGBUS, common_signal_handler);
-    signal(SIGFPE, common_signal_handler);
-    signal(SIGILL, common_signal_handler);
-
-    // Install fork handlers
-    pthread_atfork(common_atfork_prepare, common_atfork_parent, common_atfork_child);
-    fprintf(stderr, "[SHIM_INIT] Registered pthread_atfork handlers\n");
+    // NOTE: We intentionally do NOT register pthread_atfork on Linux.
+    // On Linux, LD_PRELOAD is inherited by all child processes. When Plex forks
+    // to spawn CrashUploader/plugins, the atfork child handler would run in the
+    // child before exec(). This disrupts Plex's signal handling in the parent,
+    // causing "Received unexpected async signal 17" (SIGCHLD) crashes.
+    //
+    // Instead, we rely on:
+    // 1. Process name check above (skips non-Server/Scanner after exec)
+    // 2. common_check_fork() PID detection (handles same-binary forks)
+    // 3. The constructor re-running after exec() in child processes
+    //
+    // On macOS, DYLD_INSERT_LIBRARIES is stripped at every execv by Sequoia,
+    // so this issue doesn't apply there.
+    fprintf(stderr, "[SHIM_INIT] Fork safety: using PID-based detection (no pthread_atfork)\n");
     fflush(stderr);
 
     // Load original SQLite functions
@@ -473,8 +582,27 @@ static void shim_init(void) {
     fprintf(stderr, "[SHIM_INIT] Logging initialized\n");
     fflush(stderr);
 
-    // Initialize common modules
+    // Initialize common modules (pg_client, statement cache, query cache, etc.)
+    // libpq's PQconnectdb() may call pqsignal() to set SIGPIPE=SIG_IGN, which
+    // is fine — we want SIGPIPE ignored for socket I/O.
     common_shim_init_modules();
+
+    // Keep SIGCHLD ignored in Plex main process to avoid async signal 17 crashes.
+    if (force_ignore_sigchld && orig_sigaction) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = SIG_IGN;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_NOCLDSTOP;
+        orig_sigaction(SIGCHLD, &sa, NULL);
+        fprintf(stderr, "[SHIM_INIT] SIGCHLD forced to SIG_IGN (PID %d)\n", getpid());
+        fflush(stderr);
+    }
+
+    // Save and restore signal state around init to prevent libpq from
+    // interfering with Plex's signal setup.
+    // (libpq only sets SIGPIPE, which Plex also sets to SIG_IGN, so this is
+    // mostly defensive.)
 
     shim_initialized = 1;
 

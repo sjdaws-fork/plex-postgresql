@@ -176,6 +176,7 @@ extern pthread_mutex_t fake_value_mutex;
 
 // Initialization flag
 extern int shim_initialized;
+extern int shim_passthrough_only;
 
 // ============================================================================
 // Core Functions (db_interpose_core.c)

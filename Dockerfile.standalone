@@ -7,17 +7,13 @@
 # musl libc, so the shim and libpq must be built against musl (Alpine)
 # to avoid symbol conflicts (ENGINE_init, __isoc23_strtol, etc.)
 #
+# plexinc/pms-docker uses s6-overlay v2:
+#   - Init scripts: /etc/cont-init.d/ (numbered, run before services)
+#   - Plex service: /etc/services.d/plex/run
+#   - Plex user: plex (not abc like linuxserver)
+#
 # Usage:
-#   docker build -f Dockerfile.standalone -t plex-postgresql .
-#   docker run -d --name plex-postgresql \
-#     -e PLEX_PG_HOST=<your-postgres-host> \
-#     -e PLEX_PG_PORT=5432 \
-#     -e PLEX_PG_DATABASE=plex \
-#     -e PLEX_PG_USER=plex \
-#     -e PLEX_PG_PASSWORD=plex \
-#     -e PLEX_PG_SCHEMA=plex \
-#     -p 32400:32400 \
-#     plex-postgresql
+#   docker compose -f docker-compose.standalone.yml up -d
 
 # ============================================================================
 # Stage 1: Build the shim on Alpine (musl libc - matches Plex's bundled musl)
@@ -31,12 +27,15 @@ RUN apk add --no-cache \
     curl \
     perl
 
+# Verify musl version matches Plex (1.2.2)
+RUN /lib/ld-musl-*.so.1 --version 2>&1 | head -2
+
 WORKDIR /build
 
 # Build PostgreSQL from source WITHOUT OpenSSL to avoid ENGINE_* symbol conflicts
 RUN curl -L https://ftp.postgresql.org/pub/source/v15.10/postgresql-15.10.tar.gz | tar xz
 RUN cd postgresql-15.10 && \
-    ./configure --prefix=/usr/local/pgsql \
+    CFLAGS='-O0 -mno-sse4.2' ac_cv_func_getaddrinfo=yes ./configure --prefix=/usr/local/pgsql \
         --without-readline \
         --without-zlib \
         --without-openssl \
@@ -77,10 +76,19 @@ RUN ARCH=$(uname -m) && \
         -Wl,-rpath,/usr/local/lib/plex-postgresql \
         -Wl,-rpath,/usr/lib/plexmediaserver/lib
 
+# Check dependencies
+RUN echo "=== Shim dependencies ===" && (LD_LIBRARY_PATH=/usr/local/pgsql/lib ldd db_interpose_pg.so || true)
+
+# Build a no-op binary for CrashUploader replacement
+# Must be a compiled binary (not shell script) to avoid LD_PRELOAD interference
+RUN printf '#include <unistd.h>\nint main(void){_exit(0);}\n' > noop.c && \
+    gcc -static -o noop noop.c
+
 # Gather libraries
 RUN mkdir -p /libs && \
     cp db_interpose_pg.so /libs/ && \
     cp /usr/local/pgsql/lib/libpq.so.5* /libs/ && \
+    cp noop /libs/ && \
     ls -la /libs/
 
 # ============================================================================
@@ -90,34 +98,56 @@ FROM plexinc/pms-docker
 
 # Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    locales \
-    && rm -rf /var/lib/apt/lists/* \
-    && echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen \
-    && locale-gen en_US.UTF-8
+    postgresql-client \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set locale for boost::locale compatibility
-ENV LANG=en_US.UTF-8
-ENV LC_ALL=en_US.UTF-8
-ENV LANGUAGE=en_US.UTF-8
-ENV CHARSET=UTF-8
+# NOTE: Do NOT set LANG/LC_ALL/CHARSET here — Plex's bundled musl+boost::locale
+# doesn't support glibc-style locales and will crash with invalid_charset_error.
+# Plex works fine with the default C/POSIX locale.
 
 # Install shim and custom libpq (built without OpenSSL on Alpine/musl)
 RUN mkdir -p /usr/local/lib/plex-postgresql
-COPY --from=builder /libs/*.so* /usr/local/lib/plex-postgresql/
 
 # Create musl symlink (Plex bundles musl as libc.so, our shim expects libc.musl-*.so.1)
 RUN ARCH=$(uname -m) && \
+    echo "Creating musl symlink for architecture: $ARCH" && \
     if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
         MUSL_ARCH="aarch64"; \
-    else \
+    elif [ "$ARCH" = "x86_64" ]; then \
         MUSL_ARCH="x86_64"; \
+    else \
+        MUSL_ARCH="$ARCH"; \
     fi && \
     ln -sf /usr/lib/plexmediaserver/lib/libc.so \
         /usr/local/lib/plex-postgresql/libc.musl-${MUSL_ARCH}.so.1
 
-# Inject shim via LD_PRELOAD
-ENV LD_PRELOAD=/usr/local/lib/plex-postgresql/db_interpose_pg.so
-ENV LD_LIBRARY_PATH=/usr/local/lib/plex-postgresql:/usr/lib/plexmediaserver/lib
+COPY --from=builder /libs/*.so* /usr/local/lib/plex-postgresql/
+
+# Copy schema files
+COPY schema/plex_schema.sql /usr/local/lib/plex-postgresql/
+COPY schema/sqlite_schema.sql /usr/local/lib/plex-postgresql/
+COPY schema/sqlite_column_types.sql /usr/local/lib/plex-postgresql/
+COPY scripts/migrate_lib.sh /usr/local/lib/plex-postgresql/
+
+# Install cont-init.d script (runs BEFORE Plex starts, WITHOUT LD_PRELOAD)
+# Numbered 39 so it runs before 40-plex-first-run
+COPY scripts/standalone-entrypoint.sh /etc/cont-init.d/39-plex-postgresql
+RUN chmod +x /etc/cont-init.d/39-plex-postgresql
+
+# Inject LD_PRELOAD into Plex run script at BUILD TIME
+# This ensures ONLY the Plex process gets the shim, not init scripts or CLI tools
+RUN SHIM_INJECT='# PostgreSQL shim injection\nexport LD_LIBRARY_PATH="/usr/local/lib/plex-postgresql:/usr/lib/plexmediaserver/lib:$LD_LIBRARY_PATH"\nexport LD_PRELOAD="/usr/local/lib/plex-postgresql/db_interpose_pg.so"' && \
+    sed -i "2i\\${SHIM_INJECT}" /etc/services.d/plex/run && \
+    echo "=== Modified Plex run script ===" && \
+    cat /etc/services.d/plex/run
+
+# Replace CrashUploader with a no-op to prevent SIGCHLD crashes.
+# Crash reports aren't useful in Docker anyway.
+# IMPORTANT: Use a compiled binary, NOT a shell script. A shell script
+# would invoke 'sh' which inherits LD_PRELOAD, loads our shim constructor,
+# and causes interference. A simple compiled binary just calls _exit(0).
+COPY --from=builder /libs/noop /usr/lib/plexmediaserver/CrashUploader
 
 # Default PostgreSQL connection settings (override with -e flags)
 ENV PLEX_PG_HOST=postgres
@@ -127,3 +157,10 @@ ENV PLEX_PG_USER=plex
 ENV PLEX_PG_PASSWORD=plex
 ENV PLEX_PG_SCHEMA=plex
 ENV PLEX_PG_POOL_SIZE=50
+ENV PLEX_PG_LOG_LEVEL=ERROR
+
+# NOTE: No custom ENTRYPOINT - we use the original /init from plexinc/pms-docker
+# The init system runs:
+#   1. /etc/cont-init.d/39-plex-postgresql (our PG schema init)
+#   2. /etc/cont-init.d/40-plex-first-run (Plex's own init)
+#   3. /etc/services.d/plex/run (Plex with LD_PRELOAD injected)

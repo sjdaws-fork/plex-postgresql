@@ -1,53 +1,33 @@
 #!/usr/bin/with-contenv bash
-# Docker entrypoint for plex-postgresql
-# Initializes PostgreSQL schema before Plex starts
-# Uses with-contenv to access Docker environment variables in s6-overlay
+# cont-init.d script for plex-postgresql with plexinc/pms-docker
+#
+# Initializes PostgreSQL schema and SQLite databases BEFORE Plex starts.
+# Runs as /etc/cont-init.d/39-plex-postgresql (before 40-plex-first-run).
+#
+# This script runs WITHOUT LD_PRELOAD — the shim is only injected into
+# the Plex run script (/etc/services.d/plex/run) at Docker build time.
+# This means psql, sqlite3, and other CLI tools work normally here.
 
 set -e
 
-# Migration library location (copied by Dockerfile)
-MIGRATE_LIB="/usr/local/lib/plex-postgresql/migrate_lib.sh"
+SHIM_DIR="/usr/local/lib/plex-postgresql"
 
-# Set up variables for migration library
-# Auto-detect source SQLite database from common locations
-detect_sqlite_db() {
-    local locations=(
-        # Explicit mount point
-        "/source-db/com.plexapp.plugins.library.db"
-        # Linux standard location (if host path mounted)
-        "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
-        # macOS location (if host path mounted)
-        "/Users/*/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
-        # Alternative Linux locations
-        "/opt/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
-        # Container's own database (last resort)
-        "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
-    )
+# Migration library location
+MIGRATE_LIB="$SHIM_DIR/migrate_lib.sh"
 
-    for pattern in "${locations[@]}"; do
-        # Use glob expansion for wildcard patterns
-        for db in $pattern; do
-            if [[ -f "$db" ]]; then
-                echo "$db"
-                return 0
-            fi
-        done
-    done
-
-    # Default fallback
-    echo "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
-}
-
-SQLITE_DB=$(detect_sqlite_db)
-if [[ "$SQLITE_DB" != "/config/"* ]]; then
-    echo "Found source SQLite database for migration: $SQLITE_DB"
-fi
+# PostgreSQL settings from environment (set by Docker ENV or -e flags)
 PG_HOST="${PLEX_PG_HOST:-postgres}"
 PG_PORT="${PLEX_PG_PORT:-5432}"
 PG_DATABASE="${PLEX_PG_DATABASE:-plex}"
 PG_USER="${PLEX_PG_USER:-plex}"
+PG_PASSWORD="${PLEX_PG_PASSWORD:-plex}"
 PG_SCHEMA="${PLEX_PG_SCHEMA:-plex}"
-SHIM_DIR="/usr/local/lib/plex-postgresql"
+
+export PGHOST="$PG_HOST"
+export PGPORT="$PG_PORT"
+export PGDATABASE="$PG_DATABASE"
+export PGUSER="$PG_USER"
+export PGPASSWORD="$PG_PASSWORD"
 
 # Non-interactive mode for Docker (auto-migrate if PG is empty)
 MIGRATION_INTERACTIVE="${MIGRATION_INTERACTIVE:-0}"
@@ -57,19 +37,32 @@ if [[ -f "$MIGRATE_LIB" ]]; then
     source "$MIGRATE_LIB"
 fi
 
-# Wait for PostgreSQL to be ready
+echo "=== plex-postgresql standalone init ==="
+echo "PostgreSQL: ${PG_USER}@${PG_HOST}:${PG_PORT}/${PG_DATABASE}"
+
+# Auto-detect source SQLite database for migration
+detect_sqlite_db() {
+    local locations=(
+        "/source-db/com.plexapp.plugins.library.db"
+        "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+        "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+    )
+    for db in "${locations[@]}"; do
+        if [[ -f "$db" ]]; then
+            echo "$db"
+            return 0
+        fi
+    done
+    echo "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+}
+
+SQLITE_DB=$(detect_sqlite_db)
+
+# Wait for PostgreSQL
 wait_for_postgres() {
-    echo "Waiting for PostgreSQL at ${PLEX_PG_HOST}:${PLEX_PG_PORT}..."
-
-    export PGHOST="${PLEX_PG_HOST:-postgres}"
-    export PGPORT="${PLEX_PG_PORT:-5432}"
-    export PGDATABASE="${PLEX_PG_DATABASE:-plex}"
-    export PGUSER="${PLEX_PG_USER:-plex}"
-    export PGPASSWORD="${PLEX_PG_PASSWORD:-plex}"
-
+    echo "Waiting for PostgreSQL..."
     local max_attempts=30
     local attempt=1
-
     while [ $attempt -le $max_attempts ]; do
         if psql -c "SELECT 1" >/dev/null 2>&1; then
             echo "PostgreSQL is ready!"
@@ -79,15 +72,14 @@ wait_for_postgres() {
         sleep 2
         attempt=$((attempt + 1))
     done
-
     echo "ERROR: PostgreSQL did not become ready in time"
     return 1
 }
 
-# Initialize schema if needed
+# Initialize PG schema
 init_schema() {
-    local schema="${PLEX_PG_SCHEMA:-plex}"
-    local schema_file="/usr/local/lib/plex-postgresql/plex_schema.sql"
+    local schema="$PG_SCHEMA"
+    local schema_file="$SHIM_DIR/plex_schema.sql"
 
     psql -c "CREATE SCHEMA IF NOT EXISTS $schema;" 2>/dev/null || true
 
@@ -95,8 +87,8 @@ init_schema() {
 
     if [ "$table_count" -gt "0" ] 2>/dev/null; then
         echo "PostgreSQL schema '$schema' ready with $table_count tables"
-        # Load sqlite_column_types metadata if table doesn't exist yet
-        local types_file="/usr/local/lib/plex-postgresql/sqlite_column_types.sql"
+        # Load sqlite_column_types if missing (upgrade path)
+        local types_file="$SHIM_DIR/sqlite_column_types.sql"
         if [ -f "$types_file" ]; then
             local types_exists=$(psql -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$schema' AND table_name = 'sqlite_column_types';" 2>/dev/null | tr -d ' ')
             if [ "$types_exists" = "0" ] 2>/dev/null; then
@@ -125,8 +117,8 @@ init_schema() {
         else
             echo "WARNING: Schema file $schema_file not found!"
         fi
-        # Load sqlite_column_types metadata after fresh schema load
-        local types_file="/usr/local/lib/plex-postgresql/sqlite_column_types.sql"
+        # Load sqlite_column_types after fresh schema
+        local types_file="$SHIM_DIR/sqlite_column_types.sql"
         if [ -f "$types_file" ]; then
             echo "Loading sqlite_column_types metadata..."
             psql -f "$types_file" 2>/dev/null || true
@@ -168,13 +160,12 @@ init_single_sqlite_db() {
     if [ ! -f "$db_file" ]; then
         echo "Pre-initializing SQLite database $db_name..."
         if [ -f "$schema_file" ]; then
-            # Ignore errors from virtual tables (spellfix1, fts4, rtree)
             sqlite3 "$db_file" < "$schema_file" 2>&1 || true
             echo "SQLite database $db_name initialized"
         else
             echo "WARNING: Schema file not found: $schema_file"
         fi
-        chown abc:abc "$db_file" 2>/dev/null || true
+        chown plex:plex "$db_file" 2>/dev/null || true
     else
         # Database exists, ensure it has the min_version column
         if ! sqlite3 "$db_file" "SELECT min_version FROM schema_migrations LIMIT 1" >/dev/null 2>&1; then
@@ -188,15 +179,13 @@ init_single_sqlite_db() {
     sync_schema_migrations_to_sqlite "$db_file"
 }
 
-# Pre-initialize SQLite databases with correct schema
-# This is needed because SOCI validates the SQLite schema before our shim can intercept
+# Pre-initialize SQLite databases
 init_sqlite_schema() {
     local db_dir="/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases"
-    local schema_file="/usr/local/lib/plex-postgresql/sqlite_schema.sql"
+    local schema_file="$SHIM_DIR/sqlite_schema.sql"
 
     mkdir -p "$db_dir"
 
-    # Initialize both databases explicitly
     init_single_sqlite_db "$db_dir/com.plexapp.plugins.library.db" "$schema_file"
     init_single_sqlite_db "$db_dir/com.plexapp.plugins.library.blobs.db" "$schema_file"
 }
@@ -205,52 +194,41 @@ init_sqlite_schema() {
 # Prevents boost::filesystem errors when Plex scans for plugins and metadata
 init_plex_directories() {
     local plex_dir="/config/Library/Application Support/Plex Media Server"
-    
+
     echo "Ensuring required Plex directories exist..."
-    
-    # Create standard Plex directories
+
     mkdir -p "$plex_dir/Plug-ins"
     mkdir -p "$plex_dir/Metadata"
     mkdir -p "$plex_dir/Cache"
     mkdir -p "$plex_dir/Logs"
-    
-    # Set ownership to abc:abc (PUID:PGID from environment)
-    chown -R abc:abc "$plex_dir" 2>/dev/null || true
-    
+
+    # plexinc/pms-docker uses plex:plex (not abc:abc like linuxserver)
+    chown -R plex:plex "$plex_dir" 2>/dev/null || true
+
     echo "Plex directories initialized"
 }
 
 # Locale setup removed — Plex's bundled musl+boost::locale handles locale internally.
 # Setting LANG/LC_ALL/CHARSET can interfere with exception handling on aarch64.
 
-# Verify PostgreSQL shim configuration
-# Note: The shim is now injected at Docker build time via Dockerfile
-# This function just verifies the configuration is in place
+# Verify shim is configured in the Plex run script
 verify_plex_shim() {
-    local shim_path="/usr/local/lib/plex-postgresql/db_interpose_pg.so"
-    # Check both s6-overlay v3 (linuxserver) and v2 (plexinc) paths
-    local s6_run=""
-    if [ -f "/etc/s6-overlay/s6-rc.d/svc-plex/run" ]; then
-        s6_run="/etc/s6-overlay/s6-rc.d/svc-plex/run"
-    elif [ -f "/etc/services.d/plex/run" ]; then
-        s6_run="/etc/services.d/plex/run"
-    fi
+    local shim_path="$SHIM_DIR/db_interpose_pg.so"
+    local run_script="/etc/services.d/plex/run"
 
     if [ -f "$shim_path" ]; then
         echo "PostgreSQL shim library found: $shim_path"
-        if [ -n "$s6_run" ] && grep -q "LD_PRELOAD=" "$s6_run" 2>/dev/null; then
+        if grep -q "LD_PRELOAD=" "$run_script" 2>/dev/null; then
             echo "Plex run script configured for PostgreSQL shim (set at build time)"
         else
             echo "WARNING: Plex run script missing LD_PRELOAD - shim may not load!"
         fi
     else
-        echo "Warning: PostgreSQL shim library not found at $shim_path"
+        echo "WARNING: PostgreSQL shim library not found at $shim_path"
     fi
 }
 
-# Main
-echo "=== plex-postgresql entrypoint ==="
-echo "PostgreSQL: ${PLEX_PG_USER}@${PLEX_PG_HOST}:${PLEX_PG_PORT}/${PLEX_PG_DATABASE}"
+# === Main ===
 
 if [ -n "$PLEX_PG_HOST" ]; then
     wait_for_postgres
@@ -265,16 +243,22 @@ if [ -n "$PLEX_PG_HOST" ]; then
     init_plex_directories
     init_sqlite_schema
     verify_plex_shim
-    
-    # Final permission fix - ensure Plex can write to its directories
-    # This must be done after all directories are created
+
+    # Clean crash reports to prevent CrashUploader from running.
+    # CrashUploader is replaced with a no-op binary, but cleaning reports
+    # prevents any JobRunner invocation entirely.
+    crash_dir="/config/Library/Application Support/Plex Media Server/Crash Reports"
+    if [ -d "$crash_dir" ] && [ "$(ls -A "$crash_dir" 2>/dev/null)" ]; then
+        rm -rf "${crash_dir:?}/"*
+        echo "Cleaned crash reports (prevents CrashUploader invocation)"
+    fi
+
+    # Final permission fix
     echo "Fixing final permissions..."
-    chown -R abc:abc "/config/Library/Application Support/Plex Media Server" 2>/dev/null || true
+    chown -R plex:plex "/config/Library/Application Support/Plex Media Server" 2>/dev/null || true
 else
     echo "PLEX_PG_HOST not set, skipping PostgreSQL initialization"
 fi
 
-echo "PostgreSQL initialization complete"
-# When called as s6-overlay init script, just exit successfully
-# s6 will continue with the rest of the init sequence
+echo "=== plex-postgresql standalone init complete ==="
 exit 0

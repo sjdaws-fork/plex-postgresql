@@ -10,6 +10,8 @@
 #include <string.h>
 #include <ctype.h>
 
+extern int shim_passthrough_only;
+
 // ============================================================================
 // Static State
 // ============================================================================
@@ -110,6 +112,7 @@ pg_conn_config_t* pg_config_get(void) {
 // ============================================================================
 
 int should_redirect(const char *filename) {
+    if (shim_passthrough_only) return 0;
     if (!filename) return 0;
 
     for (int i = 0; REDIRECT_PATTERNS[i]; i++) {
