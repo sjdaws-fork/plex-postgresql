@@ -60,7 +60,7 @@ else
 endif
 LINUX_OBJECTS = $(SQL_TR_OBJS) $(PG_MODULES) $(DB_INTERPOSE_SHARED) src/db_interpose_core_linux.o
 
-.PHONY: all clean install test macos linux run stop unit-test test-recursion test-crash test-params test-logging test-soci test-fork test-fts test-buffer test-reaper
+.PHONY: all clean install test macos linux run stop unit-test test-recursion test-crash test-params test-logging test-soci test-fork test-fts test-buffer test-reaper test-groupby test-upsert
 
 all: $(TARGET)
 
@@ -464,8 +464,28 @@ test-buffer: $(TEST_BIN_DIR)/test_buffer_pool
 	@./$(TEST_BIN_DIR)/test_buffer_pool
 	@echo ""
 
+# GROUP BY rewriter unit tests
+$(TEST_BIN_DIR)/test_group_by_rewriter: tests/test_group_by_rewriter.c src/sql_tr_groupby.o src/sql_tr_helpers.o src/pg_logging.o
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) -o $@ $< src/sql_tr_groupby.o src/sql_tr_helpers.o src/pg_logging.o -Iinclude -Isrc -Wall -Wextra
+
+test-groupby: $(TEST_BIN_DIR)/test_group_by_rewriter
+	@echo ""
+	@./$(TEST_BIN_DIR)/test_group_by_rewriter
+	@echo ""
+
+# UPSERT (INSERT OR REPLACE) unit tests
+$(TEST_BIN_DIR)/test_upsert: $(TEST_DIR)/test_upsert.c $(SQL_TR_OBJS) src/pg_logging.o
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) -o $@ $< $(SQL_TR_OBJS) src/pg_logging.o -Iinclude -Isrc -Wall -Wextra
+
+test-upsert: $(TEST_BIN_DIR)/test_upsert
+	@echo ""
+	@./$(TEST_BIN_DIR)/test_upsert
+	@echo ""
+
 # Run all unit tests
-unit-test: test-recursion test-crash test-sql test-types test-soci test-cache test-tls test-fork test-reaper test-buffer test-api test-expanded test-params test-logging test-exception test-fts
+unit-test: test-recursion test-crash test-sql test-groupby test-upsert test-types test-soci test-cache test-tls test-fork test-reaper test-buffer test-api test-expanded test-params test-logging test-exception test-fts
 	@echo "All unit tests complete."
 
 # ============================================================================
