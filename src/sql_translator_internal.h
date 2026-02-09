@@ -65,6 +65,7 @@ char* simplify_typeof_fixup(const char *sql);
 
 char* fix_group_by_strict(const char *sql);
 char* fix_group_by_strict_complete(const char *sql);  // Complete GROUP BY rewriter
+char* add_nulls_first_ordering(const char *sql);      // Add ORDER BY NULLS FIRST for SOCI compat
 char* add_subquery_alias(const char *sql);
 char* translate_case_booleans(const char *sql);
 char* translate_max_to_greatest(const char *sql);

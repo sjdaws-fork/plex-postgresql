@@ -224,6 +224,10 @@ char* sql_translate_functions(const char *sql) {
 
     // 15b3. Fix clusters subquery AFTER group by rewriter (it incorrectly adds outer columns)
     TRANSLATE(fix_group_by_strict);
+    
+    // 15b4. Add ORDER BY NULLS FIRST for GROUP BY queries (SOCI compatibility)
+    // This ensures NULL values come first in results, which helps SOCI detect nullable columns
+    TRANSLATE(add_nulls_first_ordering);
 
     // 15c. Strip "collate icu_root"
     TRANSLATE(strip_icu_collation);

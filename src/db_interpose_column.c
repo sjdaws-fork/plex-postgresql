@@ -1215,7 +1215,7 @@ const unsigned char* my_sqlite3_column_text(sqlite3_stmt *pStmt, int idx) {
     
     // DEBUG: Log when pg_stmt is not found or not PG
     if (!pg_stmt) {
-        LOG_ERROR("COLUMN_TEXT_NO_STMT: pStmt=%p idx=%d - statement not in registry!", (void*)pStmt, idx);
+        LOG_DEBUG("COLUMN_TEXT_NO_STMT: pStmt=%p idx=%d - statement not in registry (non-PG db, using SQLite fallback)", (void*)pStmt, idx);
     } else if (!pg_stmt->is_pg) {
         LOG_DEBUG("COLUMN_TEXT_NOT_PG: pStmt=%p idx=%d is_pg=false, using SQLite fallback", (void*)pStmt, idx);
     }
