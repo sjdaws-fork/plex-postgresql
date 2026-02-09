@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <unistd.h>
