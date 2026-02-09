@@ -327,7 +327,12 @@ char* translate_insert_or_replace(const char *sql) {
     LOG_INFO("Table: %s, Conflict columns: %s", table_name, target->conflict_columns);
 
     // Special case: metadata_item_settings uses custom upsert logic
-    if (strcasecmp(table_name, "metadata_item_settings") == 0) {
+    // Strip schema prefix for comparison (e.g., "plex.metadata_item_settings" → "metadata_item_settings")
+    const char *bare_table = table_name;
+    const char *dot = strchr(table_name, '.');
+    if (dot) bare_table = dot + 1;
+
+    if (strcasecmp(bare_table, "metadata_item_settings") == 0) {
         free(table_name);
         // This will be handled by convert_metadata_settings_insert_to_upsert
         // Just remove OR REPLACE for now

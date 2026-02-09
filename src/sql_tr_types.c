@@ -19,7 +19,8 @@ char* sql_translate_types(const char *sql) {
         !strcasestr(sql, "dt_integer") &&
         !strcasestr(sql, "integer(8)") &&
         !strcasestr(sql, " blob") &&
-        !strcasestr(sql, " boolean")) {
+        !strcasestr(sql, " boolean") &&
+        !strcasestr(sql, " datetime")) {
         return strdup(sql);
     }
 
