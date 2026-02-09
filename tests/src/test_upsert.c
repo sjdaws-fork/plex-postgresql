@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "include/sql_translator.h"
+#include "sql_translator.h"
 
 void test_translation(const char *input, const char *expected_pattern) {
     printf("\n=== TEST ===\n");
