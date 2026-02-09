@@ -28,6 +28,24 @@ jobs:
             bash -n "$f"
           done
 
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev libsqlite3-dev
+
+      - name: Build shim (Linux)
+        run: make linux
+
+      - name: Run unit tests
+        run: make unit-test
+
   linux-build-amd64:
     name: Build Linux amd64 shim
     runs-on: ubuntu-latest
