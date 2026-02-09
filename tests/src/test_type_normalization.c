@@ -1,267 +1,331 @@
 /*
  * Unit tests for Type Normalization (normalize_sqlite_decltype)
  *
- * Tests the fix for db_interpose_column.c that normalizes Plex's custom
- * SQLite type annotations (like DT_INTEGER(8), BOOLEAN) to standard SQLite
- * types (INTEGER, REAL, TEXT, BLOB) for SOCI compatibility.
+ * Tests db_interpose_column.c that normalizes Plex's custom
+ * SQLite type annotations (like DT_INTEGER(8), BOOLEAN, BIGINT, VARCHAR)
+ * to standard SQLite types for SOCI compatibility.
  *
  * The normalize_sqlite_decltype() function is static in db_interpose_column.c,
  * so we duplicate its logic here for testing purposes.
+ *
+ * Also tests decltype_hash() for cache correctness.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>  // for strcasecmp
+#include <strings.h>
+#include <ctype.h>
 
-// Test counters
-static int tests_passed = 0;
-static int tests_failed = 0;
+// Test framework
+static int passed = 0;
+static int failed = 0;
 
-#define TEST(name) printf("  Testing: %s... ", name)
-#define PASS() do { printf("\033[32mPASS\033[0m\n"); tests_passed++; } while(0)
-#define FAIL(msg) do { printf("\033[31mFAIL: %s\033[0m\n", msg); tests_failed++; } while(0)
+#define BOLD  "\033[1m"
+#define GREEN "\033[32m"
+#define RED   "\033[31m"
+#define RESET "\033[0m"
+
+#define LOG_DEBUG(...) do {} while(0)
+
+static void test(const char *name, int condition) {
+    if (condition) {
+        printf("  Testing: %-60s " GREEN "PASS" RESET "\n", name);
+        passed++;
+    } else {
+        printf("  Testing: %-60s " RED "FAIL" RESET "\n", name);
+        failed++;
+    }
+}
 
 // ============================================================================
-// Duplicate of normalize_sqlite_decltype() for testing
-// This must match the implementation in db_interpose_column.c
+// Copy of normalize_sqlite_decltype() from db_interpose_column.c
+// Must be kept in sync with the real implementation
 // ============================================================================
 
-// Normalize Plex custom type annotations to standard SQLite types
-// Plex uses "DT_INTEGER(8)" for BIGINT, "BOOLEAN" for booleans, etc.
-// SOCI only understands: INTEGER, REAL, TEXT, BLOB
-// Returns pointer to static string (do not free)
 static const char* normalize_sqlite_decltype(const char *plex_type) {
-    if (!plex_type) return NULL;
+    if (!plex_type || !plex_type[0]) {
+        LOG_DEBUG("NORMALIZE_TYPE: NULL/empty input, returning TEXT");
+        return "TEXT";
+    }
 
     // Check for Plex's DT_INTEGER(n) format
-    if (strncmp(plex_type, "DT_INTEGER", 10) == 0) {
+    if (strncasecmp(plex_type, "DT_INTEGER", 10) == 0) {
+        if ((plex_type[10] == '(' && plex_type[11] == '8' && plex_type[12] == ')')) {
+            return "dt_integer(8)";
+        }
         return "INTEGER";
     }
 
-    // Normalize boolean to INTEGER (SQLite doesn't have native boolean)
-    if (strcasecmp(plex_type, "boolean") == 0) {
+    // Check for INTEGER(n) format
+    if (strncasecmp(plex_type, "INTEGER", 7) == 0 && 
+        (plex_type[7] == '\0' || plex_type[7] == '(' || isspace(plex_type[7]))) {
+        if (plex_type[7] == '(' && plex_type[8] == '8' && plex_type[9] == ')') {
+            return "dt_integer(8)";
+        }
         return "INTEGER";
     }
 
-    // Already standard SQLite type - return as-is
-    // Common types: INTEGER, REAL, TEXT, BLOB, NUMERIC
-    if (strcasecmp(plex_type, "INTEGER") == 0) return "INTEGER";
+    // BIGINT -> dt_integer(8)
+    if (strncasecmp(plex_type, "BIGINT", 6) == 0 && 
+        (plex_type[6] == '\0' || plex_type[6] == '(' || isspace(plex_type[6]))) {
+        return "dt_integer(8)";
+    }
+
+    // INT8 -> dt_integer(8)
+    if (strcasecmp(plex_type, "INT8") == 0) return "dt_integer(8)";
+    
+    // INT64 -> dt_integer(8)
+    if (strcasecmp(plex_type, "INT64") == 0) return "dt_integer(8)";
+    
+    // LONG -> dt_integer(8)
+    if (strcasecmp(plex_type, "LONG") == 0) return "dt_integer(8)";
+    
+    // dt_integer(8) stays as-is
+    if (strcasecmp(plex_type, "dt_integer(8)") == 0) return "dt_integer(8)";
+
+    // Boolean -> INTEGER
+    if (strcasecmp(plex_type, "boolean") == 0) return "INTEGER";
+
+    // TIMESTAMP -> INTEGER (unix epoch)
+    if (strcasecmp(plex_type, "TIMESTAMP") == 0) return "INTEGER";
+
+    // Float types -> REAL
+    if (strcasecmp(plex_type, "FLOAT") == 0) return "REAL";
+    if (strcasecmp(plex_type, "DOUBLE") == 0) return "REAL";
+
+    // String types -> TEXT
+    if (strncasecmp(plex_type, "VARCHAR", 7) == 0 && 
+        (plex_type[7] == '\0' || plex_type[7] == '(' || isspace(plex_type[7]))) {
+        return "TEXT";
+    }
+    if (strcasecmp(plex_type, "STRING") == 0) return "TEXT";
+    if (strcasecmp(plex_type, "CHAR") == 0) return "TEXT";
+
+    // Standard SQLite types
     if (strcasecmp(plex_type, "REAL") == 0) return "REAL";
     if (strcasecmp(plex_type, "TEXT") == 0) return "TEXT";
     if (strcasecmp(plex_type, "BLOB") == 0) return "BLOB";
     if (strcasecmp(plex_type, "NUMERIC") == 0) return "NUMERIC";
 
-    // Unknown type - default to TEXT for safety
+    // Unknown -> TEXT
     return "TEXT";
 }
 
 // ============================================================================
-// Type Normalization Tests (Bug Fix Tests)
-// Tests that Plex's custom type annotations are normalized to standard SQLite types
+// Copy of decltype_hash() from db_interpose_column.c
 // ============================================================================
 
-static void test_dt_integer_8(void) {
-    TEST("Type Norm - DT_INTEGER(8) -> INTEGER");
-    const char *result = normalize_sqlite_decltype("DT_INTEGER(8)");
-
-    if (result && strcmp(result, "INTEGER") == 0) {
-        PASS();
-    } else {
-        FAIL("DT_INTEGER(8) should normalize to INTEGER");
-        if (result) printf("    Got: %s\n", result);
+static unsigned int decltype_hash(const char *str) {
+    unsigned int hash = 5381;
+    int c;
+    while ((c = *str++)) {
+        hash = ((hash << 5) + hash) + (unsigned char)c;
     }
-}
-
-static void test_dt_integer_4(void) {
-    TEST("Type Norm - DT_INTEGER(4) -> INTEGER");
-    const char *result = normalize_sqlite_decltype("DT_INTEGER(4)");
-
-    if (result && strcmp(result, "INTEGER") == 0) {
-        PASS();
-    } else {
-        FAIL("DT_INTEGER(4) should normalize to INTEGER");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_dt_integer_2(void) {
-    TEST("Type Norm - DT_INTEGER(2) -> INTEGER");
-    const char *result = normalize_sqlite_decltype("DT_INTEGER(2)");
-
-    if (result && strcmp(result, "INTEGER") == 0) {
-        PASS();
-    } else {
-        FAIL("DT_INTEGER(2) should normalize to INTEGER");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_boolean_lowercase(void) {
-    TEST("Type Norm - boolean -> INTEGER");
-    const char *result = normalize_sqlite_decltype("boolean");
-
-    if (result && strcmp(result, "INTEGER") == 0) {
-        PASS();
-    } else {
-        FAIL("boolean should normalize to INTEGER");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_boolean_uppercase(void) {
-    TEST("Type Norm - BOOLEAN -> INTEGER");
-    const char *result = normalize_sqlite_decltype("BOOLEAN");
-
-    if (result && strcmp(result, "INTEGER") == 0) {
-        PASS();
-    } else {
-        FAIL("BOOLEAN should normalize to INTEGER");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_integer_passthrough(void) {
-    TEST("Type Norm - INTEGER -> INTEGER (passthrough)");
-    const char *result = normalize_sqlite_decltype("INTEGER");
-
-    if (result && strcmp(result, "INTEGER") == 0) {
-        PASS();
-    } else {
-        FAIL("INTEGER should pass through unchanged");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_text_passthrough(void) {
-    TEST("Type Norm - TEXT -> TEXT (passthrough)");
-    const char *result = normalize_sqlite_decltype("TEXT");
-
-    if (result && strcmp(result, "TEXT") == 0) {
-        PASS();
-    } else {
-        FAIL("TEXT should pass through unchanged");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_real_passthrough(void) {
-    TEST("Type Norm - REAL -> REAL (passthrough)");
-    const char *result = normalize_sqlite_decltype("REAL");
-
-    if (result && strcmp(result, "REAL") == 0) {
-        PASS();
-    } else {
-        FAIL("REAL should pass through unchanged");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_blob_passthrough(void) {
-    TEST("Type Norm - BLOB -> BLOB (passthrough)");
-    const char *result = normalize_sqlite_decltype("BLOB");
-
-    if (result && strcmp(result, "BLOB") == 0) {
-        PASS();
-    } else {
-        FAIL("BLOB should pass through unchanged");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_numeric_passthrough(void) {
-    TEST("Type Norm - NUMERIC -> NUMERIC (passthrough)");
-    const char *result = normalize_sqlite_decltype("NUMERIC");
-
-    if (result && strcmp(result, "NUMERIC") == 0) {
-        PASS();
-    } else {
-        FAIL("NUMERIC should pass through unchanged");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_null_input(void) {
-    TEST("Type Norm - NULL input -> NULL");
-    const char *result = normalize_sqlite_decltype(NULL);
-
-    if (result == NULL) {
-        PASS();
-    } else {
-        FAIL("NULL input should return NULL");
-        printf("    Got: %s\n", result);
-    }
-}
-
-static void test_unknown_type(void) {
-    TEST("Type Norm - unknown type -> TEXT (default)");
-    const char *result = normalize_sqlite_decltype("CUSTOM_TYPE");
-
-    if (result && strcmp(result, "TEXT") == 0) {
-        PASS();
-    } else {
-        FAIL("Unknown type should default to TEXT");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_case_insensitive_integer(void) {
-    TEST("Type Norm - integer (lowercase) -> INTEGER");
-    const char *result = normalize_sqlite_decltype("integer");
-
-    if (result && strcmp(result, "INTEGER") == 0) {
-        PASS();
-    } else {
-        FAIL("integer (lowercase) should normalize to INTEGER");
-        if (result) printf("    Got: %s\n", result);
-    }
-}
-
-static void test_case_insensitive_text(void) {
-    TEST("Type Norm - text (lowercase) -> TEXT");
-    const char *result = normalize_sqlite_decltype("text");
-
-    if (result && strcmp(result, "TEXT") == 0) {
-        PASS();
-    } else {
-        FAIL("text (lowercase) should normalize to TEXT");
-        if (result) printf("    Got: %s\n", result);
-    }
+    return hash;
 }
 
 // ============================================================================
-// Main
+// Tests
 // ============================================================================
 
 int main(void) {
-    printf("\n\033[1m=== Type Normalization Tests ===\033[0m\n\n");
+    printf(BOLD "\n=== Type Normalization Tests ===" RESET "\n\n");
 
-    printf("\033[1mDT_INTEGER Variants:\033[0m\n");
-    test_dt_integer_8();
-    test_dt_integer_4();
-    test_dt_integer_2();
+    // ====================================================================
+    // DT_INTEGER variants (Plex custom type)
+    // ====================================================================
+    printf(BOLD "DT_INTEGER Variants:" RESET "\n");
 
-    printf("\n\033[1mBoolean Normalization:\033[0m\n");
-    test_boolean_lowercase();
-    test_boolean_uppercase();
+    test("DT_INTEGER(8) -> dt_integer(8)",
+         strcmp(normalize_sqlite_decltype("DT_INTEGER(8)"), "dt_integer(8)") == 0);
 
-    printf("\n\033[1mStandard Type Passthrough:\033[0m\n");
-    test_integer_passthrough();
-    test_text_passthrough();
-    test_real_passthrough();
-    test_blob_passthrough();
-    test_numeric_passthrough();
+    test("DT_INTEGER(4) -> INTEGER",
+         strcmp(normalize_sqlite_decltype("DT_INTEGER(4)"), "INTEGER") == 0);
 
-    printf("\n\033[1mEdge Cases:\033[0m\n");
-    test_null_input();
-    test_unknown_type();
-    test_case_insensitive_integer();
-    test_case_insensitive_text();
+    test("DT_INTEGER(2) -> INTEGER",
+         strcmp(normalize_sqlite_decltype("DT_INTEGER(2)"), "INTEGER") == 0);
 
-    printf("\n\033[1m=== Results ===\033[0m\n");
-    printf("Passed: \033[32m%d\033[0m\n", tests_passed);
-    printf("Failed: \033[31m%d\033[0m\n", tests_failed);
+    test("DT_INTEGER -> INTEGER (no parens)",
+         strcmp(normalize_sqlite_decltype("DT_INTEGER"), "INTEGER") == 0);
+
+    test("dt_integer(8) lowercase passthrough",
+         strcmp(normalize_sqlite_decltype("dt_integer(8)"), "dt_integer(8)") == 0);
+
+    // ====================================================================
+    // INTEGER variants
+    // ====================================================================
+    printf("\n" BOLD "INTEGER Variants:" RESET "\n");
+
+    test("INTEGER -> INTEGER",
+         strcmp(normalize_sqlite_decltype("INTEGER"), "INTEGER") == 0);
+
+    test("integer -> INTEGER (case insensitive)",
+         strcmp(normalize_sqlite_decltype("integer"), "INTEGER") == 0);
+
+    test("INTEGER(8) -> dt_integer(8)",
+         strcmp(normalize_sqlite_decltype("INTEGER(8)"), "dt_integer(8)") == 0);
+
+    test("INTEGER(4) -> INTEGER",
+         strcmp(normalize_sqlite_decltype("INTEGER(4)"), "INTEGER") == 0);
+
+    // ====================================================================
+    // 64-bit integer type aliases
+    // ====================================================================
+    printf("\n" BOLD "64-bit Integer Aliases:" RESET "\n");
+
+    test("BIGINT -> dt_integer(8)",
+         strcmp(normalize_sqlite_decltype("BIGINT"), "dt_integer(8)") == 0);
+
+    test("bigint -> dt_integer(8) (case insensitive)",
+         strcmp(normalize_sqlite_decltype("bigint"), "dt_integer(8)") == 0);
+
+    test("BIGINT(8) -> dt_integer(8)",
+         strcmp(normalize_sqlite_decltype("BIGINT(8)"), "dt_integer(8)") == 0);
+
+    test("INT8 -> dt_integer(8)",
+         strcmp(normalize_sqlite_decltype("INT8"), "dt_integer(8)") == 0);
+
+    test("INT64 -> dt_integer(8)",
+         strcmp(normalize_sqlite_decltype("INT64"), "dt_integer(8)") == 0);
+
+    test("LONG -> dt_integer(8)",
+         strcmp(normalize_sqlite_decltype("LONG"), "dt_integer(8)") == 0);
+
+    // ====================================================================
+    // Boolean
+    // ====================================================================
+    printf("\n" BOLD "Boolean Normalization:" RESET "\n");
+
+    test("boolean -> INTEGER",
+         strcmp(normalize_sqlite_decltype("boolean"), "INTEGER") == 0);
+
+    test("BOOLEAN -> INTEGER",
+         strcmp(normalize_sqlite_decltype("BOOLEAN"), "INTEGER") == 0);
+
+    // ====================================================================
+    // Timestamp
+    // ====================================================================
+    printf("\n" BOLD "Timestamp:" RESET "\n");
+
+    test("TIMESTAMP -> INTEGER (unix epoch)",
+         strcmp(normalize_sqlite_decltype("TIMESTAMP"), "INTEGER") == 0);
+
+    // ====================================================================
+    // Float/Double -> REAL
+    // ====================================================================
+    printf("\n" BOLD "Float/Double:" RESET "\n");
+
+    test("FLOAT -> REAL",
+         strcmp(normalize_sqlite_decltype("FLOAT"), "REAL") == 0);
+
+    test("DOUBLE -> REAL",
+         strcmp(normalize_sqlite_decltype("DOUBLE"), "REAL") == 0);
+
+    test("REAL -> REAL (passthrough)",
+         strcmp(normalize_sqlite_decltype("REAL"), "REAL") == 0);
+
+    // ====================================================================
+    // String types -> TEXT
+    // ====================================================================
+    printf("\n" BOLD "String Types:" RESET "\n");
+
+    test("VARCHAR -> TEXT",
+         strcmp(normalize_sqlite_decltype("VARCHAR"), "TEXT") == 0);
+
+    test("VARCHAR(255) -> TEXT",
+         strcmp(normalize_sqlite_decltype("VARCHAR(255)"), "TEXT") == 0);
+
+    test("VARCHAR(50) -> TEXT",
+         strcmp(normalize_sqlite_decltype("VARCHAR(50)"), "TEXT") == 0);
+
+    test("STRING -> TEXT",
+         strcmp(normalize_sqlite_decltype("STRING"), "TEXT") == 0);
+
+    test("CHAR -> TEXT",
+         strcmp(normalize_sqlite_decltype("CHAR"), "TEXT") == 0);
+
+    test("TEXT -> TEXT (passthrough)",
+         strcmp(normalize_sqlite_decltype("TEXT"), "TEXT") == 0);
+
+    test("text -> TEXT (case insensitive)",
+         strcmp(normalize_sqlite_decltype("text"), "TEXT") == 0);
+
+    // ====================================================================
+    // Other standard types
+    // ====================================================================
+    printf("\n" BOLD "Standard Types:" RESET "\n");
+
+    test("BLOB -> BLOB",
+         strcmp(normalize_sqlite_decltype("BLOB"), "BLOB") == 0);
+
+    test("NUMERIC -> NUMERIC",
+         strcmp(normalize_sqlite_decltype("NUMERIC"), "NUMERIC") == 0);
+
+    // ====================================================================
+    // Edge cases
+    // ====================================================================
+    printf("\n" BOLD "Edge Cases:" RESET "\n");
+
+    test("NULL -> TEXT (safety default)",
+         strcmp(normalize_sqlite_decltype(NULL), "TEXT") == 0);
+
+    test("Empty string -> TEXT",
+         strcmp(normalize_sqlite_decltype(""), "TEXT") == 0);
+
+    test("Unknown type -> TEXT (default)",
+         strcmp(normalize_sqlite_decltype("CUSTOM_TYPE"), "TEXT") == 0);
+
+    test("MONEY -> TEXT (unknown)",
+         strcmp(normalize_sqlite_decltype("MONEY"), "TEXT") == 0);
+
+    // ====================================================================
+    // Boundary checks - avoid false prefix matches
+    // ====================================================================
+    printf("\n" BOLD "Boundary Checks:" RESET "\n");
+
+    // "INTEGERS" should not match "INTEGER" prefix
+    // The implementation checks for terminator, ( or space after "INTEGER"
+    test("INTEGERS -> TEXT (not INTEGER)",
+         strcmp(normalize_sqlite_decltype("INTEGERS"), "TEXT") == 0);
+
+    // "VARCHARS" should not match
+    test("VARCHARS -> TEXT (not VARCHAR)",
+         strcmp(normalize_sqlite_decltype("VARCHARS"), "TEXT") == 0);
+
+    // ====================================================================
+    // decltype_hash tests
+    // ====================================================================
+    printf("\n" BOLD "decltype_hash():" RESET "\n");
+
+    test("Hash - same string gives same hash",
+         decltype_hash("metadata_items_id") == decltype_hash("metadata_items_id"));
+
+    test("Hash - different strings give different hash",
+         decltype_hash("metadata_items_id") != decltype_hash("metadata_items_title"));
+
+    test("Hash - empty string returns consistent value",
+         decltype_hash("") == decltype_hash(""));
+
+    // Distribution check
+    unsigned int h1 = decltype_hash("table_a") % 1024;
+    unsigned int h2 = decltype_hash("table_b") % 1024;
+    unsigned int h3 = decltype_hash("table_c") % 1024;
+    test("Hash - distributes across buckets",
+         !(h1 == h2 && h2 == h3));
+
+    // Real Plex table/column combos
+    test("Hash - metadata_items_title is deterministic",
+         decltype_hash("metadata_items_title") == decltype_hash("metadata_items_title"));
+
+    test("Hash - similar keys produce different hashes",
+         decltype_hash("metadata_items_id") != decltype_hash("media_items_id"));
+
+    // Summary
+    printf("\n" BOLD "=== Results ===" RESET "\n");
+    printf("Passed: " GREEN "%d" RESET "\n", passed);
+    printf("Failed: " RED "%d" RESET "\n", failed);
     printf("\n");
 
-    return tests_failed > 0 ? 1 : 0;
+    return failed > 0 ? 1 : 0;
 }
