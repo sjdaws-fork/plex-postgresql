@@ -27,8 +27,11 @@ char* sql_translate_placeholders(const char *sql, char ***param_names_out, int *
     char string_char = 0;
 
     while (*p) {
-        // Track string literals
-        if ((*p == '\'' || *p == '"') && (p == sql || *(p-1) != '\\')) {
+        // Track string literals (single quotes only)
+        // NOTE: Double quotes are identifier quotes in SQL, not string delimiters.
+        // At this stage input still uses backticks for identifiers (not double quotes),
+        // but we only track single quotes regardless to avoid issues with either format.
+        if (*p == '\'' && (p == sql || *(p-1) != '\\')) {
             if (!in_string) {
                 in_string = 1;
                 string_char = *p;

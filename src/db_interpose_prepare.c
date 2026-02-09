@@ -715,9 +715,29 @@ int my_sqlite3_prepare_v2_internal(sqlite3 *db, const char *zSql, int nByte,
                     pg_stmt->is_count_query = (pg_stmt->pg_sql && 
                                                 strstr(pg_stmt->pg_sql, "parents.parent_id,count(*)")) ? 1 : 0;
 
-                    // Add RETURNING id to INSERT statements for proper ID retrieval
+                    // CRITICAL FIX: Add ON CONFLICT DO NOTHING for schema_migrations INSERTs
+                    // The PG schema dump includes pre-loaded migration versions.
+                    // When Plex runs migrations, it INSERTs the version after each migration.
+                    // If the version already exists, this prevents UNIQUE violation errors
+                    // that cause "Unable to set up server" crashes.
                     if (is_write && strncasecmp(zSql, "INSERT", 6) == 0 &&
-                        pg_stmt->pg_sql && !strstr(pg_stmt->pg_sql, "RETURNING")) {
+                        pg_stmt->pg_sql && strcasestr(pg_stmt->pg_sql, "schema_migrations") &&
+                        !strcasestr(pg_stmt->pg_sql, "ON CONFLICT")) {
+                        size_t len = strlen(pg_stmt->pg_sql);
+                        char *with_conflict = malloc(len + 40);
+                        if (with_conflict) {
+                            snprintf(with_conflict, len + 40, "%s ON CONFLICT DO NOTHING", pg_stmt->pg_sql);
+                            LOG_INFO("SCHEMA_MIGRATIONS: Added ON CONFLICT DO NOTHING: %.200s", with_conflict);
+                            free(pg_stmt->pg_sql);
+                            pg_stmt->pg_sql = with_conflict;
+                        }
+                    }
+
+                    // Add RETURNING id to INSERT statements for proper ID retrieval
+                    // Skip schema_migrations (no auto-increment id needed)
+                    if (is_write && strncasecmp(zSql, "INSERT", 6) == 0 &&
+                        pg_stmt->pg_sql && !strstr(pg_stmt->pg_sql, "RETURNING") &&
+                        !strcasestr(pg_stmt->pg_sql, "schema_migrations")) {
                         size_t len = strlen(pg_stmt->pg_sql);
                         char *with_returning = malloc(len + 20);
                         if (with_returning) {

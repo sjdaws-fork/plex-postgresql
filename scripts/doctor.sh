@@ -365,6 +365,11 @@ check_column() {
 check_column "metadata_items" "user_square_art_url" "text"
 check_column "schema_migrations" "id" "serial"
 
+# Guard constraint: prevent junk rows with both metadata_type and library_section_id NULL
+check "chk_not_orphan constraint" \
+    "SELECT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_schema = '$PG_SCHEMA' AND table_name = 'metadata_items' AND constraint_name = 'chk_not_orphan');" \
+    "ALTER TABLE $PG_SCHEMA.metadata_items ADD CONSTRAINT chk_not_orphan CHECK (metadata_type IS NOT NULL OR library_section_id IS NOT NULL);"
+
 echo ""
 
 # ============================================================================
@@ -412,6 +417,19 @@ if [[ "$orphan_seasons" -gt 0 ]]; then
     data_issues=$((data_issues + 1))
 else
     printf "  %-50s ${GREEN}OK${NC}\n" "orphan seasons (no parent)"
+    ok=$((ok + 1))
+fi
+
+# Junk metadata_items (both metadata_type and library_section_id NULL)
+junk_items=$($PSQL -t -A -c "
+    SELECT COUNT(*) FROM $PG_SCHEMA.metadata_items
+    WHERE metadata_type IS NULL AND library_section_id IS NULL;
+" 2>/dev/null || echo "0")
+if [[ "$junk_items" -gt 0 ]]; then
+    printf "  %-50s ${YELLOW}%s rows${NC}\n" "junk metadata_items (no type/library)" "$junk_items"
+    data_issues=$((data_issues + 1))
+else
+    printf "  %-50s ${GREEN}OK${NC}\n" "junk metadata_items (no type/library)"
     ok=$((ok + 1))
 fi
 
@@ -502,6 +520,12 @@ if [[ $data_issues -gt 0 ]]; then
                     SELECT COUNT(*) FROM fixes;
                 " 2>/dev/null || echo "0")
                 echo -e "${GREEN}$fixed rows${NC}"
+                fixes=$((fixes + 1))
+            fi
+            if [[ "$junk_items" -gt 0 ]]; then
+                printf "  deleting junk metadata_items... "
+                $PSQL -q -c "DELETE FROM $PG_SCHEMA.metadata_items WHERE metadata_type IS NULL AND library_section_id IS NULL;" 2>/dev/null
+                echo -e "${GREEN}$junk_items rows${NC}"
                 fixes=$((fixes + 1))
             fi
             if [[ "$empty_stats" -gt 0 ]]; then

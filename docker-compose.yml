@@ -44,7 +44,7 @@ services:
       - PLEX_PG_SCHEMA=plex
       - PLEX_PG_POOL_SIZE=50
       # Logging: 0=ERROR, 1=INFO, 2=DEBUG
-      - PLEX_PG_LOG_LEVEL=DEBUG
+      - PLEX_PG_LOG_LEVEL=ERROR
     volumes:
       - plex_config:/config
       - postgres_socket:/var/run/postgresql

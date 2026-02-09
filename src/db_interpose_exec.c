@@ -152,6 +152,52 @@ int my_sqlite3_exec(sqlite3 *db, const char *sql,
 
     if (pg_conn && pg_conn->conn && pg_conn->is_pg_active) {
         if (!should_skip_sql(sql)) {
+            // GUARD: Block junk INSERTs into metadata_items with NULL library_section_id AND metadata_type
+            if (strcasestr(sql, "INSERT") && strcasestr(sql, "metadata_items") &&
+                !strcasestr(sql, "metadata_item_settings") &&
+                !strcasestr(sql, "metadata_item_views") &&
+                !strcasestr(sql, "metadata_item_accounts") &&
+                !strcasestr(sql, "metadata_item_clusters")) {
+                const char *col_start = strchr(sql, '(');
+                if (col_start) {
+                    int lib_idx = -1, type_idx = -1, idx = 0;
+                    const char *p = col_start + 1;
+                    while (*p && *p != ')') {
+                        while (*p == ' ' || *p == '"' || *p == '`') p++;
+                        if (strncmp(p, "library_section_id", 18) == 0) lib_idx = idx;
+                        if (strncmp(p, "metadata_type", 13) == 0 &&
+                            (p[13] == '"' || p[13] == '`' || p[13] == ',' || p[13] == ')' || p[13] == ' '))
+                            type_idx = idx;
+                        while (*p && *p != ',' && *p != ')') p++;
+                        if (*p == ',') { p++; idx++; }
+                    }
+                    const char *vals = strcasestr(sql, "VALUES");
+                    if (vals && lib_idx >= 0 && type_idx >= 0) {
+                        const char *vp = strchr(vals, '(');
+                        if (vp) {
+                            vp++;
+                            int vi = 0, lib_null = 0, type_null = 0, in_quote = 0;
+                            while (*vp && *vp != ')') {
+                                while (*vp == ' ') vp++;
+                                if (vi == lib_idx && strncasecmp(vp, "NULL", 4) == 0) lib_null = 1;
+                                if (vi == type_idx && strncasecmp(vp, "NULL", 4) == 0) type_null = 1;
+                                in_quote = 0;
+                                while (*vp && (*vp != ',' || in_quote) && *vp != ')') {
+                                    if (*vp == '\'') in_quote = !in_quote;
+                                    vp++;
+                                }
+                                if (*vp == ',') { vp++; vi++; }
+                            }
+                            if (lib_null && type_null) {
+                                LOG_ERROR("GUARD: Blocked exec junk INSERT into metadata_items "
+                                          "(library_section_id=NULL, metadata_type=NULL)");
+                                return SQLITE_OK;
+                            }
+                        }
+                    }
+                }
+            }
+
             sql_translation_t trans = sql_translate(sql);
             if (trans.success && trans.sql) {
                 char *exec_sql = trans.sql;

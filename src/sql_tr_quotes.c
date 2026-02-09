@@ -426,6 +426,8 @@ char* fix_duplicate_assignments(const char *sql) {
     #define MAX_ASSIGNMENTS 256
     typedef struct {
         char column[128];
+        const char *col_start;    // Original column name start (including quotes)
+        const char *col_end;      // Original column name end (including quotes)
         const char *value_start;
         const char *value_end;
         int keep;
@@ -443,25 +445,30 @@ char* fix_duplicate_assignments(const char *sql) {
         while (*p && isspace(*p) && p < set_end) p++;
         if (p >= set_end) break;
 
-        // Extract column name (may be quoted)
+        // Extract column name (may be quoted with " or `)
         const char *col_start = p;
         if (*p == '"') {
             p++;
             while (*p && *p != '"' && p < set_end) p++;
             if (*p == '"') p++;
+        } else if (*p == '`') {
+            p++;
+            while (*p && *p != '`' && p < set_end) p++;
+            if (*p == '`') p++;
         } else {
             while (*p && !isspace(*p) && *p != '=' && p < set_end) p++;
         }
+        const char *col_end = p;
 
-        size_t col_len = p - col_start;
+        size_t col_len = col_end - col_start;
         if (col_len >= sizeof(assignments[0].column)) col_len = sizeof(assignments[0].column) - 1;
 
-        // Normalize column name (remove quotes)
+        // Normalize column name (remove quotes and backticks, lowercase)
         char column[128] = {0};
         const char *src = col_start;
         char *dst = column;
         while (src < col_start + col_len && dst < column + sizeof(column) - 1) {
-            if (*src != '"') {
+            if (*src != '"' && *src != '`') {
                 *dst++ = tolower(*src);
             }
             src++;
@@ -490,6 +497,8 @@ char* fix_duplicate_assignments(const char *sql) {
 
         // Store assignment
         strncpy(assignments[assign_count].column, column, sizeof(assignments[assign_count].column) - 1);
+        assignments[assign_count].col_start = col_start;
+        assignments[assign_count].col_end = col_end;
         assignments[assign_count].value_start = value_start;
         assignments[assign_count].value_end = value_end;
         assignments[assign_count].keep = 1;
@@ -509,10 +518,29 @@ char* fix_duplicate_assignments(const char *sql) {
         }
     }
 
-    // Count how many assignments we're keeping
+    // Count how many assignments we're keeping and find removed $N params
     int keep_count = 0;
+    int removed_params[256];  // Track which $N params were removed
+    int removed_count = 0;
+    memset(removed_params, 0, sizeof(removed_params));
+
     for (int i = 0; i < assign_count; i++) {
-        if (assignments[i].keep) keep_count++;
+        if (assignments[i].keep) {
+            keep_count++;
+        } else {
+            // Find $N params in the removed assignment's value
+            const char *vp = assignments[i].value_start;
+            while (vp < assignments[i].value_end) {
+                if (*vp == '$' && vp + 1 < assignments[i].value_end && isdigit(*(vp+1))) {
+                    int n = atoi(vp + 1);
+                    if (n > 0 && n < 256) {
+                        removed_params[n] = 1;
+                        removed_count++;
+                    }
+                }
+                vp++;
+            }
+        }
     }
 
     // If no duplicates, return original
@@ -522,7 +550,9 @@ char* fix_duplicate_assignments(const char *sql) {
     }
 
     // Rebuild SQL with deduplicated assignments
-    size_t result_len = strlen(sql) + 1;
+    // Append removed params as harmless casts in WHERE clause to keep PG happy
+    // e.g.: WHERE "id"=$3 AND $1::text IS NOT NULL
+    size_t result_len = strlen(sql) * 2 + removed_count * 30 + 1;
     char *result = malloc(result_len);
     if (!result) {
         free(assignments);
@@ -545,24 +575,9 @@ char* fix_duplicate_assignments(const char *sql) {
         }
         first = 0;
 
-        // Find original column name with quotes from source
-        const char *orig_col_start = assignments[i].value_start;
-        while (orig_col_start > sql && *orig_col_start != '=' && *orig_col_start != ',') orig_col_start--;
-        if (*orig_col_start == '=' || *orig_col_start == ',') orig_col_start++;
-        while (*orig_col_start && isspace(*orig_col_start)) orig_col_start++;
-
-        const char *orig_col_end = orig_col_start;
-        if (*orig_col_end == '"') {
-            orig_col_end++;
-            while (*orig_col_end && *orig_col_end != '"') orig_col_end++;
-            if (*orig_col_end == '"') orig_col_end++;
-        } else {
-            while (*orig_col_end && !isspace(*orig_col_end) && *orig_col_end != '=') orig_col_end++;
-        }
-
-        // Copy column name
-        size_t col_len = orig_col_end - orig_col_start;
-        memcpy(out, orig_col_start, col_len);
+        // Copy column name from stored pointers
+        size_t col_len = assignments[i].col_end - assignments[i].col_start;
+        memcpy(out, assignments[i].col_start, col_len);
         out += col_len;
 
         // Copy = and value
@@ -575,9 +590,29 @@ char* fix_duplicate_assignments(const char *sql) {
     // Copy rest of SQL (WHERE clause, etc.)
     if (where_pos) {
         strcpy(out, where_pos);
-    } else {
-        *out = '\0';
+        out += strlen(where_pos);
     }
+
+    // Consume removed params in a harmless way so PG can determine their types
+    // This prevents "could not determine data type of parameter $N" errors
+    // We use COALESCE($N::text, '') which evaluates the param but discards the result
+    if (removed_count > 0) {
+        // Append as a no-op condition: AND TRUE (with side-effect of referencing unused params)
+        out += sprintf(out, " AND COALESCE(");
+        int first_removed = 1;
+        for (int n = 1; n < 256; n++) {
+            if (removed_params[n]) {
+                if (!first_removed) {
+                    out += sprintf(out, ",");
+                }
+                first_removed = 0;
+                out += sprintf(out, "$%d::text", n);
+            }
+        }
+        out += sprintf(out, ",'') IS NOT NULL");
+    }
+
+    *out = '\0';
 
     free(assignments);
     return result;

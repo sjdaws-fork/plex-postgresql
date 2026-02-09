@@ -3431,6 +3431,14 @@ ALTER TABLE ONLY plex.metadata_items
 
 
 --
+-- Name: metadata_items chk_not_orphan; Type: CONSTRAINT; Schema: plex; Owner: -
+--
+
+ALTER TABLE plex.metadata_items
+    ADD CONSTRAINT chk_not_orphan CHECK (metadata_type IS NOT NULL OR library_section_id IS NOT NULL);
+
+
+--
 -- Name: metadata_relations metadata_relations_pkey; Type: CONSTRAINT; Schema: plex; Owner: -
 --
 
