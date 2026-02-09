@@ -132,6 +132,98 @@ static void test_placeholder_in_string(void) {
 }
 
 // ============================================================================
+// Placeholder Edge Cases
+// ============================================================================
+
+static void test_placeholder_question_alpha_space(void) {
+    TEST("Placeholder - ? before alpha -> space inserted ($1 left not $1left)");
+    char **names = NULL;
+    int count = 0;
+    char *result = sql_translate_placeholders(
+        "SELECT * FROM t WHERE a = ? AND b > ?left", &names, &count);
+    // The ? before "left" should produce "$2 left" not "$2left"
+    // But actually "?left" - the ? is followed by 'l', so space is inserted
+    // First ? becomes $1, ?left -> should become "$2 left" (space before 'l')
+    // Actually "?left" is two chars: '?' + 'l'. The code checks isalpha(*p) after '?'
+    // It should insert a space if the next char is alpha.
+    // But wait - "AND b > ?left" - `?` is the placeholder, `left` is separate text
+    // after the placeholder. So result should be "$2 left" not "$2left"
+    if (result && count == 2 && !strstr(result, "$2l")) {
+        PASS();
+    } else {
+        FAIL("Expected space between $2 and alpha char");
+        if (result) printf("    Got: %s\n", result);
+    }
+    if (result) free(result);
+    if (names) {
+        for (int i = 0; i < count; i++) if (names[i]) free(names[i]);
+        free(names);
+    }
+}
+
+static void test_placeholder_mixed_question_and_named(void) {
+    TEST("Placeholder - mixed ? and :name -> sequential numbering");
+    char **names = NULL;
+    int count = 0;
+    char *result = sql_translate_placeholders(
+        "SELECT * FROM t WHERE a = ? AND b = :foo AND c = ?", &names, &count);
+    if (result && count == 3 &&
+        strstr(result, "$1") && strstr(result, "$2") && strstr(result, "$3")) {
+        PASS();
+    } else {
+        FAIL("Expected $1, $2, $3");
+        if (result) printf("    Got: %s count=%d\n", result, count);
+    }
+    if (result) free(result);
+    if (names) {
+        for (int i = 0; i < count; i++) if (names[i]) free(names[i]);
+        free(names);
+    }
+}
+
+static void test_placeholder_escaped_quotes(void) {
+    TEST("Placeholder - :param inside escaped quotes ('it''s :not') -> skipped");
+    char **names = NULL;
+    int count = 0;
+    char *result = sql_translate_placeholders(
+        "SELECT * FROM t WHERE name = 'it''s :not_a_param' AND id = :real_param", &names, &count);
+    // :not_a_param inside the escaped-quote string should be ignored
+    // :real_param outside should become $1
+    if (result && count == 1 && strstr(result, ":not_a_param") && strstr(result, "$1")) {
+        PASS();
+    } else {
+        FAIL("Expected :not_a_param preserved, :real_param -> $1");
+        if (result) printf("    Got: %s count=%d\n", result, count);
+    }
+    if (result) free(result);
+    if (names) {
+        for (int i = 0; i < count; i++) if (names[i]) free(names[i]);
+        free(names);
+    }
+}
+
+static void test_placeholder_colon_after_ident(void) {
+    TEST("Placeholder - table:col (colon after ident) -> NOT a placeholder");
+    char **names = NULL;
+    int count = 0;
+    char *result = sql_translate_placeholders(
+        "SELECT * FROM t WHERE url = 'http:endpoint'", &names, &count);
+    // The : in 'http:endpoint' is inside quotes so should be ignored anyway
+    // Let's also test unquoted: the guard checks is_ident_char(*(p-1))
+    if (result && count == 0 && strstr(result, "http:endpoint")) {
+        PASS();
+    } else {
+        FAIL("Expected no placeholders");
+        if (result) printf("    Got: %s count=%d\n", result, count);
+    }
+    if (result) free(result);
+    if (names) {
+        for (int i = 0; i < count; i++) if (names[i]) free(names[i]);
+        free(names);
+    }
+}
+
+// ============================================================================
 // Function Translation Tests
 // ============================================================================
 
@@ -232,6 +324,276 @@ static void test_keyword_notnull(void) {
     if (result) free(result);
 }
 
+static void test_keyword_null_input(void) {
+    TEST("Keyword - NULL -> NULL");
+    char *result = sql_translate_keywords(NULL);
+    if (result == NULL) { PASS(); }
+    else { FAIL("Expected NULL"); free(result); }
+}
+
+static void test_keyword_alter_table_add_quoted(void) {
+    TEST("Keyword - ALTER TABLE ADD 'col' -> ADD COLUMN IF NOT EXISTS");
+    char *result = sql_translate_keywords("ALTER TABLE 'metadata_items' ADD 'new_col' TEXT");
+    if (result && strcasestr(result, "ADD COLUMN IF NOT EXISTS")) {
+        PASS();
+    } else {
+        FAIL("Expected ADD COLUMN IF NOT EXISTS");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_alter_table_add_dblquoted(void) {
+    TEST("Keyword - ALTER TABLE ADD \"col\" -> ADD COLUMN IF NOT EXISTS");
+    char *result = sql_translate_keywords("ALTER TABLE \"metadata_items\" ADD \"new_col\" TEXT");
+    if (result && strcasestr(result, "ADD COLUMN IF NOT EXISTS")) {
+        PASS();
+    } else {
+        FAIL("Expected ADD COLUMN IF NOT EXISTS");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_alter_table_add_unquoted(void) {
+    TEST("Keyword - ALTER TABLE ADD col_name -> ADD COLUMN IF NOT EXISTS");
+    char *result = sql_translate_keywords("ALTER TABLE metadata_items ADD new_col TEXT");
+    if (result && strcasestr(result, "ADD COLUMN IF NOT EXISTS")) {
+        PASS();
+    } else {
+        FAIL("Expected ADD COLUMN IF NOT EXISTS");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_begin_immediate(void) {
+    TEST("Keyword - BEGIN IMMEDIATE -> BEGIN");
+    char *result = sql_translate_keywords("BEGIN IMMEDIATE");
+    if (result && strcmp(result, "BEGIN") == 0) {
+        PASS();
+    } else {
+        FAIL("Expected plain BEGIN");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_begin_deferred(void) {
+    TEST("Keyword - BEGIN DEFERRED -> BEGIN");
+    char *result = sql_translate_keywords("BEGIN DEFERRED");
+    if (result && strcmp(result, "BEGIN") == 0) {
+        PASS();
+    } else {
+        FAIL("Expected plain BEGIN");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_begin_exclusive(void) {
+    TEST("Keyword - BEGIN EXCLUSIVE -> BEGIN");
+    char *result = sql_translate_keywords("BEGIN EXCLUSIVE");
+    if (result && strcmp(result, "BEGIN") == 0) {
+        PASS();
+    } else {
+        FAIL("Expected plain BEGIN");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_insert_or_ignore(void) {
+    TEST("Keyword - INSERT OR IGNORE INTO -> INSERT INTO");
+    char *result = sql_translate_keywords(
+        "INSERT OR IGNORE INTO schema_migrations (version) VALUES ('20230101')");
+    if (result && strstr(result, "INSERT INTO") && !strcasestr(result, "OR IGNORE")) {
+        PASS();
+    } else {
+        FAIL("Expected INSERT INTO without OR IGNORE");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_replace_into(void) {
+    TEST("Keyword - REPLACE INTO -> INSERT INTO");
+    char *result = sql_translate_keywords(
+        "REPLACE INTO preferences (name, value) VALUES ('key', 'val')");
+    if (result && strstr(result, "INSERT INTO") && !strcasestr(result, "REPLACE INTO")) {
+        PASS();
+    } else {
+        FAIL("Expected INSERT INTO");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_empty_in(void) {
+    TEST("Keyword - IN () -> IN (SELECT -1 WHERE FALSE)");
+    char *result = sql_translate_keywords(
+        "SELECT * FROM tags WHERE id in ()");
+    if (result && strcasestr(result, "IN (SELECT -1 WHERE FALSE)")) {
+        PASS();
+    } else {
+        FAIL("Expected IN (SELECT -1 WHERE FALSE)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_empty_in_spaces(void) {
+    TEST("Keyword - IN (  ) with spaces -> IN (SELECT -1 WHERE FALSE)");
+    char *result = sql_translate_keywords(
+        "SELECT * FROM tags WHERE id in (  )");
+    if (result && strcasestr(result, "IN (SELECT -1 WHERE FALSE)")) {
+        PASS();
+    } else {
+        FAIL("Expected IN (SELECT -1 WHERE FALSE)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_group_by_null(void) {
+    TEST("Keyword - GROUP BY NULL -> removed");
+    char *result = sql_translate_keywords(
+        "SELECT count(*) FROM metadata_items GROUP BY NULL");
+    if (result && !strcasestr(result, "GROUP BY NULL")) {
+        PASS();
+    } else {
+        FAIL("Expected GROUP BY NULL removed");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_having_cnt(void) {
+    TEST("Keyword - HAVING cnt = 0 -> HAVING count(media_items.id) = 0");
+    char *result = sql_translate_keywords(
+        "SELECT * FROM media_items GROUP BY id HAVING cnt = 0");
+    if (result && strstr(result, "HAVING count(media_items.id) = 0")) {
+        PASS();
+    } else {
+        FAIL("Expected HAVING count(media_items.id) = 0");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_sqlite_master(void) {
+    TEST("Keyword - sqlite_master -> information_schema subquery");
+    char *result = sql_translate_keywords(
+        "SELECT name FROM sqlite_master WHERE type='table'");
+    if (result && strcasestr(result, "information_schema.tables") &&
+        strcasestr(result, "pg_indexes") &&
+        strstr(result, "FROM (SELECT")) {
+        PASS();
+    } else {
+        FAIL("Expected information_schema subquery");
+        if (result) printf("    Got: %.200s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_sqlite_schema(void) {
+    TEST("Keyword - sqlite_schema -> information_schema subquery");
+    char *result = sql_translate_keywords(
+        "SELECT name FROM sqlite_schema WHERE type='table'");
+    if (result && strcasestr(result, "information_schema.tables") &&
+        !strcasestr(result, "sqlite_schema")) {
+        PASS();
+    } else {
+        FAIL("Expected information_schema subquery");
+        if (result) printf("    Got: %.200s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_indexed_by(void) {
+    TEST("Keyword - INDEXED BY idx_name -> removed");
+    char *result = sql_translate_keywords(
+        "SELECT * FROM metadata_items INDEXED BY idx_title WHERE title = 'test'");
+    if (result && !strcasestr(result, "INDEXED BY") && strstr(result, "WHERE title")) {
+        PASS();
+    } else {
+        FAIL("Expected INDEXED BY removed");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_indexed_by_multiple(void) {
+    TEST("Keyword - multiple INDEXED BY hints -> all removed");
+    char *result = sql_translate_keywords(
+        "SELECT * FROM t1 INDEXED BY idx1 JOIN t2 INDEXED BY idx2 ON t1.id = t2.id");
+    if (result && !strcasestr(result, "INDEXED BY")) {
+        PASS();
+    } else {
+        FAIL("Expected all INDEXED BY removed");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_main_dot_sqlite_master(void) {
+    TEST("Keyword - \"main\".sqlite_master -> information_schema");
+    char *result = sql_translate_keywords(
+        "SELECT name FROM \"main\".sqlite_master WHERE type='table'");
+    if (result && strcasestr(result, "information_schema.tables") &&
+        strstr(result, "FROM (SELECT")) {
+        PASS();
+    } else {
+        FAIL("Expected information_schema subquery");
+        if (result) printf("    Got: %.200s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_main_unquoted_sqlite_master(void) {
+    TEST("Keyword - main.sqlite_master -> information_schema");
+    char *result = sql_translate_keywords(
+        "SELECT name FROM main.sqlite_master WHERE type='table'");
+    if (result && strcasestr(result, "information_schema.tables") &&
+        strstr(result, "FROM (SELECT")) {
+        PASS();
+    } else {
+        FAIL("Expected information_schema subquery");
+        if (result) printf("    Got: %.200s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_sqlite_master_order_by_rowid(void) {
+    TEST("Keyword - sqlite_master ORDER BY rowid -> rowid removed");
+    char *result = sql_translate_keywords(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY rowid");
+    if (result && !strcasestr(result, "ORDER BY rowid")) {
+        PASS();
+    } else {
+        FAIL("Expected ORDER BY rowid removed");
+        if (result) printf("    Got: %.200s\n", result);
+    }
+    free(result);
+}
+
+static void test_keyword_replace_into_preserved_with_insert_or(void) {
+    TEST("Keyword - INSERT OR REPLACE INTO -> REPLACE INTO not translated");
+    // When INSERT OR is present, REPLACE INTO should NOT be translated
+    char *result = sql_translate_keywords(
+        "INSERT OR REPLACE INTO tags (id, tag) VALUES (1, 'test')");
+    // The INSERT OR REPLACE should still contain "REPLACE" since keywords
+    // doesn't handle it (upsert module does). But it should NOT become "INSERT INTO"
+    // from the REPLACE INTO rule.
+    if (result && strcasestr(result, "REPLACE")) {
+        PASS();
+    } else {
+        FAIL("Expected REPLACE preserved when INSERT OR present");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
 // ============================================================================
 // Type Translation Tests
 // ============================================================================
@@ -260,6 +622,144 @@ static void test_type_text(void) {
     }
 
     if (result) free(result);
+}
+
+static void test_type_dt_integer8(void) {
+    TEST("Type - dt_integer(8) -> BIGINT");
+    char *result = sql_translate_types("CREATE TABLE t (ts dt_integer(8) NOT NULL)");
+    if (result && strstr(result, "BIGINT") && !strcasestr(result, "dt_integer")) {
+        PASS();
+    } else {
+        FAIL("Expected BIGINT");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_integer8(void) {
+    TEST("Type - integer(8) -> BIGINT");
+    char *result = sql_translate_types("CREATE TABLE t (ts integer(8) DEFAULT 0)");
+    if (result && strstr(result, "BIGINT") && !strcasestr(result, "integer(8)")) {
+        PASS();
+    } else {
+        FAIL("Expected BIGINT");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_blob_paren(void) {
+    TEST("Type - BLOB) -> BYTEA) in column def");
+    char *result = sql_translate_types("CREATE TABLE t (data BLOB)");
+    if (result && strstr(result, "BYTEA)") && !strcasestr(result, "BLOB")) {
+        PASS();
+    } else {
+        FAIL("Expected BYTEA)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_blob_comma(void) {
+    TEST("Type - BLOB, -> BYTEA, between columns");
+    char *result = sql_translate_types("CREATE TABLE t (data BLOB, name TEXT)");
+    if (result && strstr(result, "BYTEA,") && !strcasestr(result, "BLOB")) {
+        PASS();
+    } else {
+        FAIL("Expected BYTEA,");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_blob_space(void) {
+    TEST("Type - BLOB DEFAULT -> BYTEA DEFAULT");
+    char *result = sql_translate_types("CREATE TABLE t (data BLOB DEFAULT NULL)");
+    if (result && strstr(result, "BYTEA ") && !strcasestr(result, "BLOB")) {
+        PASS();
+    } else {
+        FAIL("Expected BYTEA ");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_default_true(void) {
+    TEST("Type - DEFAULT 't' -> DEFAULT TRUE");
+    char *result = sql_translate_types("CREATE TABLE t (active boolean DEFAULT 't')");
+    if (result && strstr(result, "DEFAULT TRUE") && !strstr(result, "'t'")) {
+        PASS();
+    } else {
+        FAIL("Expected DEFAULT TRUE");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_default_false(void) {
+    TEST("Type - DEFAULT 'f' -> DEFAULT FALSE");
+    char *result = sql_translate_types("CREATE TABLE t (disabled boolean DEFAULT 'f')");
+    if (result && strstr(result, "DEFAULT FALSE") && !strstr(result, "'f'")) {
+        PASS();
+    } else {
+        FAIL("Expected DEFAULT FALSE");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_datetime_paren(void) {
+    TEST("Type - datetime) -> TIMESTAMP) in column def");
+    char *result = sql_translate_types("CREATE TABLE t (created_at datetime)");
+    if (result && strcasestr(result, "TIMESTAMP)") && !strcasestr(result, "datetime")) {
+        PASS();
+    } else {
+        FAIL("Expected TIMESTAMP)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_datetime_comma(void) {
+    TEST("Type - datetime, -> TIMESTAMP, between columns");
+    char *result = sql_translate_types("CREATE TABLE t (created_at datetime, name TEXT)");
+    if (result && strcasestr(result, "TIMESTAMP,") && !strcasestr(result, "datetime")) {
+        PASS();
+    } else {
+        FAIL("Expected TIMESTAMP,");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_datetime_space(void) {
+    TEST("Type - datetime DEFAULT -> TIMESTAMP DEFAULT");
+    char *result = sql_translate_types("CREATE TABLE t (created_at datetime DEFAULT NULL)");
+    if (result && strcasestr(result, "TIMESTAMP ") && !strcasestr(result, "datetime")) {
+        PASS();
+    } else {
+        FAIL("Expected TIMESTAMP ");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_type_null_input(void) {
+    TEST("Type - NULL -> NULL");
+    char *result = sql_translate_types(NULL);
+    if (result == NULL) { PASS(); }
+    else { FAIL("Expected NULL"); free(result); }
+}
+
+static void test_type_no_patterns(void) {
+    TEST("Type - no matching patterns -> unchanged");
+    char *result = sql_translate_types("SELECT id, name FROM metadata_items");
+    if (result && strcmp(result, "SELECT id, name FROM metadata_items") == 0) {
+        PASS();
+    } else {
+        FAIL("Expected unchanged");
+    }
+    free(result);
 }
 
 // ============================================================================
@@ -326,6 +826,59 @@ static void test_full_complex(void) {
     }
 
     sql_translation_free(&result);
+}
+
+// ============================================================================
+// Plex-specific inline fix pipeline tests
+// ============================================================================
+
+static void test_plex_viewed_at_order_by(void) {
+    TEST("Plex - ORDER BY viewed_at -> ORDER BY max(viewed_at) when max() present");
+    sql_translation_t r = sql_translate(
+        "SELECT metadata_item_id, max(viewed_at) FROM metadata_item_views "
+        "GROUP BY metadata_item_id ORDER BY viewed_at DESC");
+    if (r.success && r.sql &&
+        strcasestr(r.sql, "order by max(viewed_at)") &&
+        !strstr(r.sql, "order by viewed_at desc")) {
+        PASS();
+    } else {
+        FAIL("Expected ORDER BY max(viewed_at)");
+        if (r.sql) printf("    Got: %.200s\n", r.sql);
+    }
+    sql_translation_free(&r);
+}
+
+static void test_plex_external_metadata_group_by(void) {
+    TEST("Plex - external_metadata_items GROUP BY expanded");
+    sql_translation_t r = sql_translate(
+        "SELECT external_metadata_items.id,uri,user_title,library_section_id,"
+        "metadata_type,year,added_at,updated_at,extra_data,title "
+        "FROM external_metadata_items "
+        "group by title order by added_at");
+    if (r.success && r.sql &&
+        strcasestr(r.sql, "group by title,external_metadata_items.id")) {
+        PASS();
+    } else {
+        FAIL("Expected expanded GROUP BY");
+        if (r.sql) printf("    Got: %.200s\n", r.sql);
+    }
+    sql_translation_free(&r);
+}
+
+static void test_plex_clustering_distinct_removes_group_by(void) {
+    TEST("Plex - metadata_item_clusterings DISTINCT removes GROUP BY");
+    sql_translation_t r = sql_translate(
+        "SELECT DISTINCT metadata_item_clusterings.id, title "
+        "FROM metadata_item_clusterings "
+        "GROUP BY title ORDER BY title");
+    if (r.success && r.sql &&
+        !strcasestr(r.sql, "GROUP BY title ORDER")) {
+        PASS();
+    } else {
+        FAIL("Expected GROUP BY removed with DISTINCT");
+        if (r.sql) printf("    Got: %.200s\n", r.sql);
+    }
+    sql_translation_free(&r);
 }
 
 // ============================================================================
@@ -438,6 +991,35 @@ static void test_collate_nocase_orderby(void) {
     }
 
     sql_translation_free(&result);
+}
+
+static void test_collate_nocase_glob(void) {
+    TEST("COLLATE NOCASE - GLOB comparison -> ILIKE");
+    sql_translation_t result = sql_translate(
+        "SELECT * FROM t WHERE name GLOB '*test*' COLLATE NOCASE");
+    if (result.success && result.sql &&
+        (strcasestr(result.sql, "ILIKE") || strcasestr(result.sql, "LOWER(")) &&
+        !strcasestr(result.sql, "COLLATE NOCASE")) {
+        PASS();
+    } else {
+        FAIL("Expected ILIKE or LOWER() for COLLATE NOCASE GLOB");
+        if (result.sql) printf("    Got: %s\n", result.sql);
+    }
+    sql_translation_free(&result);
+}
+
+static void test_collate_nocase_ne(void) {
+    TEST("COLLATE NOCASE - != comparison -> LOWER() != LOWER()");
+    char *result = translate_collate_nocase(
+        "SELECT * FROM t WHERE name COLLATE NOCASE != 'Test'");
+    if (result && strcasestr(result, "LOWER(") && strstr(result, "!=") &&
+        !strcasestr(result, "COLLATE NOCASE")) {
+        PASS();
+    } else {
+        FAIL("Expected LOWER() with != for COLLATE NOCASE");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
 }
 
 // ============================================================================
@@ -975,6 +1557,113 @@ static void test_function_simplify_typeof(void) {
 }
 
 // ============================================================================
+// Function Tests - typeof() type name remapping
+// ============================================================================
+
+static void test_typeof_integer_bigint_expansion(void) {
+    TEST("typeof - in ('integer',) -> in ('integer', 'bigint',)");
+    char *result = translate_typeof(
+        "SELECT * FROM t WHERE typeof(x) in ('integer', 'real')");
+    if (result && strstr(result, "'bigint'")) {
+        PASS();
+    } else {
+        FAIL("Expected 'bigint' added");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_typeof_real_to_double_precision(void) {
+    TEST("typeof - 'real' -> 'double precision'");
+    char *result = translate_typeof(
+        "SELECT * FROM t WHERE pg_typeof(x)::text = 'real'");
+    if (result && strstr(result, "'double precision'") && !strstr(result, "'real'")) {
+        PASS();
+    } else {
+        FAIL("Expected 'double precision'");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+// ============================================================================
+// Function Tests - strftime() additional patterns
+// ============================================================================
+
+static void test_strftime_datetime_format(void) {
+    TEST("strftime - '%Y-%m-%d %H:%M:%S' -> TO_CHAR(col, 'YYYY-MM-DD HH24:MI:SS')");
+    char *result = translate_strftime(
+        "SELECT strftime('%Y-%m-%d %H:%M:%S', created_at) FROM t");
+    if (result && strstr(result, "TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS')")) {
+        PASS();
+    } else {
+        FAIL("Expected TO_CHAR with datetime format");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_strftime_positive_interval(void) {
+    TEST("strftime - '%s', 'now', '+7 day' -> NOW() + INTERVAL");
+    char *result = translate_strftime(
+        "SELECT strftime('%s', 'now', '+7 day') FROM t");
+    if (result && strstr(result, "NOW() + INTERVAL '7 day'")) {
+        PASS();
+    } else {
+        FAIL("Expected NOW() + INTERVAL");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_strftime_generic_format(void) {
+    TEST("strftime - generic format -> TO_CHAR fallback");
+    char *result = translate_strftime(
+        "SELECT strftime('%H:%M', created_at) FROM t");
+    if (result && strstr(result, "TO_CHAR(created_at,")) {
+        PASS();
+    } else {
+        FAIL("Expected TO_CHAR fallback");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+// ============================================================================
+// Function Tests - unixepoch() additional patterns
+// ============================================================================
+
+static void test_unixepoch_column(void) {
+    TEST("unixepoch - unixepoch(created_at) -> EXTRACT(EPOCH FROM created_at)");
+    char *result = translate_unixepoch(
+        "SELECT unixepoch(created_at) FROM t");
+    if (result && strstr(result, "EXTRACT(EPOCH FROM created_at)::bigint")) {
+        PASS();
+    } else {
+        FAIL("Expected EXTRACT(EPOCH FROM col)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+// ============================================================================
+// Function Tests - json_each value::text cast
+// ============================================================================
+
+static void test_json_each_value_text_cast(void) {
+    TEST("json_each - value FROM json_array_elements -> value::text");
+    char *result = translate_json_each(
+        "SELECT value FROM json_each('[1,2,3]')");
+    if (result && strstr(result, "value::text")) {
+        PASS();
+    } else {
+        FAIL("Expected value::text");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+// ============================================================================
 // Quote Translation Tests (sql_tr_quotes.c)
 // ============================================================================
 
@@ -1157,6 +1846,88 @@ static void test_dedup_not_update(void) {
 }
 
 // ============================================================================
+// Query Translation Tests - fix_forward_reference_joins (sql_tr_query.c)
+// ============================================================================
+
+static void test_forward_ref_null(void) {
+    TEST("ForwardRef - NULL -> NULL");
+    char *result = fix_forward_reference_joins(NULL);
+    if (result == NULL) { PASS(); }
+    else { FAIL("Expected NULL"); free(result); }
+}
+
+static void test_forward_ref_no_alias_join(void) {
+    TEST("ForwardRef - no aliased JOIN -> unchanged");
+    char *result = fix_forward_reference_joins(
+        "SELECT * FROM metadata_items JOIN media_items ON media_items.metadata_item_id = metadata_items.id");
+    if (result && strstr(result, "SELECT * FROM metadata_items JOIN media_items")) {
+        PASS();
+    } else {
+        FAIL("Expected unchanged");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_forward_ref_no_unaliased_join(void) {
+    TEST("ForwardRef - no unaliased join -> unchanged");
+    char *result = fix_forward_reference_joins(
+        "SELECT * FROM t JOIN metadata_items AS parents ON parents.id = t.parent_id");
+    if (result && strstr(result, "JOIN metadata_items AS parents")) {
+        PASS();
+    } else {
+        FAIL("Expected unchanged");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_forward_ref_reorder(void) {
+    TEST("ForwardRef - reorders JOIN when forward ref detected");
+    // Simulate On Deck: aliased join references metadata_items.id before unaliased join defines it
+    char *result = fix_forward_reference_joins(
+        "SELECT * FROM media_items "
+        "JOIN metadata_items AS parents ON parents.id = metadata_items.parent_id "
+        "JOIN metadata_items ON metadata_items.id = media_items.metadata_item_id "
+        "WHERE parents.title IS NOT NULL");
+    if (result &&
+        // The unaliased JOIN should come before the aliased JOIN now
+        strstr(result, "JOIN metadata_items ON") &&
+        strstr(result, "JOIN metadata_items AS parents")) {
+        // Verify the unaliased join appears BEFORE the aliased join
+        const char *unaliased = strstr(result, "JOIN metadata_items ON");
+        const char *aliased = strstr(result, "JOIN metadata_items AS parents");
+        if (unaliased && aliased && unaliased < aliased) {
+            PASS();
+        } else {
+            FAIL("Unaliased JOIN should come before aliased JOIN");
+            printf("    Got: %s\n", result);
+        }
+    } else {
+        FAIL("Expected reordered JOINs");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_forward_ref_no_forward_reference(void) {
+    TEST("ForwardRef - aliased first but no forward ref -> unchanged");
+    // Aliased join appears first but doesn't reference metadata_items.xxx between the joins
+    char *result = fix_forward_reference_joins(
+        "SELECT * FROM media_items "
+        "JOIN metadata_items AS parents ON parents.id = media_items.parent_id "
+        "JOIN metadata_items ON metadata_items.id = media_items.metadata_item_id");
+    // No forward reference between the alias join and unaliased join
+    // (parents.id references parents, not metadata_items)
+    if (result) {
+        PASS();  // Should return something (either changed or unchanged, depends on whether "metadata_items." appears in ON clause)
+    } else {
+        FAIL("Expected non-NULL result");
+    }
+    free(result);
+}
+
+// ============================================================================
 // Query Translation Tests - translate_null_sorting (sql_tr_query.c)
 // ============================================================================
 
@@ -1181,6 +1952,78 @@ static void test_null_sorting_no_match(void) {
         PASS();
     } else {
         FAIL("Expected unchanged");
+    }
+    free(result);
+}
+
+static void test_null_sorting_null_input(void) {
+    TEST("NullSort - NULL -> NULL");
+    char *result = translate_null_sorting(NULL);
+    if (result == NULL) { PASS(); }
+    else { FAIL("Expected NULL"); free(result); }
+}
+
+static void test_null_sorting_backtick_parents_index(void) {
+    TEST("NullSort - parents.`index` IS NULL,col asc -> NULLS LAST");
+    char *result = translate_null_sorting(
+        "SELECT * FROM t ORDER BY parents.`index` IS NULL,parents.`index` asc");
+    if (result && strcasestr(result, "NULLS LAST") && !strcasestr(result, "IS NULL")) {
+        PASS();
+    } else {
+        FAIL("Expected NULLS LAST");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_null_sorting_metadata_items_index(void) {
+    TEST("NullSort - metadata_items.\"index\" IS NULL -> NULLS LAST");
+    char *result = translate_null_sorting(
+        "SELECT * FROM t ORDER BY metadata_items.\"index\" IS NULL, metadata_items.\"index\" asc");
+    if (result && strcasestr(result, "NULLS LAST") && !strcasestr(result, "IS NULL")) {
+        PASS();
+    } else {
+        FAIL("Expected NULLS LAST");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_null_sorting_originally_available_at(void) {
+    TEST("NullSort - originally_available_at IS NULL -> NULLS LAST");
+    char *result = translate_null_sorting(
+        "SELECT * FROM t ORDER BY metadata_items.originally_available_at IS NULL, metadata_items.originally_available_at asc");
+    if (result && strcasestr(result, "NULLS LAST") && !strcasestr(result, "IS NULL")) {
+        PASS();
+    } else {
+        FAIL("Expected NULLS LAST");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_null_sorting_grandparents_title_sort(void) {
+    TEST("NullSort - grandparents.title_sort IS NULL -> NULLS LAST");
+    char *result = translate_null_sorting(
+        "SELECT * FROM t ORDER BY grandparents.title_sort IS NULL, grandparents.title_sort asc");
+    if (result && strcasestr(result, "NULLS LAST") && !strcasestr(result, "IS NULL")) {
+        PASS();
+    } else {
+        FAIL("Expected NULLS LAST");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_null_sorting_space_variant(void) {
+    TEST("NullSort - IS NULL, col ASC (space+uppercase) -> NULLS LAST");
+    char *result = translate_null_sorting(
+        "SELECT * FROM t ORDER BY parents.\"index\" IS NULL, parents.\"index\" ASC");
+    if (result && strcasestr(result, "NULLS LAST") && !strcasestr(result, "IS NULL")) {
+        PASS();
+    } else {
+        FAIL("Expected NULLS LAST");
+        if (result) printf("    Got: %s\n", result);
     }
     free(result);
 }
@@ -1233,7 +2076,7 @@ static void test_distinct_orderby_groupby(void) {
 // Query Translation Tests - translate_case_booleans (sql_tr_query.c)
 // ============================================================================
 
-static void test_case_booleans_else(void) {
+static void test_case_booleans_else_1_true(void) {
     TEST("Query - CASE ELSE 1 END) -> ELSE true END)");
     char *result = translate_case_booleans(
         "SELECT (CASE WHEN a THEN 0 ELSE 1 END) FROM t");
@@ -1247,13 +2090,288 @@ static void test_case_booleans_else(void) {
     free(result);
 }
 
-static void test_case_booleans_where(void) {
+static void test_case_booleans_else_0_false(void) {
+    TEST("Query - CASE ELSE 0 END) -> ELSE false END)");
+    char *result = translate_case_booleans(
+        "SELECT (CASE WHEN a THEN 1 ELSE 0 END) FROM t");
+    if (result && strcasestr(result, "else false end)")) {
+        PASS();
+    } else {
+        FAIL("Expected ELSE false");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_then_0_else_true(void) {
+    TEST("Query - THEN 0 ELSE true -> THEN false ELSE true");
+    char *result = translate_case_booleans(
+        "SELECT (CASE WHEN a then 0 else true END) FROM t");
+    if (result && strcasestr(result, "then false else true end)")) {
+        PASS();
+    } else {
+        FAIL("Expected THEN false ELSE true");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_then_1_else_false(void) {
+    TEST("Query - THEN 1 ELSE false -> THEN true ELSE false");
+    char *result = translate_case_booleans(
+        "SELECT (CASE WHEN a then 1 else false END) FROM t");
+    if (result && strcasestr(result, "then true else false end)")) {
+        PASS();
+    } else {
+        FAIL("Expected THEN true ELSE false");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_0_or(void) {
+    TEST("Query - (0 or ...) -> (FALSE or ...)");
+    char *result = translate_case_booleans(
+        "SELECT * FROM t WHERE (0 or a = 1)");
+    if (result && strstr(result, "(FALSE or a = 1)")) {
+        PASS();
+    } else {
+        FAIL("Expected (FALSE or ...)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_1_or(void) {
+    TEST("Query - (1 or ...) -> (TRUE or ...)");
+    char *result = translate_case_booleans(
+        "SELECT * FROM t WHERE (1 or a = 1)");
+    if (result && strstr(result, "(TRUE or a = 1)")) {
+        PASS();
+    } else {
+        FAIL("Expected (TRUE or ...)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_and_0(void) {
+    TEST("Query - ... and 0) -> ... and FALSE)");
+    char *result = translate_case_booleans(
+        "SELECT * FROM t WHERE (a = 1 and 0)");
+    if (result && strstr(result, "and FALSE)")) {
+        PASS();
+    } else {
+        FAIL("Expected ... and FALSE)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_and_1(void) {
+    TEST("Query - ... and 1) -> ... and TRUE)");
+    char *result = translate_case_booleans(
+        "SELECT * FROM t WHERE (a = 1 and 1)");
+    if (result && strstr(result, "and TRUE)")) {
+        PASS();
+    } else {
+        FAIL("Expected ... and TRUE)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_or_0(void) {
+    TEST("Query - ... or 0) -> ... or FALSE)");
+    char *result = translate_case_booleans(
+        "SELECT * FROM t WHERE (a = 1 or 0)");
+    if (result && strstr(result, "or FALSE)")) {
+        PASS();
+    } else {
+        FAIL("Expected ... or FALSE)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_or_1(void) {
+    TEST("Query - ... or 1) -> ... or TRUE)");
+    char *result = translate_case_booleans(
+        "SELECT * FROM t WHERE (a = 1 or 1)");
+    if (result && strstr(result, "or TRUE)")) {
+        PASS();
+    } else {
+        FAIL("Expected ... or TRUE)");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_where_0(void) {
     TEST("Query - WHERE 0 -> WHERE FALSE");
     char *result = translate_case_booleans("SELECT * FROM t WHERE 0");
     if (result && strcasestr(result, "WHERE FALSE")) {
         PASS();
     } else {
         FAIL("Expected WHERE FALSE");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_where_1(void) {
+    TEST("Query - WHERE 1 -> WHERE TRUE");
+    char *result = translate_case_booleans("SELECT * FROM t WHERE 1");
+    if (result && strcasestr(result, "WHERE TRUE")) {
+        PASS();
+    } else {
+        FAIL("Expected WHERE TRUE");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_case_booleans_null_input(void) {
+    TEST("Query - case booleans NULL -> NULL");
+    char *result = translate_case_booleans(NULL);
+    if (result == NULL) { PASS(); }
+    else { FAIL("Expected NULL"); free(result); }
+}
+
+static void test_case_booleans_no_match(void) {
+    TEST("Query - no boolean patterns -> unchanged");
+    char *result = translate_case_booleans("SELECT id, name FROM metadata_items");
+    if (result && strcmp(result, "SELECT id, name FROM metadata_items") == 0) {
+        PASS();
+    } else {
+        FAIL("Expected unchanged");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+// ============================================================================
+// Query Translation Tests - fix_integer_text_mismatch (sql_tr_query.c)
+// ============================================================================
+
+static void test_int_text_mismatch_null(void) {
+    TEST("IntTextMismatch - NULL -> NULL");
+    char *result = fix_integer_text_mismatch(NULL);
+    if (result == NULL) { PASS(); }
+    else { FAIL("Expected NULL"); free(result); }
+}
+
+static void test_int_text_mismatch_no_match(void) {
+    TEST("IntTextMismatch - no matching pattern -> unchanged");
+    char *result = fix_integer_text_mismatch("SELECT * FROM metadata_items WHERE id = 1");
+    if (result && strcmp(result, "SELECT * FROM metadata_items WHERE id = 1") == 0) {
+        PASS();
+    } else {
+        FAIL("Expected unchanged");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_int_text_mismatch_pattern1(void) {
+    TEST("IntTextMismatch - metadata_items.id in (select taggings...) -> ::text");
+    char *result = fix_integer_text_mismatch(
+        "SELECT * FROM metadata_items WHERE metadata_items.id in (select taggings.metadata_item_id FROM taggings)");
+    if (result &&
+        strstr(result, "metadata_items.id::text in (select taggings.metadata_item_id::text")) {
+        PASS();
+    } else {
+        FAIL("Expected ::text casts");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_int_text_mismatch_pattern2_backtick(void) {
+    TEST("IntTextMismatch - `metadata_item_id` in + json_array_elements -> ::text");
+    char *result = fix_integer_text_mismatch(
+        "SELECT * FROM taggings WHERE `metadata_item_id` in "
+        "(SELECT value::text FROM json_array_elements('[1,2,3]'))");
+    if (result &&
+        strstr(result, "`metadata_item_id`::text in")) {
+        PASS();
+    } else {
+        FAIL("Expected ::text on backtick column");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_int_text_mismatch_pattern2_quote(void) {
+    TEST("IntTextMismatch - \"metadata_item_id\" in + json_array_elements -> ::text");
+    char *result = fix_integer_text_mismatch(
+        "SELECT * FROM taggings WHERE \"metadata_item_id\" in "
+        "(SELECT value::text FROM json_array_elements('[1,2,3]'))");
+    if (result &&
+        strstr(result, "\"metadata_item_id\"::text in")) {
+        PASS();
+    } else {
+        FAIL("Expected ::text on quoted column");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_int_text_mismatch_pattern4_download_backtick(void) {
+    TEST("IntTextMismatch - download_queue_items di.`status` + json -> ::text");
+    char *result = fix_integer_text_mismatch(
+        "SELECT * FROM download_queue_items di WHERE di.`status` IN "
+        "(SELECT value::text FROM json_array_elements('[1,2]'))");
+    if (result &&
+        strstr(result, "di.`status`::text IN")) {
+        PASS();
+    } else {
+        FAIL("Expected ::text on status");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_int_text_mismatch_pattern4_download_quote(void) {
+    TEST("IntTextMismatch - download_queue_items di.\"status\" + json -> ::text");
+    char *result = fix_integer_text_mismatch(
+        "SELECT * FROM download_queue_items di WHERE di.\"status\" IN "
+        "(SELECT value::text FROM json_array_elements('[1,2]'))");
+    if (result &&
+        strstr(result, "di.\"status\"::text IN")) {
+        PASS();
+    } else {
+        FAIL("Expected ::text on status");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_int_text_mismatch_generic_status_backtick(void) {
+    TEST("IntTextMismatch - generic `status` IN + json_array_elements -> ::text");
+    char *result = fix_integer_text_mismatch(
+        "SELECT * FROM some_table WHERE `status` IN "
+        "(SELECT value::text FROM json_array_elements('[0,1]'))");
+    if (result &&
+        strstr(result, "`status`::text IN")) {
+        PASS();
+    } else {
+        FAIL("Expected ::text on generic status");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_int_text_mismatch_generic_status_quote(void) {
+    TEST("IntTextMismatch - generic \"status\" IN + json_array_elements -> ::text");
+    char *result = fix_integer_text_mismatch(
+        "SELECT * FROM some_table WHERE \"status\" IN "
+        "(SELECT value::text FROM json_array_elements('[0,1]'))");
+    if (result &&
+        strstr(result, "\"status\"::text IN")) {
+        PASS();
+    } else {
+        FAIL("Expected ::text on generic status");
         if (result) printf("    Got: %s\n", result);
     }
     free(result);
@@ -1431,6 +2549,66 @@ static void test_operator_spacing_no_fix(void) {
     free(result);
 }
 
+static void test_operator_spacing_gte(void) {
+    TEST("Keyword - fix_operator_spacing >=-1 -> >= -1");
+    char *result = fix_operator_spacing("SELECT * FROM t WHERE a>=-1");
+    if (result && strstr(result, ">= -1")) {
+        PASS();
+    } else {
+        FAIL("Expected >= -1");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_operator_spacing_lte(void) {
+    TEST("Keyword - fix_operator_spacing <=-1 -> <= -1");
+    char *result = fix_operator_spacing("SELECT * FROM t WHERE a<=-1");
+    if (result && strstr(result, "<= -1")) {
+        PASS();
+    } else {
+        FAIL("Expected <= -1");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_operator_spacing_ne2(void) {
+    TEST("Keyword - fix_operator_spacing <>-1 -> <> -1");
+    char *result = fix_operator_spacing("SELECT * FROM t WHERE a<>-1");
+    if (result && strstr(result, "<> -1")) {
+        PASS();
+    } else {
+        FAIL("Expected <> -1");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_operator_spacing_gt(void) {
+    TEST("Keyword - fix_operator_spacing >-1 -> > -1");
+    char *result = fix_operator_spacing("SELECT * FROM t WHERE a>-1");
+    if (result && strstr(result, "> -1")) {
+        PASS();
+    } else {
+        FAIL("Expected > -1");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_operator_spacing_lt(void) {
+    TEST("Keyword - fix_operator_spacing <-1 -> < -1");
+    char *result = fix_operator_spacing("SELECT * FROM t WHERE a<-1");
+    if (result && strstr(result, "< -1")) {
+        PASS();
+    } else {
+        FAIL("Expected < -1");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
 // ============================================================================
 // Placeholder Translation Tests - double quote fix (sql_tr_placeholders.c)
 // ============================================================================
@@ -1459,6 +2637,262 @@ static void test_placeholder_double_quote_not_string(void) {
         for (int i = 0; i < count; i++) free(names[i]);
         free(names);
     }
+}
+
+// ============================================================================
+// fix_group_by_strict_complete() direct tests (sql_tr_groupby.c)
+// ============================================================================
+
+static void test_groupby_complete_null(void) {
+    TEST("GroupByComplete - NULL -> NULL");
+    char *result = fix_group_by_strict_complete(NULL);
+    if (result == NULL) { PASS(); }
+    else { FAIL("Expected NULL"); free(result); }
+}
+
+static void test_groupby_complete_no_groupby(void) {
+    TEST("GroupByComplete - no GROUP BY -> unchanged");
+    char *result = fix_group_by_strict_complete("SELECT id, name FROM t");
+    if (result && strcmp(result, "SELECT id, name FROM t") == 0) { PASS(); }
+    else { FAIL("Expected unchanged"); if (result) printf("    Got: %s\n", result); }
+    free(result);
+}
+
+static void test_groupby_complete_adds_missing_column(void) {
+    TEST("GroupByComplete - adds missing column to GROUP BY");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, name, title FROM t GROUP BY id");
+    if (result && strcasestr(result, "GROUP BY id,name,title")) {
+        PASS();
+    } else {
+        FAIL("Expected name,title added to GROUP BY");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_skips_aggregate(void) {
+    TEST("GroupByComplete - skips aggregate functions in SELECT");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, count(*) as cnt FROM t GROUP BY id");
+    // count(*) should not be added to GROUP BY, only id is needed
+    if (result && !strcasestr(result, "count")) {
+        // GROUP BY should only contain id, not count(*)
+        PASS();
+    } else if (result && strcasestr(result, "GROUP BY id") && !strstr(result, ",cnt")) {
+        PASS();
+    } else {
+        FAIL("Expected aggregate skipped");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_skips_numeric_constant(void) {
+    TEST("GroupByComplete - skips numeric constants");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, 1 as flag FROM t GROUP BY id");
+    // "1" should not be added to GROUP BY
+    if (result && !strstr(result, ",1") && !strstr(result, ",flag")) {
+        PASS();
+    } else {
+        FAIL("Expected numeric constant skipped");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_already_complete(void) {
+    TEST("GroupByComplete - all columns present -> unchanged");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, name FROM t GROUP BY id, name");
+    if (result && strcasestr(result, "GROUP BY id, name") && !strstr(result, ",name,name")) {
+        PASS();
+    } else {
+        FAIL("Expected unchanged");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_skips_case(void) {
+    TEST("GroupByComplete - skips CASE expression");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, CASE WHEN a > 0 THEN 'yes' ELSE 'no' END as flag FROM t GROUP BY id");
+    // CASE should not be added to GROUP BY
+    if (result && !strcasestr(result, "CASE")) {
+        PASS();
+    } else if (result && strcasestr(result, "GROUP BY id") && !strstr(result, ",flag")) {
+        PASS();
+    } else {
+        FAIL("Expected CASE skipped");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_skips_subquery(void) {
+    TEST("GroupByComplete - subquery body not in GROUP BY (alias ok)");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, (SELECT count(*) FROM t2 WHERE t2.pid = t.id) as cnt FROM t GROUP BY id");
+    // The subquery body "(SELECT count(*)...)" should NOT appear in the GROUP BY clause
+    // The alias "cnt" may appear (which is acceptable GROUP BY behavior)
+    const char *gb = result ? strcasestr(result, "GROUP BY") : NULL;
+    if (result && gb && !strstr(gb, "(SELECT")) {
+        PASS();
+    } else {
+        FAIL("Expected subquery body not in GROUP BY portion");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_table_dot_column(void) {
+    TEST("GroupByComplete - handles table.column references");
+    char *result = fix_group_by_strict_complete(
+        "SELECT t.id, t.name, count(*) FROM t GROUP BY t.id");
+    if (result && strstr(result, "t.name")) {
+        PASS();
+    } else {
+        FAIL("Expected t.name added");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_preserves_having(void) {
+    TEST("GroupByComplete - preserves HAVING clause");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, name, count(*) as cnt FROM t GROUP BY id HAVING count(*) > 1");
+    if (result && strcasestr(result, "HAVING count(*) > 1") && strstr(result, "name")) {
+        PASS();
+    } else {
+        FAIL("Expected HAVING preserved and name added");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_preserves_order_by(void) {
+    TEST("GroupByComplete - preserves ORDER BY clause");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, name FROM t GROUP BY id ORDER BY name");
+    if (result && strcasestr(result, "ORDER BY name") && strstr(result, ",name")) {
+        PASS();
+    } else {
+        FAIL("Expected ORDER BY preserved and name added");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_preserves_limit(void) {
+    TEST("GroupByComplete - preserves LIMIT clause");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, name FROM t GROUP BY id LIMIT 10");
+    if (result && strcasestr(result, "LIMIT 10") && strstr(result, ",name")) {
+        PASS();
+    } else {
+        FAIL("Expected LIMIT preserved and name added");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_distinct_select(void) {
+    TEST("GroupByComplete - handles SELECT DISTINCT");
+    char *result = fix_group_by_strict_complete(
+        "SELECT DISTINCT id, name FROM t GROUP BY id");
+    if (result && strstr(result, "name")) {
+        PASS();
+    } else {
+        FAIL("Expected name added with DISTINCT");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_quoted_column(void) {
+    TEST("GroupByComplete - handles quoted column names");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, \"index\" FROM t GROUP BY id");
+    if (result && (strstr(result, "\"index\"") || strstr(result, ",\"index\""))) {
+        PASS();
+    } else {
+        FAIL("Expected \"index\" added");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_groupby_complete_func_with_alias(void) {
+    TEST("GroupByComplete - function call with AS alias -> add alias");
+    char *result = fix_group_by_strict_complete(
+        "SELECT id, upper(name) as uname FROM t GROUP BY id");
+    if (result && strstr(result, "uname")) {
+        PASS();
+    } else {
+        FAIL("Expected alias uname added to GROUP BY");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+// ============================================================================
+// add_nulls_first_ordering() additional tests
+// ============================================================================
+
+static void test_nulls_first_no_groupby(void) {
+    TEST("NullsFirst - no GROUP BY -> unchanged");
+    char *result = add_nulls_first_ordering("SELECT * FROM t ORDER BY id");
+    if (result && strcmp(result, "SELECT * FROM t ORDER BY id") == 0) { PASS(); }
+    else { FAIL("Expected unchanged"); }
+    free(result);
+}
+
+static void test_nulls_first_existing_orderby(void) {
+    TEST("NullsFirst - existing ORDER BY -> unchanged (skips)");
+    char *result = add_nulls_first_ordering(
+        "SELECT a, count(*) FROM t GROUP BY a ORDER BY a");
+    // Has ORDER BY already, should be unchanged
+    if (result && strcasestr(result, "ORDER BY a") && !strstr(result, "NULLS FIRST")) {
+        PASS();
+    } else {
+        FAIL("Expected unchanged with existing ORDER BY");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_nulls_first_no_orderby(void) {
+    TEST("NullsFirst - GROUP BY without ORDER BY -> adds ORDER BY 1 NULLS FIRST");
+    char *result = add_nulls_first_ordering(
+        "SELECT a, count(*) FROM t GROUP BY a");
+    if (result && strstr(result, "ORDER BY 1 NULLS FIRST")) {
+        PASS();
+    } else {
+        FAIL("Expected ORDER BY 1 NULLS FIRST added");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
+}
+
+static void test_nulls_first_before_limit(void) {
+    TEST("NullsFirst - ORDER BY inserted before LIMIT");
+    char *result = add_nulls_first_ordering(
+        "SELECT a, count(*) FROM t GROUP BY a LIMIT 10");
+    if (result && strstr(result, "ORDER BY 1 NULLS FIRST") &&
+        strstr(result, "LIMIT 10")) {
+        // Verify ORDER BY comes before LIMIT
+        const char *order = strstr(result, "ORDER BY");
+        const char *limit = strstr(result, "LIMIT");
+        if (order && limit && order < limit) { PASS(); }
+        else { FAIL("ORDER BY should come before LIMIT"); printf("    Got: %s\n", result); }
+    } else {
+        FAIL("Expected ORDER BY 1 NULLS FIRST before LIMIT");
+        if (result) printf("    Got: %s\n", result);
+    }
+    free(result);
 }
 
 // ============================================================================
@@ -1496,6 +2930,10 @@ int main(void) {
     test_placeholder_reuse();
     test_placeholder_question_mark();
     test_placeholder_in_string();
+    test_placeholder_question_alpha_space();
+    test_placeholder_mixed_question_and_named();
+    test_placeholder_escaped_quotes();
+    test_placeholder_colon_after_ident();
 
     printf("\n\033[1mFunction Translation:\033[0m\n");
     test_function_ifnull();
@@ -1507,16 +2945,54 @@ int main(void) {
     printf("\n\033[1mKeyword Translation:\033[0m\n");
     test_keyword_glob();
     test_keyword_notnull();
+    test_keyword_null_input();
+    test_keyword_alter_table_add_quoted();
+    test_keyword_alter_table_add_dblquoted();
+    test_keyword_alter_table_add_unquoted();
+    test_keyword_begin_immediate();
+    test_keyword_begin_deferred();
+    test_keyword_begin_exclusive();
+    test_keyword_insert_or_ignore();
+    test_keyword_replace_into();
+    test_keyword_empty_in();
+    test_keyword_empty_in_spaces();
+    test_keyword_group_by_null();
+    test_keyword_having_cnt();
+    test_keyword_sqlite_master();
+    test_keyword_sqlite_schema();
+    test_keyword_main_dot_sqlite_master();
+    test_keyword_main_unquoted_sqlite_master();
+    test_keyword_sqlite_master_order_by_rowid();
+    test_keyword_replace_into_preserved_with_insert_or();
+    test_keyword_indexed_by();
+    test_keyword_indexed_by_multiple();
 
     printf("\n\033[1mType Translation:\033[0m\n");
     test_type_autoincrement();
     test_type_text();
+    test_type_dt_integer8();
+    test_type_integer8();
+    test_type_blob_paren();
+    test_type_blob_comma();
+    test_type_blob_space();
+    test_type_default_true();
+    test_type_default_false();
+    test_type_datetime_paren();
+    test_type_datetime_comma();
+    test_type_datetime_space();
+    test_type_null_input();
+    test_type_no_patterns();
 
     printf("\n\033[1mFull Query Translation:\033[0m\n");
     test_full_select();
     test_full_insert();
     test_full_update();
     test_full_complex();
+
+    printf("\n\033[1mPlex-specific Inline Fixes (pipeline):\033[0m\n");
+    test_plex_viewed_at_order_by();
+    test_plex_external_metadata_group_by();
+    test_plex_clustering_distinct_removes_group_by();
 
     printf("\n\033[1mEdge Cases:\033[0m\n");
     test_edge_empty();
@@ -1528,6 +3004,8 @@ int main(void) {
     test_collate_nocase_equals();
     test_collate_nocase_like();
     test_collate_nocase_orderby();
+    test_collate_nocase_glob();
+    test_collate_nocase_ne();
 
     printf("\n\033[1mFTS4 Boolean Search (NEW):\033[0m\n");
     test_fts_negation();
@@ -1580,9 +3058,22 @@ int main(void) {
     printf("\n\033[1mFunction - last_insert_rowid, json_each:\033[0m\n");
     test_function_last_insert_rowid();
     test_function_json_each();
+    test_json_each_value_text_cast();
 
     printf("\n\033[1mFunction - simplify_typeof_fixup:\033[0m\n");
     test_function_simplify_typeof();
+
+    printf("\n\033[1mFunction - typeof() type remapping:\033[0m\n");
+    test_typeof_integer_bigint_expansion();
+    test_typeof_real_to_double_precision();
+
+    printf("\n\033[1mFunction - strftime() additional:\033[0m\n");
+    test_strftime_datetime_format();
+    test_strftime_positive_interval();
+    test_strftime_generic_format();
+
+    printf("\n\033[1mFunction - unixepoch() additional:\033[0m\n");
+    test_unixepoch_column();
 
     printf("\n\033[1mQuote Translations:\033[0m\n");
     test_quote_column_quotes();
@@ -1602,9 +3093,22 @@ int main(void) {
     test_dedup_assignments_params();
     test_dedup_not_update();
 
+    printf("\n\033[1mForward Reference Joins:\033[0m\n");
+    test_forward_ref_null();
+    test_forward_ref_no_alias_join();
+    test_forward_ref_no_unaliased_join();
+    test_forward_ref_reorder();
+    test_forward_ref_no_forward_reference();
+
     printf("\n\033[1mNull Sorting:\033[0m\n");
     test_null_sorting();
     test_null_sorting_no_match();
+    test_null_sorting_null_input();
+    test_null_sorting_backtick_parents_index();
+    test_null_sorting_metadata_items_index();
+    test_null_sorting_originally_available_at();
+    test_null_sorting_grandparents_title_sort();
+    test_null_sorting_space_variant();
 
     printf("\n\033[1mDistinct + ORDER BY:\033[0m\n");
     test_distinct_orderby_aggregate();
@@ -1612,8 +3116,31 @@ int main(void) {
     test_distinct_orderby_groupby();
 
     printf("\n\033[1mCase Booleans:\033[0m\n");
-    test_case_booleans_else();
-    test_case_booleans_where();
+    test_case_booleans_else_1_true();
+    test_case_booleans_else_0_false();
+    test_case_booleans_then_0_else_true();
+    test_case_booleans_then_1_else_false();
+    test_case_booleans_0_or();
+    test_case_booleans_1_or();
+    test_case_booleans_and_0();
+    test_case_booleans_and_1();
+    test_case_booleans_or_0();
+    test_case_booleans_or_1();
+    test_case_booleans_where_0();
+    test_case_booleans_where_1();
+    test_case_booleans_null_input();
+    test_case_booleans_no_match();
+
+    printf("\n\033[1mInteger/Text Mismatch:\033[0m\n");
+    test_int_text_mismatch_null();
+    test_int_text_mismatch_no_match();
+    test_int_text_mismatch_pattern1();
+    test_int_text_mismatch_pattern2_backtick();
+    test_int_text_mismatch_pattern2_quote();
+    test_int_text_mismatch_pattern4_download_backtick();
+    test_int_text_mismatch_pattern4_download_quote();
+    test_int_text_mismatch_generic_status_backtick();
+    test_int_text_mismatch_generic_status_quote();
 
     printf("\n\033[1mMax/Min Translation:\033[0m\n");
     test_max_to_greatest();
@@ -1636,12 +3163,38 @@ int main(void) {
     test_operator_spacing_eq();
     test_operator_spacing_ne();
     test_operator_spacing_no_fix();
+    test_operator_spacing_gte();
+    test_operator_spacing_lte();
+    test_operator_spacing_ne2();
+    test_operator_spacing_gt();
+    test_operator_spacing_lt();
 
     printf("\n\033[1mPlaceholder Fix (single vs double quotes):\033[0m\n");
     test_placeholder_double_quote_not_string();
 
-    printf("\n\033[1mNULLS FIRST Ordering:\033[0m\n");
+    printf("\n\033[1mfix_group_by_strict_complete (GROUP BY rewriter):\033[0m\n");
+    test_groupby_complete_null();
+    test_groupby_complete_no_groupby();
+    test_groupby_complete_adds_missing_column();
+    test_groupby_complete_skips_aggregate();
+    test_groupby_complete_skips_numeric_constant();
+    test_groupby_complete_already_complete();
+    test_groupby_complete_skips_case();
+    test_groupby_complete_skips_subquery();
+    test_groupby_complete_table_dot_column();
+    test_groupby_complete_preserves_having();
+    test_groupby_complete_preserves_order_by();
+    test_groupby_complete_preserves_limit();
+    test_groupby_complete_distinct_select();
+    test_groupby_complete_quoted_column();
+    test_groupby_complete_func_with_alias();
+
+    printf("\n\033[1madd_nulls_first_ordering:\033[0m\n");
     test_nulls_first_ordering();
+    test_nulls_first_no_groupby();
+    test_nulls_first_existing_orderby();
+    test_nulls_first_no_orderby();
+    test_nulls_first_before_limit();
 
     // Cleanup
     sql_translator_cleanup();

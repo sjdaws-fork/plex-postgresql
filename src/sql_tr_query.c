@@ -185,6 +185,7 @@ char* translate_case_booleans(const char *sql) {
 
     // Fast path: if no patterns that need boolean translation
     if (!strcasestr(sql, "end)") && !strcasestr(sql, "(0 ") && !strcasestr(sql, "(1 ") &&
+        !strcasestr(sql, " 0)") && !strcasestr(sql, " 1)") &&
         !strcasestr(sql, "where 0") && !strcasestr(sql, "where 1")) {
         return strdup(sql);
     }
