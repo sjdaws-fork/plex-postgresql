@@ -9,8 +9,9 @@
 #include <strings.h>
 #include <assert.h>
 
-// Declare the function we're testing
+// Declare the functions we're testing
 char* fix_group_by_strict_complete(const char *sql);
+char* add_nulls_first_ordering(const char *sql);
 
 // Test helper
 static int test_query(const char *name, const char *input, const char *expected) {
@@ -177,6 +178,197 @@ int main() {
         "SELECT metadata_items.id, (SELECT COUNT(*) FROM media_items WHERE metadata_item_id = metadata_items.id) as media_count FROM metadata_items GROUP BY metadata_items.id",
         "GROUP BY metadata_items.id"
     )) passed++;
+
+    // ========================================================================
+    // Edge cases for fix_group_by_strict_complete
+    // ========================================================================
+
+    // Test 17: NULL input
+    total++;
+    result = fix_group_by_strict_complete(NULL);
+    if (result == NULL) {
+        printf("TEST: NULL input\n  PASS: Returned NULL\n\n");
+        passed++;
+    } else {
+        printf("TEST: NULL input\n  FAIL: Should return NULL\n\n");
+        free(result);
+    }
+
+    // Test 18: GROUP BY with LIMIT
+    total++;
+    if (test_query(
+        "GROUP BY with LIMIT",
+        "SELECT metadata_items.id, metadata_items.title FROM metadata_items GROUP BY metadata_items.id LIMIT 10",
+        "GROUP BY metadata_items.id,metadata_items.title"
+    )) passed++;
+
+    // Test 19: GROUP BY with LIMIT and OFFSET
+    total++;
+    if (test_query(
+        "GROUP BY with LIMIT and OFFSET",
+        "SELECT metadata_items.id, metadata_items.title FROM metadata_items GROUP BY metadata_items.id LIMIT 10 OFFSET 5",
+        "GROUP BY metadata_items.id,metadata_items.title"
+    )) passed++;
+
+    // Test 20: GROUP BY preserves LIMIT clause
+    total++;
+    result = fix_group_by_strict_complete(
+        "SELECT metadata_items.id, metadata_items.title FROM metadata_items GROUP BY metadata_items.id LIMIT 10"
+    );
+    if (result && strcasestr(result, "LIMIT 10") != NULL) {
+        printf("TEST: LIMIT preserved after rewrite\n  PASS: LIMIT 10 present\n\n");
+        passed++;
+    } else {
+        printf("TEST: LIMIT preserved after rewrite\n  FAIL: LIMIT 10 missing\n\n");
+    }
+    free(result);
+
+    // Test 21: SUM aggregate
+    total++;
+    if (test_query(
+        "SUM aggregate not added to GROUP BY",
+        "SELECT metadata_items.id, SUM(metadata_items.rating) as total_rating FROM metadata_items GROUP BY metadata_items.id",
+        "GROUP BY metadata_items.id"
+    )) passed++;
+
+    // Test 22: AVG aggregate
+    total++;
+    if (test_query(
+        "AVG aggregate not added to GROUP BY",
+        "SELECT metadata_items.guid, metadata_items.title, AVG(views.rating) FROM metadata_items JOIN views ON views.guid = metadata_items.guid GROUP BY metadata_items.guid",
+        "GROUP BY metadata_items.guid,metadata_items.title"
+    )) passed++;
+
+    // Test 23: string_agg aggregate
+    total++;
+    if (test_query(
+        "string_agg aggregate not added to GROUP BY",
+        "SELECT metadata_items.id, string_agg(tags.tag, ',') FROM metadata_items JOIN tags ON tags.metadata_item_id = metadata_items.id GROUP BY metadata_items.id",
+        "GROUP BY metadata_items.id"
+    )) passed++;
+
+    // Test 24: Multiple tables, multiple missing
+    total++;
+    if (test_query(
+        "Multiple tables multiple missing columns",
+        "SELECT a.id, a.name, b.title, COUNT(*) FROM table_a a JOIN table_b b ON b.a_id = a.id GROUP BY a.id",
+        "GROUP BY a.id,a.name,b.title"
+    )) passed++;
+
+    // Test 25: SELECT with DISTINCT and GROUP BY
+    total++;
+    if (test_query(
+        "DISTINCT with GROUP BY",
+        "SELECT DISTINCT metadata_items.id, metadata_items.title, COUNT(*) FROM metadata_items GROUP BY metadata_items.id",
+        "GROUP BY metadata_items.id,metadata_items.title"
+    )) passed++;
+
+    // ========================================================================
+    // add_nulls_first_ordering tests
+    // ========================================================================
+    printf("\n=== NULLS FIRST Ordering Tests ===\n\n");
+
+    // Test 26: NULL input
+    total++;
+    result = add_nulls_first_ordering(NULL);
+    if (result == NULL) {
+        printf("TEST: NULLS FIRST - NULL input\n  PASS: Returned NULL\n\n");
+        passed++;
+    } else {
+        printf("TEST: NULLS FIRST - NULL input\n  FAIL: Should return NULL\n\n");
+        free(result);
+    }
+
+    // Test 27: No GROUP BY -> return unchanged
+    total++;
+    {
+        const char *no_gb = "SELECT * FROM metadata_items";
+        result = add_nulls_first_ordering(no_gb);
+        if (result && strcmp(result, no_gb) == 0) {
+            printf("TEST: NULLS FIRST - no GROUP BY\n  PASS: Returned unchanged\n\n");
+            passed++;
+        } else {
+            printf("TEST: NULLS FIRST - no GROUP BY\n  FAIL: Should return unchanged\n\n");
+        }
+        free(result);
+    }
+
+    // Test 28: GROUP BY without ORDER BY -> adds ORDER BY 1 NULLS FIRST
+    total++;
+    {
+        result = add_nulls_first_ordering(
+            "SELECT id, title FROM metadata_items GROUP BY id"
+        );
+        if (result && strcasestr(result, "ORDER BY 1 NULLS FIRST") != NULL) {
+            printf("TEST: NULLS FIRST - adds ORDER BY\n  PASS: ORDER BY 1 NULLS FIRST present\n\n");
+            passed++;
+        } else {
+            printf("TEST: NULLS FIRST - adds ORDER BY\n  FAIL: ORDER BY 1 NULLS FIRST missing\n  Got: %s\n\n",
+                   result ? result : "NULL");
+        }
+        free(result);
+    }
+
+    // Test 29: GROUP BY with existing ORDER BY -> unchanged
+    total++;
+    {
+        const char *with_order = "SELECT id FROM metadata_items GROUP BY id ORDER BY id ASC";
+        result = add_nulls_first_ordering(with_order);
+        if (result && strcmp(result, with_order) == 0) {
+            printf("TEST: NULLS FIRST - existing ORDER BY unchanged\n  PASS: Returned unchanged\n\n");
+            passed++;
+        } else {
+            printf("TEST: NULLS FIRST - existing ORDER BY unchanged\n  FAIL\n\n");
+        }
+        free(result);
+    }
+
+    // Test 30: GROUP BY with LIMIT -> ORDER BY inserted before LIMIT
+    total++;
+    {
+        result = add_nulls_first_ordering(
+            "SELECT id, title FROM metadata_items GROUP BY id LIMIT 10"
+        );
+        if (result && strcasestr(result, "ORDER BY 1 NULLS FIRST") != NULL &&
+            strcasestr(result, "LIMIT 10") != NULL) {
+            // Verify ORDER BY comes before LIMIT
+            const char *order_pos = strcasestr(result, "ORDER BY");
+            const char *limit_pos = strcasestr(result, "LIMIT");
+            if (order_pos && limit_pos && order_pos < limit_pos) {
+                printf("TEST: NULLS FIRST - ORDER BY before LIMIT\n  PASS\n\n");
+                passed++;
+            } else {
+                printf("TEST: NULLS FIRST - ORDER BY before LIMIT\n  FAIL: wrong order\n\n");
+            }
+        } else {
+            printf("TEST: NULLS FIRST - ORDER BY before LIMIT\n  FAIL\n  Got: %s\n\n",
+                   result ? result : "NULL");
+        }
+        free(result);
+    }
+
+    // Test 31: GROUP BY with HAVING -> ORDER BY inserted after HAVING
+    total++;
+    {
+        result = add_nulls_first_ordering(
+            "SELECT id, COUNT(*) FROM metadata_items GROUP BY id HAVING COUNT(*) > 1"
+        );
+        if (result && strcasestr(result, "ORDER BY 1 NULLS FIRST") != NULL &&
+            strcasestr(result, "HAVING") != NULL) {
+            const char *having_pos = strcasestr(result, "HAVING");
+            const char *order_pos = strcasestr(result, "ORDER BY");
+            if (having_pos && order_pos && having_pos < order_pos) {
+                printf("TEST: NULLS FIRST - ORDER BY after HAVING\n  PASS\n\n");
+                passed++;
+            } else {
+                printf("TEST: NULLS FIRST - ORDER BY after HAVING\n  FAIL: wrong order\n\n");
+            }
+        } else {
+            printf("TEST: NULLS FIRST - ORDER BY after HAVING\n  FAIL\n  Got: %s\n\n",
+                   result ? result : "NULL");
+        }
+        free(result);
+    }
 
     // Summary
     printf("=== Test Results ===\n");
