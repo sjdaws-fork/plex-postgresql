@@ -484,8 +484,48 @@ test-upsert: $(TEST_BIN_DIR)/test_upsert
 	@./$(TEST_BIN_DIR)/test_upsert
 	@echo ""
 
+# SQL classification unit tests (should_redirect, should_skip_sql, is_write/read_operation)
+$(TEST_BIN_DIR)/test_pg_config: $(TEST_DIR)/test_pg_config.c src/pg_config.c src/sql_tr_helpers.o src/pg_logging.o
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) -o $@ $(TEST_DIR)/test_pg_config.c src/pg_config.c src/sql_tr_helpers.o src/pg_logging.o -Iinclude -Isrc -I$(PG_INCLUDE) -Wall -Wextra
+
+test-config: $(TEST_BIN_DIR)/test_pg_config
+	@echo ""
+	@./$(TEST_BIN_DIR)/test_pg_config
+	@echo ""
+
+# Bind helper unit tests (contains_binary_bytes, bytes_to_pg_hex)
+$(TEST_BIN_DIR)/test_bind_helpers: $(TEST_DIR)/test_bind_helpers.c
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) -o $@ $< -Wall -Wextra
+
+test-bind: $(TEST_BIN_DIR)/test_bind_helpers
+	@echo ""
+	@./$(TEST_BIN_DIR)/test_bind_helpers
+	@echo ""
+
+# Common helper unit tests (is_library_db_path, simple_str_replace)
+$(TEST_BIN_DIR)/test_common_helpers: $(TEST_DIR)/test_common_helpers.c
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) -o $@ $< -Wall -Wextra
+
+test-common: $(TEST_BIN_DIR)/test_common_helpers
+	@echo ""
+	@./$(TEST_BIN_DIR)/test_common_helpers
+	@echo ""
+
+# Statement helper unit tests (metadata_settings upsert, metadata ID extraction)
+$(TEST_BIN_DIR)/test_statement_helpers: $(TEST_DIR)/test_statement_helpers.c
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) -o $@ $< -Wall -Wextra
+
+test-statement: $(TEST_BIN_DIR)/test_statement_helpers
+	@echo ""
+	@./$(TEST_BIN_DIR)/test_statement_helpers
+	@echo ""
+
 # Run all unit tests
-unit-test: test-recursion test-crash test-sql test-groupby test-upsert test-types test-soci test-cache test-tls test-fork test-reaper test-buffer test-api test-expanded test-params test-logging test-exception test-fts
+unit-test: test-recursion test-crash test-sql test-groupby test-upsert test-types test-soci test-cache test-tls test-fork test-reaper test-buffer test-api test-expanded test-params test-logging test-exception test-fts test-config test-bind test-common test-statement
 	@echo "All unit tests complete."
 
 # ============================================================================
