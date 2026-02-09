@@ -60,7 +60,7 @@ else
 endif
 LINUX_OBJECTS = $(SQL_TR_OBJS) $(PG_MODULES) $(DB_INTERPOSE_SHARED) src/db_interpose_core_linux.o
 
-.PHONY: all clean install test macos linux run stop unit-test ci-test test-recursion test-crash test-params test-logging test-soci test-fork test-fts test-buffer test-reaper test-groupby test-upsert
+.PHONY: all clean install test macos linux run stop unit-test ci-test test-recursion test-crash test-params test-logging test-soci test-fork test-fts test-buffer test-reaper test-groupby test-upsert test-parity
 
 all: $(TARGET)
 
@@ -517,6 +517,16 @@ test-common: $(TEST_BIN_DIR)/test_common_helpers
 	@./$(TEST_BIN_DIR)/test_common_helpers
 	@echo ""
 
+# Platform parity unit tests (shared symbol loading, backtrace module)
+$(TEST_BIN_DIR)/test_platform_parity: $(TEST_DIR)/test_platform_parity.c src/db_interpose_common.o src/platform_backtrace.o src/pg_logging.o
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) -o $@ $< src/db_interpose_common.o src/platform_backtrace.o src/pg_logging.o -Iinclude -Isrc -Wall -Wextra -lsqlite3 -ldl
+
+test-parity: $(TEST_BIN_DIR)/test_platform_parity
+	@echo ""
+	@./$(TEST_BIN_DIR)/test_platform_parity
+	@echo ""
+
 # Statement helper unit tests (metadata_settings upsert, metadata ID extraction)
 $(TEST_BIN_DIR)/test_statement_helpers: $(TEST_DIR)/test_statement_helpers.c
 	@mkdir -p $(TEST_BIN_DIR)
@@ -528,11 +538,11 @@ test-statement: $(TEST_BIN_DIR)/test_statement_helpers
 	@echo ""
 
 # Run all unit tests
-unit-test: test-recursion test-crash test-sql test-groupby test-upsert test-types test-soci test-cache test-tls test-fork test-reaper test-buffer test-api test-expanded test-params test-logging test-exception test-fts test-config test-bind test-common test-statement
+unit-test: test-recursion test-crash test-sql test-groupby test-upsert test-types test-soci test-cache test-tls test-fork test-reaper test-buffer test-api test-expanded test-params test-logging test-exception test-fts test-config test-bind test-common test-statement test-parity
 	@echo "All unit tests complete."
 
 # CI-safe subset: excludes tests needing LD_PRELOAD + shim (test-api, test-expanded, test-params)
-ci-test: test-recursion test-crash test-sql test-groupby test-upsert test-types test-soci test-cache test-tls test-fork test-reaper test-buffer test-logging test-exception test-fts test-config test-bind test-common test-statement
+ci-test: test-recursion test-crash test-sql test-groupby test-upsert test-types test-soci test-cache test-tls test-fork test-reaper test-buffer test-logging test-exception test-fts test-config test-bind test-common test-statement test-parity
 	@echo "All CI unit tests complete."
 
 # ============================================================================
