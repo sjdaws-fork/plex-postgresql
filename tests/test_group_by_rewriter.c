@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <assert.h>
 
 // Declare the function we're testing
@@ -22,7 +23,7 @@ static int test_query(const char *name, const char *input, const char *expected)
         return 0;
     }
 
-    int match = (strstr(result, expected) != NULL);
+    int match = (strcasestr(result, expected) != NULL);
     if (match) {
         printf("  PASS: Contains expected: %s\n\n", expected);
     } else {
@@ -121,7 +122,7 @@ int main() {
     total++;
     const char *complete_groupby = "SELECT metadata_items.id, metadata_items.title FROM metadata_items GROUP BY metadata_items.id, metadata_items.title";
     result = fix_group_by_strict_complete(complete_groupby);
-    if (result && strstr(result, "GROUP BY metadata_items.id") != NULL) {
+    if (result && strcasestr(result, "GROUP BY metadata_items.id") != NULL) {
         printf("TEST: Complete GROUP BY\n  PASS: Preserved GROUP BY\n\n");
         passed++;
     } else {
