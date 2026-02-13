@@ -1,3 +1,69 @@
+# Release Notes - v0.9.26
+
+**Release Date:** February 13, 2026
+
+Plex v1.43 compatibility: rewrote JSON operator translation, added `instr()` support, and fixed a data-loss bug in CSV-based migration.
+
+## Highlights
+
+### JSON `->>` Operator Rewrite
+
+- **Problem:** The previous LIKE-based workaround for `col ->> '$.key'` consumed bind parameters, causing "bind message supplies N parameters, but prepared statement requires M" errors on Plex v1.43.0.10492 voice-activity-detection queries.
+- **Fix:** Clean translation to native PostgreSQL `col::json->>'key'`. Strips `'$.'` prefix, removes whitespace before `::json`, preserves all bind parameters.
+
+### `instr()` Function Translation
+
+- **Problem:** SQLite's `instr(haystack, needle)` not recognized by PostgreSQL, causing "function instr(text, unknown) does not exist" on Last.fm blacklist queries.
+- **Fix:** Translated to PostgreSQL's `STRPOS(haystack, needle)`.
+
+### Migration CSV Truncation Fix
+
+- **Problem:** `sqlite3 -csv` export silently truncated TEXT fields larger than ~8KB with embedded quotes. Affected 133 rows in `media_parts.extra_data` on a typical library. The `url` field contains URL-encoded `%22` sequences that confused CSV parsing.
+- **Fix:** Replaced CSV pipeline with Python bridge (`scripts/migrate_table.py`) using `COPY FROM STDIN` with tab-delimited data for lossless transfer.
+
+### Truncated JSON Auto-Repair (doctor.sh)
+
+- `doctor.sh` now detects truncated JSON in `extra_data` columns across `media_parts`, `media_items`, `metadata_items`, and `metadata_item_settings`.
+- Auto-repairs by trimming the redundant `url` field and closing the JSON object.
+
+### Log Level Cleanup
+
+- All `TRACE_BADCAST` and `TRACE_PREPARE` messages downgraded from `LOG_ERROR` to `LOG_DEBUG` — they are opt-in diagnostic traces, not errors.
+
+### CI Fix
+
+- `test-stmt-free` and `test-bind-mismatch` Makefile targets now skip the macOS `leaks` tool on Linux instead of failing.
+
+## Testing
+
+738 unit tests, 0 failures. 3 new tests added:
+- `instr()` translation (2 tests)
+- Real Plex VAD query with 3 bind params (1 test)
+
+## Upgrade Notes
+
+1. Re-run `scripts/install_wrappers.sh` (macOS) or restart the service (Linux/Docker) after updating.
+2. Run `scripts/doctor.sh` to detect and auto-repair any truncated JSON from prior CSV-based migrations.
+3. If migrating fresh from SQLite, the new Python bridge handles data transfer losslessly — no manual steps needed.
+
+## Files Changed
+
+- `src/sql_tr_query.c` — Rewrote `fix_json_operator_on_text()`: LIKE-hack → `::json->>` cast
+- `src/sql_tr_functions.c` — Added `translate_instr()` function
+- `src/sql_translator.c` — Added `translate_instr` to pipeline (step 5c)
+- `src/sql_translator_internal.h` — Added `translate_instr` declaration
+- `src/db_interpose_column.c` — `TRACE_BADCAST` messages → `LOG_DEBUG`
+- `src/db_interpose_prepare.c` — `TRACE_PREPARE` messages → `LOG_DEBUG`
+- `scripts/migrate_lib.sh` — Replaced CSV export with Python bridge + JSON integrity check
+- `scripts/migrate_sqlite_to_pg.sh` — Replaced CSV export with Python bridge
+- `scripts/migrate_table.py` — **New:** Python bridge for lossless SQLite→PG via COPY
+- `scripts/doctor.sh` — Added truncated JSON detection + auto-repair
+- `Makefile` — `leaks` gracefully skipped on Linux
+- `tests/src/test_sql_translator.c` — 3 new tests, 4 updated JSON tests
+- `VERSION`, `CHANGELOG.md`, `README.md`, `README.es.md`
+
+---
+
 # Release Notes - v0.9.16
 
 **Release Date:** February 8, 2026
