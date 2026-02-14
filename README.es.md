@@ -13,16 +13,15 @@ Una librería shim pequeña que captura las llamadas SQLite de Plex y las envía
 | Linux (Docker) | ✅ Funciona (init y ejecución probados, no probado en producción) |
 | Linux (Nativo) | ⚠️ No probado |
 
-## Última versión: v0.9.26
+## Última versión: v0.9.27
 
-**Compatibilidad con Plex v1.43 y corrección de migración:** traducción JSON reescrita, soporte `instr()`, y corrección de pérdida de datos en migración CSV.
+**Corrección SyncCollections:** eliminados workarounds COMPAT que causaban 223 errores LPE por inicio.
 
-- ✅ **Corregido:** operador JSON `->>` ahora traduce a `col::json->>'key'` nativo — elimina errores de bind-parameter en Plex v1.43.0.10492
-- ✅ **Corregido:** `instr()` traducido a `STRPOS()` de PostgreSQL — corrige errores en consultas Last.fm
-- ✅ **Corregido:** truncamiento CSV en migración — reemplazado `sqlite3 -csv` con bridge Python (`migrate_table.py`)
-- ✅ **Nuevo:** reparación automática de JSON truncado en `doctor.sh`
+- ✅ **Corregido:** eliminados skips COMPAT de SyncCollections — las consultas de limpieza blank-key y agregación de tags ahora se ejecutan normalmente
+- ✅ **Corregido:** elimina los 223 errores "Failed to generate a query" LPE al inicio — Plex ahora tiene datos completos de colecciones para consultas hub
+- ℹ️ Los problemas subyacentes de std::bad_cast ya fueron corregidos en v0.9.23
 
-Descarga: https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.26
+Descarga: https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.27
 
 ## ¿Por qué PostgreSQL?
 
@@ -91,7 +90,7 @@ psql -d plex -c "ALTER USER plex PASSWORD 'plex';"
 ### 2. Instalar (ZIP recomendado)
 
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.26/plex-postgresql-v0.9.26-macos.zip -o /tmp/plex-pg-macos.zip
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.27/plex-postgresql-v0.9.27-macos.zip -o /tmp/plex-pg-macos.zip
 mkdir -p /tmp/plex-pg-macos && cd /tmp/plex-pg-macos
 unzip /tmp/plex-pg-macos.zip
 
@@ -142,7 +141,7 @@ psql -U plex -d plex -c "CREATE SCHEMA plex;"
 ### 2. Instalar (ZIP recomendado)
 
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.26/plex-postgresql-v0.9.26-linux.zip -o /tmp/plex-pg-linux.zip
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.27/plex-postgresql-v0.9.27-linux.zip -o /tmp/plex-pg-linux.zip
 mkdir -p /tmp/plex-pg && cd /tmp/plex-pg
 unzip /tmp/plex-pg-linux.zip
 
