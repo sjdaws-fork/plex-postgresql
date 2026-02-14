@@ -1,3 +1,33 @@
+# Release Notes - v0.9.27
+
+**Release Date:** February 14, 2026
+
+Removed SyncCollections COMPAT workarounds that caused 223 LPE errors per Plex startup.
+
+## Highlights
+
+### SyncCollections COMPAT Skips Removed
+
+- **Problem:** Two SyncCollections query patterns (blank-key cleanup and tag aggregation) were being intercepted and replaced with empty result sets to avoid `std::bad_cast` crashes. This meant Plex had no collection data at startup, causing 223 "Failed to generate a query" LPE errors every time.
+- **Fix:** The underlying `std::bad_cast` issues were already fixed in v0.9.23 (`dt_integer(8)` decltype mapping for OID=20 bigint columns, and column alias fixes for `count(*)`/`min(year)`/`max(year)`). The COMPAT skips are now removed, letting the queries execute normally.
+- **Result:** 0 LPE errors at startup (was 223). Collections, hubs, and recommendations now populate correctly.
+
+## Testing
+
+738 unit tests, 0 failures. No new tests — this is a removal of workaround code.
+
+## Upgrade Notes
+
+1. Re-run `scripts/install_wrappers.sh` (macOS) or restart the service (Linux/Docker) after updating.
+2. No database changes required.
+
+## Files Changed
+
+- `src/db_interpose_prepare.c` — Removed two SyncCollections COMPAT intercept blocks (~20 lines), replaced with comment explaining the fix history
+- `VERSION`, `CHANGELOG.md`, `README.md`, `README.es.md`
+
+---
+
 # Release Notes - v0.9.26
 
 **Release Date:** February 13, 2026
