@@ -1,0 +1,34 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Shell scripts must always have LF endings (critical for Docker on Windows)
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Docker files must have LF endings
+Dockerfile* text eol=lf
+docker-compose*.yml text eol=lf
+
+# Build files
+Makefile text eol=lf
+
+# CI/CD workflows
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Source code
+*.c text eol=lf
+*.h text eol=lf
+
+# Binary files - do not touch
+*.dylib binary
+*.so binary
+*.o binary
+*.a binary
+*.zip binary
+*.tar.gz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
