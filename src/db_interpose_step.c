@@ -8,12 +8,16 @@
 #include "db_interpose.h"
 #include "db_interpose_common.h"  // For platform_print_backtrace
 #include "pg_query_cache.h"
+#include "shim_alloc.h"
 
 // ============================================================================
 // Step Function - Main Query Execution
 // ============================================================================
 
 int my_sqlite3_step(sqlite3_stmt *pStmt) {
+    // Periodic shim memory usage summary (every 60s, near-zero overhead)
+    shim_alloc_maybe_log();
+
     // CRITICAL FIX v0.9.3: If we're inside resolve_column_tables, skip shim entirely
     // This prevents: resolve_column_tables → PQexec → (Plex hook) → my_sqlite3_step → recursion
     // Flag declared in db_interpose.h, defined in db_interpose_common.c

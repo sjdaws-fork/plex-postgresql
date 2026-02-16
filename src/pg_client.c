@@ -15,6 +15,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include "shim_alloc.h"
 
 // Socket timeout for PostgreSQL connections (prevents infinite poll() waits)
 #define PG_SOCKET_TIMEOUT_SEC 60

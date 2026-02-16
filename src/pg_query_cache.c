@@ -15,6 +15,7 @@
 #include "pg_query_cache.h"
 #include "pg_types.h"
 #include "pg_logging.h"
+#include "shim_alloc.h"
 
 // Thread-local cache
 static pthread_key_t cache_key;

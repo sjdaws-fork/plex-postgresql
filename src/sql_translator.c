@@ -16,6 +16,7 @@
 #include "sql_translator_internal.h"
 #include "pg_logging.h"
 #include <stdint.h>
+#include "shim_alloc.h"
 
 // ============================================================================
 // Thread-Local Translation Cache (lock-free, ~500x speedup for cache hits)

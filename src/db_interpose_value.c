@@ -9,6 +9,7 @@
 
 #include "db_interpose.h"
 #include <stdatomic.h>
+#include "shim_alloc.h"
 
 // Helper to convert SQLite type constant to string for logging
 static const char* sqlite_type_name(int type) {

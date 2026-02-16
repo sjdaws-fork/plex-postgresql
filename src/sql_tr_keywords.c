@@ -6,6 +6,7 @@
 #include "sql_translator.h"
 #include "sql_translator_internal.h"
 #include <stdint.h>
+#include "shim_alloc.h"
 
 // ============================================================================
 // Check if string starts with a SQL keyword

@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <stdlib.h>
+#include "shim_alloc.h"
 
 #define MAX_COLUMNS 512
 #define MAX_COLUMN_LEN 256

@@ -6,6 +6,7 @@
 #include "sql_translator_internal.h"
 #include "pg_logging.h"
 #include <ctype.h>
+#include "shim_alloc.h"
 
 // ============================================================================
 // Table Conflict Resolution Mapping
