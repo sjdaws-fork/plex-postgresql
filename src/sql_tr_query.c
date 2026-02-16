@@ -5,6 +5,7 @@
 
 #include "sql_translator_internal.h"
 #include "pg_logging.h"
+#include "shim_alloc.h"
 
 // ============================================================================
 // Helper: Find end of SQL quoted string (handles '' escapes)

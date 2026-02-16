@@ -36,7 +36,7 @@ SQL_TR_OBJS = src/sql_translator.o src/sql_tr_helpers.o src/sql_tr_placeholders.
               src/sql_tr_quotes.o src/sql_tr_keywords.o src/sql_tr_upsert.o
 
 # PG modules
-PG_MODULES = src/pg_config.o src/pg_logging.o src/pg_client.o src/pg_statement.o src/pg_query_cache.o src/pg_mem_telemetry.o
+PG_MODULES = src/pg_config.o src/pg_logging.o src/pg_client.o src/pg_statement.o src/pg_query_cache.o src/pg_mem_telemetry.o src/shim_alloc.o
 
 # DB Interpose modules - shared between Mac and Linux
 DB_INTERPOSE_SHARED = src/db_interpose_common.o src/platform_backtrace.o src/db_interpose_open.o \
@@ -286,7 +286,7 @@ test-stack-macos: $(TARGET) $(TEST_BIN_DIR)/test_stack_macos
 # SQL translator unit tests (links against translator objects + logging)
 $(TEST_BIN_DIR)/test_sql_translator: $(TEST_DIR)/test_sql_translator.c $(SQL_TR_OBJS) src/pg_logging.o
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) -o $@ $< $(SQL_TR_OBJS) src/pg_logging.o -Iinclude -Isrc -Wall -Wextra
+	$(CC) -o $@ $< $(SQL_TR_OBJS) src/pg_logging.o src/shim_alloc.o -Iinclude -Isrc -Wall -Wextra
 
 test-sql: $(TEST_BIN_DIR)/test_sql_translator
 	@echo ""
@@ -357,7 +357,7 @@ test-reaper: $(TEST_BIN_DIR)/test_pool_reaper
 # Micro-benchmarks (shim component performance)
 $(TEST_BIN_DIR)/test_benchmark: $(TEST_DIR)/test_benchmark.c $(SQL_TR_OBJS) src/pg_logging.o
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) -O3 -o $@ $< $(SQL_TR_OBJS) src/pg_logging.o -Iinclude -Isrc -Wall -Wextra
+	$(CC) -O3 -o $@ $< $(SQL_TR_OBJS) src/pg_logging.o src/shim_alloc.o -Iinclude -Isrc -Wall -Wextra
 
 benchmark: $(TEST_BIN_DIR)/test_benchmark
 	@./$(TEST_BIN_DIR)/test_benchmark
@@ -475,7 +475,7 @@ test-buffer: $(TEST_BIN_DIR)/test_buffer_pool
 # GROUP BY rewriter unit tests
 $(TEST_BIN_DIR)/test_group_by_rewriter: tests/test_group_by_rewriter.c src/sql_tr_groupby.o src/sql_tr_helpers.o src/pg_logging.o
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) -o $@ $< src/sql_tr_groupby.o src/sql_tr_helpers.o src/pg_logging.o -Iinclude -Isrc -Wall -Wextra
+	$(CC) -o $@ $< src/sql_tr_groupby.o src/sql_tr_helpers.o src/pg_logging.o src/shim_alloc.o -Iinclude -Isrc -Wall -Wextra
 
 test-groupby: $(TEST_BIN_DIR)/test_group_by_rewriter
 	@echo ""
@@ -485,7 +485,7 @@ test-groupby: $(TEST_BIN_DIR)/test_group_by_rewriter
 # UPSERT (INSERT OR REPLACE) unit tests
 $(TEST_BIN_DIR)/test_upsert: $(TEST_DIR)/test_upsert.c $(SQL_TR_OBJS) src/pg_logging.o
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) -o $@ $< $(SQL_TR_OBJS) src/pg_logging.o -Iinclude -Isrc -Wall -Wextra
+	$(CC) -o $@ $< $(SQL_TR_OBJS) src/pg_logging.o src/shim_alloc.o -Iinclude -Isrc -Wall -Wextra
 
 test-upsert: $(TEST_BIN_DIR)/test_upsert
 	@echo ""
@@ -495,7 +495,7 @@ test-upsert: $(TEST_BIN_DIR)/test_upsert
 # SQL classification unit tests (should_redirect, should_skip_sql, is_write/read_operation)
 $(TEST_BIN_DIR)/test_pg_config: $(TEST_DIR)/test_pg_config.c src/pg_config.c src/sql_tr_helpers.o src/pg_logging.o
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) -o $@ $(TEST_DIR)/test_pg_config.c src/pg_config.c src/sql_tr_helpers.o src/pg_logging.o -Iinclude -Isrc -I$(PG_INCLUDE) -Wall -Wextra
+	$(CC) -o $@ $(TEST_DIR)/test_pg_config.c src/pg_config.c src/sql_tr_helpers.o src/pg_logging.o src/shim_alloc.o -Iinclude -Isrc -I$(PG_INCLUDE) -Wall -Wextra
 
 test-config: $(TEST_BIN_DIR)/test_pg_config
 	@echo ""
@@ -525,7 +525,7 @@ test-common: $(TEST_BIN_DIR)/test_common_helpers
 # Platform parity unit tests (shared symbol loading, backtrace module)
 $(TEST_BIN_DIR)/test_platform_parity: $(TEST_DIR)/test_platform_parity.c src/db_interpose_common.o src/platform_backtrace.o src/pg_logging.o
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) -o $@ $< src/db_interpose_common.o src/platform_backtrace.o src/pg_logging.o -Iinclude -Isrc -Wall -Wextra -lsqlite3 -ldl
+	$(CC) -o $@ $< src/db_interpose_common.o src/platform_backtrace.o src/pg_logging.o src/shim_alloc.o -Iinclude -Isrc -Wall -Wextra -lsqlite3 -ldl
 
 test-parity: $(TEST_BIN_DIR)/test_platform_parity
 	@echo ""
@@ -545,7 +545,7 @@ test-statement: $(TEST_BIN_DIR)/test_statement_helpers
 # Statement free sweep regression test (ensures all param slots are freed)
 $(TEST_BIN_DIR)/test_stmt_free_param_sweep: $(TEST_DIR)/test_stmt_free_param_sweep.c src/pg_statement.o src/sql_tr_helpers.o src/pg_mem_telemetry.o
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) -o $@ $< src/pg_statement.o src/sql_tr_helpers.o src/pg_mem_telemetry.o -Iinclude -Isrc -I$(PG_INCLUDE) -Wall -Wextra $(LDFLAGS) -lpthread
+	$(CC) -o $@ $< src/pg_statement.o src/sql_tr_helpers.o src/pg_mem_telemetry.o src/shim_alloc.o -Iinclude -Isrc -I$(PG_INCLUDE) -Wall -Wextra $(LDFLAGS) -lpthread
 
 test-stmt-free: $(TEST_BIN_DIR)/test_stmt_free_param_sweep
 	@echo ""
@@ -559,7 +559,7 @@ test-stmt-free: $(TEST_BIN_DIR)/test_stmt_free_param_sweep
 # Bind index mismatch regression (idx > param_count cleanup safety)
 $(TEST_BIN_DIR)/test_bind_index_mismatch_cleanup: $(TEST_DIR)/test_bind_index_mismatch_cleanup.c src/pg_statement.o src/sql_tr_helpers.o src/pg_mem_telemetry.o
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) -o $@ $< src/pg_statement.o src/sql_tr_helpers.o src/pg_mem_telemetry.o -Iinclude -Isrc -I$(PG_INCLUDE) -Wall -Wextra $(LDFLAGS) -lpthread
+	$(CC) -o $@ $< src/pg_statement.o src/sql_tr_helpers.o src/pg_mem_telemetry.o src/shim_alloc.o -Iinclude -Isrc -I$(PG_INCLUDE) -Wall -Wextra $(LDFLAGS) -lpthread
 
 test-bind-mismatch: $(TEST_BIN_DIR)/test_bind_index_mismatch_cleanup
 	@echo ""

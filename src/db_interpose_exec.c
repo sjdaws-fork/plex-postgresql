@@ -12,6 +12,7 @@
 
 #include "db_interpose.h"
 #include <ctype.h>
+#include "shim_alloc.h"
 
 // ============================================================================
 // SQL Normalization - Extract numeric literals as parameters

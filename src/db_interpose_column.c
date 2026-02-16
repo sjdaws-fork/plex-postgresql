@@ -10,6 +10,7 @@
 #include "pg_mem_telemetry.h"
 #include <stdatomic.h>
 #include <sys/time.h>
+#include "shim_alloc.h"
 
 // CRITICAL FIX v0.9.3: Thread-local flag to prevent recursion in resolve_column_tables
 // When resolve_column_tables calls PQexec(), it can trigger Plex's SQLite hooks

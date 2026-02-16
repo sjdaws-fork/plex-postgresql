@@ -326,6 +326,27 @@ make ci-test         # CI-safe subset (798 tests, no LD_PRELOAD)
 make benchmark       # Shim micro-benchmarks
 ```
 
+## Memory Tracking
+
+The shim includes opt-in allocation tracking to monitor memory usage and detect leaks. Disabled by default (zero overhead).
+
+| Environment Variable | Effect |
+|---|---|
+| `PLEX_PG_ALLOC_TRACK=1` | Logs shim memory summary every 60s: live/peak bytes, alloc/free counts |
+| `PLEX_PG_ALLOC_TRACE=1` | Same as TRACK + logs top 15 unfreed allocation sites with file:line |
+
+Example output with `PLEX_PG_ALLOC_TRACE=1`:
+```
+SHIM_ALLOC: live=3424KB peak=3502KB allocs=19092 frees=22269 total_alloc=26800KB total_freed=23376KB
+SHIM_ALLOC_TRACE: 17 leak sites, top 15:
+  #1 pg_statement.c:351 — 1414096 bytes in 62 allocs
+  #2 pg_client.c:553    — 1048832 bytes in 34 allocs
+  #3 pg_client.c:1163   — 678656 bytes in 22 allocs
+  ...
+```
+
+If `live` keeps growing over hours, there's a leak — the trace shows exactly where.
+
 ## Troubleshooting
 
 ```bash

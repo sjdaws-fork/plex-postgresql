@@ -7,6 +7,7 @@
 
 #include "db_interpose.h"
 #include "pg_mem_telemetry.h"
+#include "shim_alloc.h"
 
 // ============================================================================
 // RACE_DEBUG Macro

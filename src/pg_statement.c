@@ -14,6 +14,7 @@
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
+#include "shim_alloc.h"
 
 // ============================================================================
 // Static State

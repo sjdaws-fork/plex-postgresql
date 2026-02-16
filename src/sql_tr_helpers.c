@@ -4,6 +4,7 @@
  */
 
 #include "sql_translator_internal.h"
+#include "shim_alloc.h"
 
 // ============================================================================
 // Safe strcasestr implementation

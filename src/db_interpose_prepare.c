@@ -11,6 +11,7 @@
 #include "sql_translator_internal.h"
 #include <time.h>
 #include <sys/time.h>
+#include "shim_alloc.h"
 
 static char *maybe_alias_collection_sync_aggregates(const char *sqlite_sql, const char *pg_sql);
 
