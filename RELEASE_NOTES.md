@@ -1,3 +1,28 @@
+# Release Notes - v0.9.30
+
+**Release Date:** February 16, 2026
+
+Opt-in shim memory tracker with leak trace for production diagnostics.
+
+## Highlights
+
+### Memory Allocation Tracker
+
+- `PLEX_PG_ALLOC_TRACK=1` — logs live/peak/alloc/free summary every 60s
+- `PLEX_PG_ALLOC_TRACE=1` — also logs top 15 unfreed allocation sites with file:line
+- Disabled by default, zero overhead when off
+- 65K-entry hash table for accurate size tracking at free()
+- Verified: ~3.4MB live, ~3.5MB peak under normal Plex load
+
+## Files Changed
+
+- `src/shim_alloc.h`, `src/shim_alloc.c` — New allocation tracker module
+- 15 source files — Added `#include "shim_alloc.h"` for macro-based tracking
+- `Makefile` — Added `shim_alloc.o` to build and test targets
+- `README.md` — Memory Tracking section
+
+---
+
 # Release Notes - v0.9.29
 
 **Release Date:** February 16, 2026

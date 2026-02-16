@@ -5,6 +5,11 @@ All notable changes to plex-postgresql will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.30] - 2026-02-16
+
+### Added
+- **Shim memory tracker** — opt-in allocation tracking via `PLEX_PG_ALLOC_TRACK=1` (summary every 60s) and `PLEX_PG_ALLOC_TRACE=1` (top 15 unfreed allocation sites with file:line). Zero overhead when disabled.
+
 ## [0.9.29] - 2026-02-16
 
 ### Fixed
