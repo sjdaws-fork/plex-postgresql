@@ -5,6 +5,29 @@ All notable changes to plex-postgresql will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.29] - 2026-02-16
+
+### Fixed
+- **Connection isolation during streaming** — `resolve_column_tables()` and `preload_decltype_cache()` called `PQexec()` on the streaming connection, consuming pending results. Next `PQgetResult` returned NULL, making Plex think no migrations had run, triggering full re-migration and `std::bad_cast` crash. Both functions now acquire an alternate pool connection when the passed connection has `streaming_active=1`.
+- **Pool connection acquisition skips streaming connections** — fast path (TLS cached slot) and PHASE 1 loop both check `streaming_active` flag before returning a connection.
+- **`PQcancel` before drain loops** — 6 drain loops (4 in `db_interpose_step.c`, 2 in `pg_statement.c`) now cancel the server-side query before draining, preventing hangs on large result sets.
+
+### Added
+- **`streaming_active` flag** on `pg_connection_t` — `volatile int` set when streaming starts, cleared on all completion/error/reset/finalize paths.
+- **Dummy shadow statement fallback** — when shadow SQLite prepare fails for READ queries, builds a dummy `SELECT 1 WHERE ? IS NOT NULL AND ...` with matching parameter count so `sqlite3_bind_*` calls succeed and the query runs purely on PostgreSQL.
+- **DDL `IF NOT EXISTS` injection** — shadow SQLite `CREATE TABLE`/`CREATE INDEX` statements get `IF NOT EXISTS` added automatically.
+- **17 connection isolation tests** (`test_connection_isolation.c`) — streaming_active lifecycle, pool isolation, resolve/decltype guards, regression, multi-threaded.
+- **20 shadow fallback tests** (`test_shadow_fallback.c`) — parameter counting, dummy generation, edge cases, end-to-end.
+- Total: 798 tests across 24 suites.
+
+## [0.9.28] - 2026-02-15
+
+### Added
+- **Single-row streaming mode** — READ queries use `PQsetSingleRowMode` for row-by-row streaming instead of fetching entire result sets into memory. Reduces memory pressure for large queries.
+
+### Fixed
+- **SQL translation bugs** — placeholder counting missed parameters after string literals; upsert translation failed when column list was absent; string quoting edge cases.
+
 ## [0.9.27] - 2026-02-14
 
 ### Fixed
