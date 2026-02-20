@@ -202,9 +202,6 @@ init_plex_directories() {
     mkdir -p "$plex_dir/Cache"
     mkdir -p "$plex_dir/Logs"
 
-    # plexinc/pms-docker uses plex:plex (not abc:abc like linuxserver)
-    chown -R plex:plex "$plex_dir" 2>/dev/null || true
-
     echo "Plex directories initialized"
 }
 
