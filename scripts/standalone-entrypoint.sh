@@ -249,12 +249,6 @@ if [ -n "$PLEX_PG_HOST" ]; then
         rm -rf "${crash_dir:?}/"*
         echo "Cleaned crash reports (prevents CrashUploader invocation)"
     fi
-
-    # Final permission fix
-    if [ "${CHANGE_CONFIG_DIR_OWNERSHIP,,}" = "true" ]; then
-        echo "Fixing final permissions..."
-        chown -R plex:plex "/config/Library/Application Support/Plex Media Server" 2>/dev/null || true
-    fi
 else
     echo "PLEX_PG_HOST not set, skipping PostgreSQL initialization"
 fi
