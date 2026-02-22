@@ -30,6 +30,18 @@ jobs:
           set -eux
           brew install postgresql@15
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/sql-translator/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/sql-translator/Cargo.lock') }}
+
       - name: Build arm64 dylib
         run: |
           set -eux

@@ -11,6 +11,10 @@ RUN apk add --no-cache \
     curl \
     perl
 
+# Install Rust toolchain (needed for sql-translator)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 # Verify musl version matches Plex (1.2.2)
 RUN /lib/ld-musl-*.so.1 --version 2>&1 | head -2
 
@@ -41,6 +45,10 @@ RUN cd postgresql-15.10 && \
 # Copy source files
 COPY src/ src/
 COPY include/ include/
+COPY rust/ rust/
+
+# Build Rust sql-translator static library
+RUN cd rust/sql-translator && cargo build --release
 
 # Build shim with musl 1.2.2 (same as Plex)
 # Compiler flags match build_shim_musl.sh for consistency and performance
@@ -64,12 +72,11 @@ RUN ARCH=$(uname -m) && \
         src/db_interpose_prepare.c src/db_interpose_bind.c \
         src/db_interpose_step.c src/db_interpose_column.c \
         src/db_interpose_value.c src/db_interpose_metadata.c \
-        src/sql_translator.c src/sql_tr_helpers.c src/sql_tr_placeholders.c \
-        src/sql_tr_functions.c src/sql_tr_query.c src/sql_tr_groupby.c \
-        src/sql_tr_types.c src/sql_tr_quotes.c src/sql_tr_keywords.c \
-        src/sql_tr_upsert.c src/pg_config.c src/pg_logging.c \
+        src/sql_translator_rust_bridge.c src/str_utils.c \
+        src/pg_config.c src/pg_logging.c \
         src/pg_client.c src/pg_statement.c src/pg_query_cache.c \
         src/pg_mem_telemetry.c src/shim_alloc.c \
+        rust/sql-translator/target/release/libsql_translator.a \
         -I/usr/local/pgsql/include -I/usr/include -Iinclude -Isrc \
         -L/usr/local/pgsql/lib -lpq \
         -ldl -lpthread \
