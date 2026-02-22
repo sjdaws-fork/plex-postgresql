@@ -25,21 +25,49 @@ fn transform_column(col: &mut ColumnDef) {
     // 1. Rewrite the data type
     col.data_type = rewrite_data_type(std::mem::replace(&mut col.data_type, DataType::Unspecified));
 
-    // 2. Remove AUTOINCREMENT (ColumnOption::DialectSpecific containing the AUTOINCREMENT token)
-    col.options.retain(|opt_def| {
-        match &opt_def.option {
-            ColumnOption::DialectSpecific(tokens) => {
-                // SQLite AUTOINCREMENT is emitted as a DialectSpecific token list
-                let text: String = tokens
-                    .iter()
-                    .map(|t| t.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                !text.to_uppercase().contains("AUTOINCREMENT")
-            }
-            _ => true,
+    // 2. Check for AUTOINCREMENT and remove it
+    let had_autoincrement = col.options.iter().any(|opt_def| {
+        if let ColumnOption::DialectSpecific(tokens) = &opt_def.option {
+            let text: String = tokens
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            text.to_uppercase().contains("AUTOINCREMENT")
+        } else {
+            false
         }
     });
+
+    col.options.retain(|opt_def| match &opt_def.option {
+        ColumnOption::DialectSpecific(tokens) => {
+            let text: String = tokens
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            !text.to_uppercase().contains("AUTOINCREMENT")
+        }
+        _ => true,
+    });
+
+    // 2b. If AUTOINCREMENT was present, change INTEGER → SERIAL (or BIGINT → BIGSERIAL)
+    if had_autoincrement {
+        col.data_type = match &col.data_type {
+            DataType::Integer(_) | DataType::Int(_) => DataType::Custom(
+                ObjectName(vec![ObjectNamePart::Identifier(Ident::new("SERIAL"))]),
+                vec![],
+            ),
+            DataType::BigInt(_) => DataType::Custom(
+                ObjectName(vec![ObjectNamePart::Identifier(Ident::new("BIGSERIAL"))]),
+                vec![],
+            ),
+            _ => DataType::Custom(
+                ObjectName(vec![ObjectNamePart::Identifier(Ident::new("SERIAL"))]),
+                vec![],
+            ),
+        };
+    }
 
     // 3. Rewrite DEFAULT 't' → TRUE, DEFAULT 'f' → FALSE
     for opt_def in &mut col.options {

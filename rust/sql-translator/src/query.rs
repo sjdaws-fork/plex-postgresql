@@ -58,6 +58,9 @@ fn transform_query(q: &mut Query) {
 
     // Fix ORDER BY IS NULL pattern → NULLS LAST (must run after expr transform)
     fix_order_by_is_null(q);
+
+    // Remove ORDER BY rowid (PostgreSQL doesn't have rowid)
+    fix_order_by_rowid(q);
 }
 
 fn transform_set_expr(se: &mut SetExpr) {
@@ -187,6 +190,29 @@ fn exprs_display_eq(a: &Expr, b: &Expr) -> bool {
     format!("{}", a).to_lowercase() == format!("{}", b).to_lowercase()
 }
 
+// ─── Fix 11: ORDER BY rowid → removed ────────────────────────────────────────
+
+fn fix_order_by_rowid(q: &mut Query) {
+    let Some(ob) = &mut q.order_by else { return };
+    let OrderByKind::Expressions(exprs) = &mut ob.kind else {
+        return;
+    };
+
+    // Remove any ORDER BY expression that is just `rowid`
+    exprs.retain(|oe| {
+        if let Expr::Identifier(ident) = &oe.expr {
+            ident.value.to_lowercase() != "rowid"
+        } else {
+            true
+        }
+    });
+
+    // If all ORDER BY expressions were removed, remove the ORDER BY clause
+    if exprs.is_empty() {
+        q.order_by = None;
+    }
+}
+
 // ─── Fix 3: DISTINCT + aggregate ORDER BY ─────────────────────────────────────
 
 fn fix_distinct_with_agg_orderby(q: &mut Query) {
@@ -200,9 +226,11 @@ fn fix_distinct_with_agg_orderby(q: &mut Query) {
         return;
     }
 
-    let has_agg_in_order = if let Some(ob) = &q.order_by {
+    let has_incompatible_in_order = if let Some(ob) = &q.order_by {
         if let OrderByKind::Expressions(exprs) = &ob.kind {
-            exprs.iter().any(|oe| is_aggregate_expr(&oe.expr))
+            exprs
+                .iter()
+                .any(|oe| is_distinct_incompatible_expr(&oe.expr))
         } else {
             false
         }
@@ -210,7 +238,7 @@ fn fix_distinct_with_agg_orderby(q: &mut Query) {
         false
     };
 
-    if has_agg_in_order {
+    if has_incompatible_in_order {
         if let SetExpr::Select(sel) = q.body.as_mut() {
             sel.distinct = None;
         }
@@ -307,10 +335,12 @@ fn transform_expr(expr: Expr) -> Expr {
         }
 
         // Fix 9: COLLATE NOCASE on equality → LOWER(x) = LOWER(y)
+        // Fix 10: 0/1 in boolean context (AND/OR) → FALSE/TRUE
         // Fix general BinaryOp recursion
         Expr::BinaryOp { left, op, right } => {
             // Before recursing, check for COLLATE NOCASE at this level
             let is_eq_op = matches!(op, BinaryOperator::Eq | BinaryOperator::NotEq);
+            let is_logical_op = matches!(op, BinaryOperator::And | BinaryOperator::Or);
             let (left_stripped, left_nocase) = strip_collate_nocase_shallow(*left);
             let (right_stripped, right_nocase) = strip_collate_nocase_shallow(*right);
 
@@ -322,6 +352,15 @@ fn transform_expr(expr: Expr) -> Expr {
                     left: Box::new(wrap_lower(left_t)),
                     op,
                     right: Box::new(wrap_lower(right_t)),
+                }
+            } else if is_logical_op {
+                // In AND/OR context, convert bare 0/1 to FALSE/TRUE
+                let left_t = maybe_bool_value(transform_expr(left_stripped));
+                let right_t = maybe_bool_value(transform_expr(right_stripped));
+                Expr::BinaryOp {
+                    left: Box::new(left_t),
+                    op,
+                    right: Box::new(right_t),
                 }
             } else {
                 // Put back what we stripped (if nothing was NOCASE, strip_collate returns original)
@@ -374,6 +413,7 @@ fn transform_expr(expr: Expr) -> Expr {
         },
         Expr::Collate { expr, collation } => {
             // Fix 8: strip ICU collations entirely
+            // Fix 9b: NOCASE outside equality → wrap in LOWER()
             // Note: NOCASE on equality is handled in the BinaryOp arm above
             let collation_name = collation
                 .0
@@ -389,12 +429,62 @@ fn transform_expr(expr: Expr) -> Expr {
             if collation_name.starts_with("icu") || collation_name == "unicode" {
                 // Strip the collation entirely
                 inner
+            } else if collation_name == "nocase" {
+                // Standalone NOCASE (ORDER BY, non-equality) → LOWER(expr)
+                wrap_lower(inner)
             } else {
-                // Keep other collations (including NOCASE when not inside equality)
+                // Keep other collations
                 Expr::Collate {
                     expr: Box::new(inner),
                     collation,
                 }
+            }
+        }
+        // Fix LIKE ... COLLATE NOCASE → ILIKE
+        Expr::Like {
+            negated,
+            expr,
+            pattern,
+            escape_char,
+            any,
+        } => {
+            let (pat_inner, pat_nocase) = strip_collate_nocase_shallow(*pattern);
+            let expr_t = Box::new(transform_expr(*expr));
+            let pat_t = Box::new(transform_expr(pat_inner));
+            if pat_nocase {
+                // Convert to ILIKE
+                Expr::ILike {
+                    negated,
+                    expr: expr_t,
+                    pattern: pat_t,
+                    escape_char,
+                    any,
+                }
+            } else {
+                Expr::Like {
+                    negated,
+                    expr: expr_t,
+                    pattern: pat_t,
+                    escape_char,
+                    any,
+                }
+            }
+        }
+        Expr::ILike {
+            negated,
+            expr,
+            pattern,
+            escape_char,
+            any,
+        } => {
+            // Strip NOCASE from ILIKE too (already case-insensitive)
+            let (pat_inner, _) = strip_collate_nocase_shallow(*pattern);
+            Expr::ILike {
+                negated,
+                expr: Box::new(transform_expr(*expr)),
+                pattern: Box::new(transform_expr(pat_inner)),
+                escape_char,
+                any,
             }
         }
         Expr::IsNull(inner) => Expr::IsNull(Box::new(transform_expr(*inner))),
@@ -429,6 +519,16 @@ fn func_name_str(func: &Function) -> String {
 
 fn rename_function(func: &mut Function, new_name: &str) {
     func.name = ObjectName(vec![ObjectNamePart::Identifier(Ident::new(new_name))]);
+}
+
+fn is_distinct_incompatible_expr(expr: &Expr) -> bool {
+    // Functions that are incompatible with DISTINCT (aggregates + random)
+    if let Expr::Function(func) = expr {
+        let name = func_name_str(func);
+        name == "random" || is_aggregate_expr(expr)
+    } else {
+        false
+    }
 }
 
 fn is_aggregate_expr(expr: &Expr) -> bool {

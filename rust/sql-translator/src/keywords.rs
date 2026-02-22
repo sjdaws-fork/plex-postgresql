@@ -294,8 +294,9 @@ fn transform_table_with_joins(twj: &mut TableWithJoins) {
 fn transform_table_factor(tf: &mut TableFactor) {
     match tf {
         TableFactor::Table { name, .. } => {
-            let table_name = table_name_str(name);
-            if table_name == "sqlite_master" || table_name == "sqlite_schema" {
+            // Check the last part of the name (handles "main".sqlite_master etc.)
+            let bare_name = table_name_last_part(name);
+            if bare_name == "sqlite_master" || bare_name == "sqlite_schema" {
                 *tf = make_sqlite_master_subquery();
             }
         }
@@ -306,15 +307,15 @@ fn transform_table_factor(tf: &mut TableFactor) {
     }
 }
 
-fn table_name_str(name: &ObjectName) -> String {
+/// Get the last (bare) part of a table name, e.g. "main".sqlite_master → sqlite_master
+fn table_name_last_part(name: &ObjectName) -> String {
     name.0
-        .iter()
-        .map(|p| match p {
-            ObjectNamePart::Identifier(i) => i.value.to_lowercase(),
-            _ => String::new(),
+        .last()
+        .and_then(|p| match p {
+            ObjectNamePart::Identifier(i) => Some(i.value.to_lowercase()),
+            _ => None,
         })
-        .collect::<Vec<_>>()
-        .join(".")
+        .unwrap_or_default()
 }
 
 /// Build the subquery that replaces `sqlite_master`:

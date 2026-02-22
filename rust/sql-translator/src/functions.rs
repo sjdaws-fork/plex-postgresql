@@ -12,7 +12,9 @@ use sqlparser::ast::helpers::attached_token::AttachedToken;
 ///   strftime('%s',…)      → EXTRACT(EPOCH FROM …)::bigint
 ///   strftime('%Y-%m-%d',…)→ TO_CHAR(…, 'YYYY-MM-DD')
 ///   unixepoch(…)          → EXTRACT(EPOCH FROM …)::bigint
+///   datetime('now')       → NOW()
 use sqlparser::ast::*;
+use sqlparser::tokenizer::Span;
 
 pub fn transform(stmt: &mut Statement) {
     transform_stmt(stmt);
@@ -252,14 +254,19 @@ fn transform_expr(expr: Expr) -> Expr {
                 "strftime" => transform_strftime(func),
 
                 // unixepoch(expr) → EXTRACT(EPOCH FROM expr)::bigint
+                // unixepoch('now', '-7 day') → EXTRACT(EPOCH FROM NOW() - INTERVAL '7 day')::bigint
                 "unixepoch" => {
                     let args = extract_unnamed_args(&mut func);
-                    let inner_expr = args.into_iter().next().unwrap_or_else(|| make_now_call());
-                    let source = if is_now_literal(&inner_expr) {
+                    let mut iter = args.into_iter();
+                    let inner_expr = iter.next().unwrap_or_else(|| make_now_call());
+                    let mut source = if is_now_literal(&inner_expr) {
                         make_now_call()
                     } else {
                         inner_expr
                     };
+                    if let Some(interval_expr) = iter.next() {
+                        source = apply_interval(source, interval_expr);
+                    }
                     Expr::Cast {
                         kind: CastKind::DoubleColon,
                         expr: Box::new(Expr::Extract {
@@ -270,6 +277,17 @@ fn transform_expr(expr: Expr) -> Expr {
                         data_type: DataType::BigInt(None),
                         array: false,
                         format: None,
+                    }
+                }
+
+                // datetime('now') → NOW()
+                "datetime" => {
+                    let args = extract_unnamed_args(&mut func);
+                    let inner = args.into_iter().next().unwrap_or_else(|| make_now_call());
+                    if is_now_literal(&inner) {
+                        make_now_call()
+                    } else {
+                        inner
                     }
                 }
 
@@ -416,6 +434,43 @@ fn make_now_call() -> Expr {
     })
 }
 
+/// Apply a SQLite interval modifier (e.g. `'-7 day'`) to a source expression.
+/// Produces `source + INTERVAL '...'` or `source - INTERVAL '...'` depending on sign.
+fn apply_interval(source: Expr, interval_expr: Expr) -> Expr {
+    let interval_str = match &interval_expr {
+        Expr::Value(ValueWithSpan {
+            value: Value::SingleQuotedString(s),
+            ..
+        }) => s.clone(),
+        _ => return source,
+    };
+
+    let (op, cleaned) = if let Some(rest) = interval_str.strip_prefix('-') {
+        (BinaryOperator::Minus, rest.trim().to_string())
+    } else if let Some(rest) = interval_str.strip_prefix('+') {
+        (BinaryOperator::Plus, rest.trim().to_string())
+    } else {
+        (BinaryOperator::Plus, interval_str.trim().to_string())
+    };
+
+    let interval = Expr::Interval(Interval {
+        value: Box::new(Expr::Value(ValueWithSpan {
+            value: Value::SingleQuotedString(cleaned),
+            span: Span::empty(),
+        })),
+        leading_field: None,
+        leading_precision: None,
+        last_field: None,
+        fractional_seconds_precision: None,
+    });
+
+    Expr::BinaryOp {
+        left: Box::new(source),
+        op,
+        right: Box::new(interval),
+    }
+}
+
 fn transform_strftime(mut func: Function) -> Expr {
     let args = extract_unnamed_args(&mut func);
     if args.len() < 2 {
@@ -424,6 +479,7 @@ fn transform_strftime(mut func: Function) -> Expr {
     let mut iter = args.into_iter();
     let fmt_arg = iter.next().unwrap();
     let time_arg = iter.next().unwrap();
+    let interval_arg = iter.next();
 
     let fmt_str = match &fmt_arg {
         Expr::Value(ValueWithSpan {
@@ -433,11 +489,16 @@ fn transform_strftime(mut func: Function) -> Expr {
         _ => return Expr::Function(func),
     };
 
-    let source = if is_now_literal(&time_arg) {
+    let mut source = if is_now_literal(&time_arg) {
         make_now_call()
     } else {
         time_arg
     };
+
+    // Apply interval if 3rd arg present
+    if let Some(interval_expr) = interval_arg {
+        source = apply_interval(source, interval_expr);
+    }
 
     match fmt_str.as_str() {
         "%s" => {
@@ -454,32 +515,68 @@ fn transform_strftime(mut func: Function) -> Expr {
                 format: None,
             }
         }
-        "%Y-%m-%d" => {
-            // → TO_CHAR(source, 'YYYY-MM-DD')
-            let pg_fmt = Expr::Value(ValueWithSpan {
-                value: Value::SingleQuotedString("YYYY-MM-DD".to_string()),
-                span: sqlparser::tokenizer::Span::empty(),
-            });
-            Expr::Function(Function {
-                name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("TO_CHAR"))]),
-                uses_odbc_syntax: false,
-                parameters: FunctionArguments::None,
-                args: FunctionArguments::List(FunctionArgumentList {
-                    duplicate_treatment: None,
-                    args: vec![
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(source)),
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(pg_fmt)),
-                    ],
-                    clauses: vec![],
-                }),
-                filter: None,
-                null_treatment: None,
-                over: None,
-                within_group: vec![],
-            })
+        _ => {
+            // Translate strftime format to PostgreSQL TO_CHAR format
+            let pg_fmt_str = translate_strftime_format(&fmt_str);
+            make_to_char(source, &pg_fmt_str)
         }
-        _ => Expr::Function(func),
     }
+}
+
+/// Translate a SQLite strftime format string to a PostgreSQL TO_CHAR format string.
+fn translate_strftime_format(fmt: &str) -> String {
+    let mut result = String::new();
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            if let Some(&spec) = chars.peek() {
+                chars.next();
+                match spec {
+                    'Y' => result.push_str("YYYY"),
+                    'm' => result.push_str("MM"),
+                    'd' => result.push_str("DD"),
+                    'H' => result.push_str("HH24"),
+                    'M' => result.push_str("MI"),
+                    'S' => result.push_str("SS"),
+                    '%' => result.push('%'),
+                    other => {
+                        result.push('%');
+                        result.push(other);
+                    }
+                }
+            } else {
+                result.push('%');
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Build a TO_CHAR(expr, 'fmt') function call.
+fn make_to_char(source: Expr, pg_fmt: &str) -> Expr {
+    let fmt_expr = Expr::Value(ValueWithSpan {
+        value: Value::SingleQuotedString(pg_fmt.to_string()),
+        span: sqlparser::tokenizer::Span::empty(),
+    });
+    Expr::Function(Function {
+        name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("TO_CHAR"))]),
+        uses_odbc_syntax: false,
+        parameters: FunctionArguments::None,
+        args: FunctionArguments::List(FunctionArgumentList {
+            duplicate_treatment: None,
+            args: vec![
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(source)),
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(fmt_expr)),
+            ],
+            clauses: vec![],
+        }),
+        filter: None,
+        null_treatment: None,
+        over: None,
+        within_group: vec![],
+    })
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -548,5 +645,23 @@ mod tests {
         let r = translate("SELECT unixepoch('now') FROM t").unwrap();
         assert!(r.sql.to_uppercase().contains("EXTRACT"));
         assert!(r.sql.to_uppercase().contains("EPOCH"));
+    }
+
+    #[test]
+    fn debug_parse() {
+        use sqlparser::dialect::SQLiteDialect;
+        use sqlparser::parser::Parser;
+
+        let sql1 = "SELECT strftime('%Y-%m-%d %H:%M:%S', created_at) FROM t";
+        let stmts = Parser::parse_sql(&SQLiteDialect {}, sql1);
+        eprintln!("Parse1: {:?}", stmts);
+
+        let sql2 = "SELECT strftime('%s', 'now', '-7 day')";
+        let stmts2 = Parser::parse_sql(&SQLiteDialect {}, sql2);
+        eprintln!("Parse2: {:?}", stmts2);
+
+        let sql3 = "SELECT datetime('now') FROM t";
+        let stmts3 = Parser::parse_sql(&SQLiteDialect {}, sql3);
+        eprintln!("Parse3: {:?}", stmts3);
     }
 }

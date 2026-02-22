@@ -56,7 +56,7 @@ fn transform_query(q: &mut Query) {
     // Now mutate the SELECT body
     if let SetExpr::Select(sel) = q.body.as_mut() {
         if has_distinct {
-            // DISTINCT replaces grouping — remove GROUP BY entirely
+            // DISTINCT present — remove GROUP BY (it's redundant with DISTINCT)
             sel.group_by = GroupByExpr::Expressions(vec![], vec![]);
         } else if has_group_by {
             // Collect missing non-aggregate columns from SELECT projection

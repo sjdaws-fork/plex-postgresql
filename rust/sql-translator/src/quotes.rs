@@ -22,6 +22,15 @@ pub fn transform(stmt: &mut Statement) {
 
         Statement::Update(u) => {
             for assign in &mut u.assignments {
+                // Fix backtick-quoted column names on the left-hand side
+                match &mut assign.target {
+                    AssignmentTarget::ColumnName(name) => fix_object_name(name),
+                    AssignmentTarget::Tuple(names) => {
+                        for name in names {
+                            fix_object_name(name);
+                        }
+                    }
+                }
                 fix_expr(&mut assign.value);
             }
             if let Some(sel) = &mut u.selection {
@@ -166,11 +175,35 @@ fn transform_table_factor(tf: &mut TableFactor) {
 
 // ─── Identifier fixers ────────────────────────────────────────────────────────
 
-/// Fix a single `Ident`: backtick → double-quote.
+/// Fix a single `Ident`: backtick → double-quote,
+/// and add double-quotes to unquoted identifiers that contain uppercase letters
+/// (PostgreSQL folds unquoted identifiers to lowercase, so mixed-case names
+/// must be quoted to preserve their case).
 fn fix_ident(ident: &mut Ident) {
     if ident.quote_style == Some('`') {
         ident.quote_style = Some('"');
+    } else if ident.quote_style.is_none() && needs_quoting(&ident.value) {
+        ident.quote_style = Some('"');
     }
+}
+
+/// Fix a single `Ident` in a function-name context: only backtick → double-quote.
+/// We must NOT add quotes to function names like COALESCE, COUNT, etc. because
+/// PostgreSQL stores function names in lowercase and `"COALESCE"` would fail.
+fn fix_ident_func(ident: &mut Ident) {
+    if ident.quote_style == Some('`') {
+        ident.quote_style = Some('"');
+    }
+}
+
+/// Returns true if an unquoted identifier needs double-quoting for PostgreSQL.
+/// Any identifier containing ASCII uppercase letters needs quoting because
+/// PostgreSQL folds unquoted identifiers to lowercase.
+fn needs_quoting(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    name.chars().any(|c| c.is_ascii_uppercase())
 }
 
 /// Fix all identifiers in an `ObjectName`.
@@ -178,6 +211,15 @@ fn fix_object_name(name: &mut ObjectName) {
     for part in &mut name.0 {
         if let ObjectNamePart::Identifier(ref mut i) = part {
             fix_ident(i);
+        }
+    }
+}
+
+/// Fix all identifiers in a function `ObjectName` — backtick-only, no mixed-case quoting.
+fn fix_object_name_func(name: &mut ObjectName) {
+    for part in &mut name.0 {
+        if let ObjectNamePart::Identifier(ref mut i) = part {
+            fix_ident_func(i);
         }
     }
 }
@@ -216,7 +258,7 @@ fn fix_expr(expr: &mut Expr) {
             fix_expr(high);
         }
         Expr::Function(f) => {
-            fix_object_name(&mut f.name);
+            fix_object_name_func(&mut f.name);
             if let FunctionArguments::List(ref mut al) = f.args {
                 for arg in &mut al.args {
                     match arg {

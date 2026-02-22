@@ -25,11 +25,31 @@ fn transform_insert(insert: &mut Insert) {
         return;
     }
 
+    // Look up conflict target (PK column) from table name
+    let table_name = match &insert.table {
+        TableObject::TableName(name) => name
+            .0
+            .last()
+            .and_then(|p| match p {
+                ObjectNamePart::Identifier(i) => Some(i.value.to_lowercase()),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    let conflict_target =
+        get_table_pk(&table_name).map(|pk| ConflictTarget::Columns(vec![Ident::new(pk)]));
+
     match insert.or {
         Some(SqliteOnConflict::Replace) => {
-            // INSERT OR REPLACE → ON CONFLICT DO UPDATE SET col=EXCLUDED.col, ...
+            // INSERT OR REPLACE → ON CONFLICT (pk) DO UPDATE SET col=EXCLUDED.col, ...
             let columns = insert.columns.clone();
-            insert.on = Some(OnInsert::OnConflict(make_do_update(columns)));
+            let pk_name = get_table_pk(&table_name).unwrap_or("id");
+            insert.on = Some(OnInsert::OnConflict(make_do_update(
+                columns,
+                conflict_target,
+                pk_name,
+            )));
             insert.or = None;
             // Also clear replace_into flag if set
             insert.replace_into = false;
@@ -37,7 +57,7 @@ fn transform_insert(insert: &mut Insert) {
         Some(SqliteOnConflict::Ignore) => {
             // INSERT OR IGNORE → ON CONFLICT DO NOTHING
             insert.on = Some(OnInsert::OnConflict(OnConflict {
-                conflict_target: None,
+                conflict_target,
                 action: OnConflictAction::DoNothing,
             }));
             insert.or = None;
@@ -48,10 +68,58 @@ fn transform_insert(insert: &mut Insert) {
     }
 }
 
-/// Build `ON CONFLICT DO UPDATE SET col1 = EXCLUDED.col1, col2 = EXCLUDED.col2, ...`
-fn make_do_update(columns: Vec<Ident>) -> OnConflict {
+/// Known Plex table primary key columns
+fn get_table_pk(table_name: &str) -> Option<&'static str> {
+    match table_name.to_lowercase().as_str() {
+        "tags"
+        | "taggings"
+        | "metadata_items"
+        | "media_items"
+        | "media_parts"
+        | "media_streams"
+        | "settings"
+        | "preferences"
+        | "accounts"
+        | "directories"
+        | "library_sections"
+        | "statistics_bandwidth"
+        | "statistics_media"
+        | "statistics_resources"
+        | "devices"
+        | "play_queue_items"
+        | "play_queue_generators"
+        | "versioned_metadata_items"
+        | "external_metadata_items"
+        | "external_metadata_sources"
+        | "metadata_item_settings"
+        | "metadata_item_views"
+        | "metadata_item_accounts"
+        | "metadata_item_clusterings"
+        | "media_item_settings"
+        | "media_provider_resources"
+        | "media_subscriptions"
+        | "metadata_relations"
+        | "metadata_subscription_desired_items"
+        | "sync_schema_versions"
+        | "locatables"
+        | "spellfix_metadata_titles"
+        | "section_locations"
+        | "hub_templates" => Some("id"),
+        "schema_migrations" => Some("version"),
+        _ => None,
+    }
+}
+
+/// Build `ON CONFLICT (pk) DO UPDATE SET col1 = EXCLUDED.col1, col2 = EXCLUDED.col2, ...`
+/// Excludes the PK column from the SET assignments.
+fn make_do_update(
+    columns: Vec<Ident>,
+    conflict_target: Option<ConflictTarget>,
+    pk_name: &str,
+) -> OnConflict {
     let assignments: Vec<Assignment> = columns
         .iter()
+        .filter(|col| col.value.to_lowercase() != pk_name.to_lowercase())
         .map(|col| Assignment {
             target: AssignmentTarget::ColumnName(ObjectName(vec![ObjectNamePart::Identifier(
                 col.clone(),
@@ -61,7 +129,7 @@ fn make_do_update(columns: Vec<Ident>) -> OnConflict {
         .collect();
 
     OnConflict {
-        conflict_target: None,
+        conflict_target,
         action: OnConflictAction::DoUpdate(DoUpdate {
             assignments,
             selection: None,

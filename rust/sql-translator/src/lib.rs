@@ -1,3 +1,4 @@
+pub mod dedup;
 pub mod emit;
 pub mod ffi;
 pub mod functions;
@@ -61,6 +62,7 @@ pub fn translate(sqlite_sql: &str) -> Result<Translation, String> {
         quotes::transform(stmt);
         groupby::transform(stmt);
         query::transform(stmt);
+        dedup::transform(stmt);
     }
 
     let sql = stmts
