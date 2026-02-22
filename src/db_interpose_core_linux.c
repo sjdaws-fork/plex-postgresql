@@ -11,7 +11,9 @@
  * Common code is in db_interpose_common.c
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "db_interpose.h"
 #include "db_interpose_common.h"
 #include "pg_query_cache.h"
