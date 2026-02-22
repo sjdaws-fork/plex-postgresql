@@ -13,7 +13,7 @@ Una librería shim pequeña que captura las llamadas SQLite de Plex y las envía
 | Linux (Docker) | ✅ Funciona (init y ejecución probados, no probado en producción) |
 | Linux (Nativo) | ⚠️ No probado |
 
-## Última versión: v0.9.41
+## Última versión: v1.0.0
 
 **Traductor SQL y módulos PG migrados a Rust** — toda la traducción SQLite-a-PostgreSQL ahora se ejecuta en el motor AST `sqlparser-rs` de Rust, y los 7 módulos backend están migrados a C/Rust híbrido.
 
@@ -21,7 +21,7 @@ Una librería shim pequeña que captura las llamadas SQLite de Plex y las envía
 - 🆕 **Módulos PG en Rust:** pg_config, pg_logging, pg_mem_telemetry, shim_alloc, pg_query_cache, pg_statement, pg_client
 - ✅ **1.075+ tests** (525 Rust + ~550 C en 25 suites)
 
-Descarga: https://github.com/cgnl/plex-postgresql/releases/tag/v0.9.41
+Descarga: https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.0
 
 ## ¿Por qué PostgreSQL?
 
@@ -90,7 +90,7 @@ psql -d plex -c "ALTER USER plex PASSWORD 'plex';"
 ### 2. Instalar (ZIP recomendado)
 
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.41/plex-postgresql-v0.9.41-macos.zip -o /tmp/plex-pg-macos.zip
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v1.0.0/plex-postgresql-v1.0.0-macos.zip -o /tmp/plex-pg-macos.zip
 mkdir -p /tmp/plex-pg-macos && cd /tmp/plex-pg-macos
 unzip /tmp/plex-pg-macos.zip
 
@@ -141,7 +141,7 @@ psql -U plex -d plex -c "CREATE SCHEMA plex;"
 ### 2. Instalar (ZIP recomendado)
 
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v0.9.41/plex-postgresql-v0.9.41-linux.zip -o /tmp/plex-pg-linux.zip
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v1.0.0/plex-postgresql-v1.0.0-linux.zip -o /tmp/plex-pg-linux.zip
 mkdir -p /tmp/plex-pg && cd /tmp/plex-pg
 unzip /tmp/plex-pg-linux.zip
 
