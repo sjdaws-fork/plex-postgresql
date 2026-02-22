@@ -30,15 +30,15 @@ fn transform_stmt(stmt: &mut Statement) {
         }
         Statement::Update(update) => {
             for assign in &mut update.assignments {
-                transform_expr_inplace(&mut assign.value);
+                transform_expr(&mut assign.value);
             }
             if let Some(sel) = &mut update.selection {
-                transform_expr_inplace(sel);
+                transform_expr(sel);
             }
         }
         Statement::Delete(del) => {
             if let Some(sel) = &mut del.selection {
-                transform_expr_inplace(sel);
+                transform_expr(sel);
             }
         }
         _ => {}
@@ -55,7 +55,7 @@ fn transform_query(q: &mut Query) {
     if let Some(ob) = &mut q.order_by {
         if let OrderByKind::Expressions(exprs) = &mut ob.kind {
             for oe in exprs {
-                transform_expr_inplace(&mut oe.expr);
+                transform_expr(&mut oe.expr);
             }
         }
     }
@@ -72,7 +72,7 @@ fn transform_set_expr(se: &mut SetExpr) {
         SetExpr::Values(vals) => {
             for row in &mut vals.rows {
                 for e in row {
-                    transform_expr_inplace(e);
+                    transform_expr(e);
                 }
             }
         }
@@ -84,7 +84,7 @@ fn transform_select(sel: &mut Select) {
     for item in &mut sel.projection {
         match item {
             SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
-                transform_expr_inplace(e);
+                transform_expr(e);
             }
             _ => {}
         }
@@ -107,18 +107,18 @@ fn transform_select(sel: &mut Select) {
     }
 
     if let Some(sel_where) = &mut sel.selection {
-        transform_expr_inplace(sel_where);
+        transform_expr(sel_where);
     }
     match &mut sel.group_by {
         GroupByExpr::Expressions(exprs, _) => {
             for e in exprs {
-                transform_expr_inplace(e);
+                transform_expr(e);
             }
         }
         _ => {}
     }
     if let Some(having) = &mut sel.having {
-        transform_expr_inplace(having);
+        transform_expr(having);
     }
 }
 
@@ -184,7 +184,7 @@ fn transform_table_with_joins(t: &mut TableWithJoins) {
             | JoinOperator::LeftOuter(JoinConstraint::On(e))
             | JoinOperator::RightOuter(JoinConstraint::On(e))
             | JoinOperator::FullOuter(JoinConstraint::On(e)) => {
-                transform_expr_inplace(e);
+                transform_expr(e);
             }
             _ => {}
         }
@@ -239,12 +239,11 @@ fn transform_table_factor(f: &mut TableFactor) {
     }
 }
 
-/// The main recursive transformer.  Returns the expression that should
-/// replace the input (usually `None` → keep self, but for `iif` we
-/// swap the whole node).
-fn transform_expr(expr: Expr) -> Expr {
+/// Recursively transform an expression in place, rewriting SQLite function
+/// calls to their PostgreSQL equivalents.
+fn transform_expr(expr: &mut Expr) {
     match expr {
-        Expr::Function(mut func) => {
+        Expr::Function(ref mut func) => {
             // Get the lowercase function name for matching
             let fn_name = func
                 .name
@@ -259,8 +258,10 @@ fn transform_expr(expr: Expr) -> Expr {
             // simplify_typeof_fixup: iif(typeof(X) in ('integer','real'), X, ...) → X
             // Must run BEFORE iif→CASE conversion
             if fn_name == "iif" {
-                if let Some(simplified) = try_simplify_typeof(&func) {
-                    return transform_expr(simplified);
+                if let Some(simplified) = try_simplify_typeof(func) {
+                    *expr = simplified;
+                    transform_expr(expr);
+                    return;
                 }
             }
 
@@ -269,25 +270,13 @@ fn transform_expr(expr: Expr) -> Expr {
                 for arg in &mut arg_list.args {
                     match arg {
                         FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
-                            *e = transform_expr(std::mem::replace(
-                                e,
-                                Expr::Value(ValueWithSpan {
-                                    value: Value::Null,
-                                    span: sqlparser::tokenizer::Span::empty(),
-                                }),
-                            ));
+                            transform_expr(e);
                         }
                         FunctionArg::Named {
                             arg: FunctionArgExpr::Expr(e),
                             ..
                         } => {
-                            *e = transform_expr(std::mem::replace(
-                                e,
-                                Expr::Value(ValueWithSpan {
-                                    value: Value::Null,
-                                    span: sqlparser::tokenizer::Span::empty(),
-                                }),
-                            ));
+                            transform_expr(e);
                         }
                         _ => {}
                     }
@@ -297,19 +286,18 @@ fn transform_expr(expr: Expr) -> Expr {
             match fn_name.as_str() {
                 // IFNULL → COALESCE
                 "ifnull" => {
-                    rename_function(&mut func, "COALESCE");
-                    Expr::Function(func)
+                    rename_function(func, "COALESCE");
                 }
 
                 // iif(cond, then, else) → CASE WHEN cond THEN then ELSE else END
                 "iif" => {
-                    let args = extract_unnamed_args(&mut func);
+                    let args = extract_unnamed_args(func);
                     if args.len() >= 3 {
                         let mut iter = args.into_iter();
                         let cond = iter.next().unwrap();
                         let then = iter.next().unwrap();
                         let else_e = iter.next().unwrap();
-                        Expr::Case {
+                        *expr = Expr::Case {
                             case_token: AttachedToken::empty(),
                             end_token: AttachedToken::empty(),
                             operand: None,
@@ -318,56 +306,71 @@ fn transform_expr(expr: Expr) -> Expr {
                                 result: then,
                             }],
                             else_result: Some(Box::new(else_e)),
-                        }
-                    } else {
-                        Expr::Function(func)
+                        };
                     }
                 }
 
                 // typeof(x) → pg_typeof(x)::text
                 "typeof" => {
-                    rename_function(&mut func, "pg_typeof");
-                    Expr::Cast {
+                    rename_function(func, "pg_typeof");
+                    // Take the Function node out, wrap in Cast
+                    let func_expr = std::mem::replace(
+                        expr,
+                        Expr::Value(ValueWithSpan {
+                            value: Value::Null,
+                            span: Span::empty(),
+                        }),
+                    );
+                    *expr = Expr::Cast {
                         kind: CastKind::DoubleColon,
-                        expr: Box::new(Expr::Function(func)),
+                        expr: Box::new(func_expr),
                         data_type: DataType::Text,
                         array: false,
                         format: None,
-                    }
+                    };
                 }
 
                 // last_insert_rowid() → lastval()
                 "last_insert_rowid" => {
-                    rename_function(&mut func, "lastval");
-                    Expr::Function(func)
+                    rename_function(func, "lastval");
                 }
 
                 // json_each(x) → json_array_elements(x)
                 "json_each" => {
-                    rename_function(&mut func, "json_array_elements");
-                    Expr::Function(func)
+                    rename_function(func, "json_array_elements");
                 }
 
                 // SUBSTR → SUBSTRING
                 "substr" => {
-                    rename_function(&mut func, "SUBSTRING");
-                    Expr::Function(func)
+                    rename_function(func, "SUBSTRING");
                 }
 
                 // instr(haystack, needle) → STRPOS(haystack, needle)  (same arg order)
                 "instr" => {
-                    rename_function(&mut func, "STRPOS");
-                    Expr::Function(func)
+                    rename_function(func, "STRPOS");
                 }
 
                 // strftime('%s', expr) → EXTRACT(EPOCH FROM expr)::bigint
                 // strftime('%Y-%m-%d', expr) → TO_CHAR(expr, 'YYYY-MM-DD')
-                "strftime" => transform_strftime(func),
+                "strftime" => {
+                    // Need to take the func out to pass to transform_strftime
+                    let func_node = match std::mem::replace(
+                        expr,
+                        Expr::Value(ValueWithSpan {
+                            value: Value::Null,
+                            span: Span::empty(),
+                        }),
+                    ) {
+                        Expr::Function(f) => f,
+                        _ => unreachable!(),
+                    };
+                    *expr = transform_strftime(func_node);
+                }
 
                 // unixepoch(expr) → EXTRACT(EPOCH FROM expr)::bigint
                 // unixepoch('now', '-7 day') → EXTRACT(EPOCH FROM NOW() - INTERVAL '7 day')::bigint
                 "unixepoch" => {
-                    let args = extract_unnamed_args(&mut func);
+                    let args = extract_unnamed_args(func);
                     let mut iter = args.into_iter();
                     let inner_expr = iter.next().unwrap_or_else(|| make_now_call());
                     let mut source = if is_now_literal(&inner_expr) {
@@ -378,7 +381,7 @@ fn transform_expr(expr: Expr) -> Expr {
                     if let Some(interval_expr) = iter.next() {
                         source = apply_interval(source, interval_expr);
                     }
-                    Expr::Cast {
+                    *expr = Expr::Cast {
                         kind: CastKind::DoubleColon,
                         expr: Box::new(Expr::Extract {
                             field: DateTimeField::Epoch,
@@ -388,130 +391,94 @@ fn transform_expr(expr: Expr) -> Expr {
                         data_type: DataType::BigInt(None),
                         array: false,
                         format: None,
-                    }
+                    };
                 }
 
                 // datetime('now') → NOW()
                 "datetime" => {
-                    let args = extract_unnamed_args(&mut func);
+                    let args = extract_unnamed_args(func);
                     let inner = args.into_iter().next().unwrap_or_else(|| make_now_call());
                     if is_now_literal(&inner) {
-                        make_now_call()
+                        *expr = make_now_call();
                     } else {
-                        inner
+                        *expr = inner;
                     }
                 }
 
-                _ => Expr::Function(func),
+                _ => {}
             }
         }
 
         // Recurse into other expression forms
-        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
-            left: Box::new(transform_expr(*left)),
-            op,
-            right: Box::new(transform_expr(*right)),
-        },
-        Expr::UnaryOp { op, expr } => Expr::UnaryOp {
-            op,
-            expr: Box::new(transform_expr(*expr)),
-        },
-        Expr::Nested(inner) => Expr::Nested(Box::new(transform_expr(*inner))),
-        Expr::Cast {
-            kind,
-            expr,
-            data_type,
-            array,
-            format,
-        } => Expr::Cast {
-            kind,
-            expr: Box::new(transform_expr(*expr)),
-            data_type,
-            array,
-            format,
-        },
+        Expr::BinaryOp { left, right, .. } => {
+            transform_expr(left);
+            transform_expr(right);
+        }
+        Expr::UnaryOp { expr: inner, .. } => transform_expr(inner),
+        Expr::Nested(inner) => transform_expr(inner),
+        Expr::Cast { expr: inner, .. } => transform_expr(inner),
         Expr::Case {
-            case_token,
-            end_token,
             operand,
             conditions,
             else_result,
+            ..
         } => {
-            let operand = operand.map(|o| Box::new(transform_expr(*o)));
-            let conditions = conditions
-                .into_iter()
-                .map(|cw| CaseWhen {
-                    condition: transform_expr(cw.condition),
-                    result: transform_expr(cw.result),
-                })
-                .collect();
-            let else_result = else_result.map(|e| Box::new(transform_expr(*e)));
-            Expr::Case {
-                case_token,
-                end_token,
-                operand,
-                conditions,
-                else_result,
+            if let Some(op) = operand {
+                transform_expr(op);
+            }
+            for cw in conditions {
+                transform_expr(&mut cw.condition);
+                transform_expr(&mut cw.result);
+            }
+            if let Some(er) = else_result {
+                transform_expr(er);
             }
         }
         Expr::InList {
-            expr,
-            list,
-            negated,
+            expr: inner, list, ..
         } => {
-            let transformed_expr = transform_expr(*expr);
-            let mut transformed_list: Vec<Expr> = list.into_iter().map(transform_expr).collect();
+            transform_expr(inner);
+            for e in list.iter_mut() {
+                transform_expr(e);
+            }
             // typeof type remapping: when expr is pg_typeof(...)::text,
             // add PostgreSQL type aliases to the IN list
-            if is_pg_typeof_cast(&transformed_expr) {
-                add_typeof_remappings(&mut transformed_list);
-            }
-            Expr::InList {
-                expr: Box::new(transformed_expr),
-                list: transformed_list,
-                negated,
+            if is_pg_typeof_cast(inner) {
+                add_typeof_remappings(list);
             }
         }
         Expr::Between {
-            expr,
-            negated,
+            expr: inner,
             low,
             high,
-        } => Expr::Between {
-            expr: Box::new(transform_expr(*expr)),
-            negated,
-            low: Box::new(transform_expr(*low)),
-            high: Box::new(transform_expr(*high)),
-        },
+            ..
+        } => {
+            transform_expr(inner);
+            transform_expr(low);
+            transform_expr(high);
+        }
         // SUBSTR(a,b,c) is parsed as Expr::Substring { shorthand: true }
         // We convert it to SUBSTRING by clearing the shorthand flag
         Expr::Substring {
-            expr,
+            expr: inner,
             substring_from,
             substring_for,
-            special,
-            shorthand: true,
-        } => Expr::Substring {
-            expr: Box::new(transform_expr(*expr)),
-            substring_from: substring_from.map(|e| Box::new(transform_expr(*e))),
-            substring_for: substring_for.map(|e| Box::new(transform_expr(*e))),
-            special,
-            shorthand: false, // force SUBSTRING output
-        },
-        other => other,
+            shorthand,
+            ..
+        } => {
+            transform_expr(inner);
+            if let Some(f) = substring_from {
+                transform_expr(f);
+            }
+            if let Some(f) = substring_for {
+                transform_expr(f);
+            }
+            if *shorthand {
+                *shorthand = false; // force SUBSTRING output
+            }
+        }
+        _ => {}
     }
-}
-
-/// In-place wrapper for `transform_expr`.
-fn transform_expr_inplace(expr: &mut Expr) {
-    let taken = std::mem::replace(
-        expr,
-        Expr::Value(ValueWithSpan {
-            value: Value::Null,
-            span: sqlparser::tokenizer::Span::empty(),
-        }),
-    );
-    *expr = transform_expr(taken);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

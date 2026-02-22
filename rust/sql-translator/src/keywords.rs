@@ -28,12 +28,12 @@ pub fn transform(stmt: &mut Statement) {
         }
         Statement::Update(u) => {
             if let Some(sel) = &mut u.selection {
-                transform_expr_inplace(sel);
+                transform_expr(sel);
             }
         }
         Statement::Delete(d) => {
             if let Some(sel) = &mut d.selection {
-                transform_expr_inplace(sel);
+                transform_expr(sel);
             }
         }
         _ => {}
@@ -331,7 +331,7 @@ fn transform_select(sel: &mut Select) {
 
     // WHERE
     if let Some(w) = &mut sel.selection {
-        transform_expr_inplace(w);
+        transform_expr(w);
     }
 
     // GROUP BY NULL → remove
@@ -344,7 +344,7 @@ fn transform_select(sel: &mut Select) {
     for item in &mut sel.projection {
         match item {
             SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
-                transform_expr_inplace(e);
+                transform_expr(e);
             }
             _ => {}
         }
@@ -352,7 +352,7 @@ fn transform_select(sel: &mut Select) {
 
     // HAVING
     if let Some(h) = &mut sel.having {
-        transform_expr_inplace(h);
+        transform_expr(h);
     }
 }
 
@@ -559,14 +559,12 @@ fn make_sqlite_master_subquery() -> TableFactor {
     }
 }
 
-fn transform_expr(expr: Expr) -> Expr {
+/// Recursively transform an expression in place, rewriting SQLite keyword
+/// constructs to their PostgreSQL equivalents.
+fn transform_expr(expr: &mut Expr) {
     match expr {
         // IN () → IN (SELECT -1 WHERE FALSE)
-        Expr::InList {
-            expr: inner,
-            list,
-            negated,
-        } if list.is_empty() => {
+        Expr::InList { ref list, .. } if list.is_empty() => {
             // Build: SELECT -1 WHERE FALSE
             let false_select = Box::new(Query {
                 with: None,
@@ -614,84 +612,74 @@ fn transform_expr(expr: Expr) -> Expr {
                 format_clause: None,
                 pipe_operators: vec![],
             });
-            Expr::InSubquery {
-                expr: inner,
+            // Extract the inner expr, then replace the whole node
+            let inner = match std::mem::replace(
+                expr,
+                Expr::Value(ValueWithSpan {
+                    value: Value::Null,
+                    span: Span::empty(),
+                }),
+            ) {
+                Expr::InList {
+                    expr: inner,
+                    negated,
+                    ..
+                } => (inner, negated),
+                _ => unreachable!(),
+            };
+            *expr = Expr::InSubquery {
+                expr: inner.0,
                 subquery: false_select,
-                negated,
-            }
+                negated: inner.1,
+            };
         }
         // Recurse
-        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
-            left: Box::new(transform_expr(*left)),
-            op,
-            right: Box::new(transform_expr(*right)),
-        },
-        Expr::UnaryOp { op, expr } => Expr::UnaryOp {
-            op,
-            expr: Box::new(transform_expr(*expr)),
-        },
-        Expr::Nested(inner) => Expr::Nested(Box::new(transform_expr(*inner))),
+        Expr::BinaryOp { left, right, .. } => {
+            transform_expr(left);
+            transform_expr(right);
+        }
+        Expr::UnaryOp { expr: inner, .. } => transform_expr(inner),
+        Expr::Nested(inner) => transform_expr(inner),
         Expr::InList {
-            expr,
-            list,
-            negated,
-        } => Expr::InList {
-            expr: Box::new(transform_expr(*expr)),
-            list: list.into_iter().map(transform_expr).collect(),
-            negated,
-        },
-        Expr::InSubquery {
-            expr,
-            subquery,
-            negated,
-        } => Expr::InSubquery {
-            expr: Box::new(transform_expr(*expr)),
-            subquery,
-            negated,
-        },
+            expr: inner, list, ..
+        } => {
+            transform_expr(inner);
+            for e in list {
+                transform_expr(e);
+            }
+        }
+        Expr::InSubquery { expr: inner, .. } => {
+            transform_expr(inner);
+        }
         Expr::Between {
-            expr,
-            negated,
+            expr: inner,
             low,
             high,
-        } => Expr::Between {
-            expr: Box::new(transform_expr(*expr)),
-            negated,
-            low: Box::new(transform_expr(*low)),
-            high: Box::new(transform_expr(*high)),
-        },
+            ..
+        } => {
+            transform_expr(inner);
+            transform_expr(low);
+            transform_expr(high);
+        }
         Expr::Case {
-            case_token,
-            end_token,
             operand,
             conditions,
             else_result,
-        } => Expr::Case {
-            case_token,
-            end_token,
-            operand: operand.map(|o| Box::new(transform_expr(*o))),
-            conditions: conditions
-                .into_iter()
-                .map(|cw| CaseWhen {
-                    condition: transform_expr(cw.condition),
-                    result: transform_expr(cw.result),
-                })
-                .collect(),
-            else_result: else_result.map(|e| Box::new(transform_expr(*e))),
-        },
-        other => other,
+            ..
+        } => {
+            if let Some(op) = operand {
+                transform_expr(op);
+            }
+            for cw in conditions {
+                transform_expr(&mut cw.condition);
+                transform_expr(&mut cw.result);
+            }
+            if let Some(er) = else_result {
+                transform_expr(er);
+            }
+        }
+        _ => {}
     }
-}
-
-fn transform_expr_inplace(expr: &mut Expr) {
-    let taken = std::mem::replace(
-        expr,
-        Expr::Value(ValueWithSpan {
-            value: Value::Null,
-            span: Span::empty(),
-        }),
-    );
-    *expr = transform_expr(taken);
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

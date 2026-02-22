@@ -27,12 +27,12 @@ pub fn transform(stmt: &mut Statement) {
         }
         Statement::Update(u) => {
             if let Some(sel) = &mut u.selection {
-                transform_expr_inplace(sel);
+                transform_expr(sel);
             }
         }
         Statement::Delete(d) => {
             if let Some(sel) = &mut d.selection {
-                transform_expr_inplace(sel);
+                transform_expr(sel);
             }
         }
         _ => {}
@@ -55,7 +55,7 @@ fn transform_query(q: &mut Query) {
     if let Some(ob) = &mut q.order_by {
         if let OrderByKind::Expressions(exprs) = &mut ob.kind {
             for oe in exprs.iter_mut() {
-                transform_expr_inplace(&mut oe.expr);
+                transform_expr(&mut oe.expr);
             }
         }
     }
@@ -78,7 +78,7 @@ fn transform_set_expr(se: &mut SetExpr) {
         SetExpr::Values(vals) => {
             for row in &mut vals.rows {
                 for e in row {
-                    transform_expr_inplace(e);
+                    transform_expr(e);
                 }
             }
         }
@@ -96,14 +96,14 @@ fn transform_select(sel: &mut Select) {
     if let Some(w) = &mut sel.selection {
         fix_where_numeric(w);
         fix_collections_filter(w);
-        transform_expr_inplace(w);
+        transform_expr(w);
     }
 
     // Projection
     for item in &mut sel.projection {
         match item {
             SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
-                transform_expr_inplace(e);
+                transform_expr(e);
             }
             _ => {}
         }
@@ -112,13 +112,13 @@ fn transform_select(sel: &mut Select) {
     // GROUP BY
     if let GroupByExpr::Expressions(ref mut exprs, _) = sel.group_by {
         for e in exprs {
-            transform_expr_inplace(e);
+            transform_expr(e);
         }
     }
 
     // HAVING
     if let Some(h) = &mut sel.having {
-        transform_expr_inplace(h);
+        transform_expr(h);
     }
 }
 
@@ -274,38 +274,34 @@ fn fix_where_numeric(expr: &mut Expr) {
 
 // ─── Main expression transformer ─────────────────────────────────────────────
 
-fn transform_expr(expr: Expr) -> Expr {
+/// Recursively transform an expression in place, applying all query-level
+/// fixups (CASE booleans, max/min→GREATEST/LEAST, COLLATE, FTS MATCH, etc.).
+fn transform_expr(expr: &mut Expr) {
     match expr {
         // Fix 4: CASE WHEN x THEN 1 ELSE 0 END → TRUE/FALSE
         Expr::Case {
-            case_token,
-            end_token,
             operand,
             conditions,
             else_result,
+            ..
         } => {
-            let conditions: Vec<CaseWhen> = conditions
-                .into_iter()
-                .map(|cw| CaseWhen {
-                    condition: transform_expr(cw.condition),
-                    result: maybe_bool_value(transform_expr(cw.result)),
-                })
-                .collect();
-            let else_result = else_result.map(|e| Box::new(maybe_bool_value(transform_expr(*e))));
-            Expr::Case {
-                case_token,
-                end_token,
-                operand: operand.map(|o| Box::new(transform_expr(*o))),
-                conditions,
-                else_result,
+            if let Some(op) = operand {
+                transform_expr(op);
+            }
+            for cw in conditions {
+                transform_expr(&mut cw.condition);
+                transform_expr(&mut cw.result);
+                maybe_bool_value_inplace(&mut cw.result);
+            }
+            if let Some(er) = else_result {
+                transform_expr(er);
+                maybe_bool_value_inplace(er);
             }
         }
 
         // Fix 6 & 7: max(a,b) → GREATEST, min(a,b) → LEAST
-        // Fix 8 & 9: COLLATE handling
-        Expr::Function(mut func) => {
-            // Get name and arg count before mutable borrow
-            let fn_name = func_name_str(&func);
+        Expr::Function(ref mut func) => {
+            let fn_name = func_name_str(func);
             let arg_count = if let FunctionArguments::List(ref al) = func.args {
                 al.args.len()
             } else {
@@ -317,13 +313,13 @@ fn transform_expr(expr: Expr) -> Expr {
                 for arg in &mut al.args {
                     match arg {
                         FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
-                            transform_expr_inplace(e);
+                            transform_expr(e);
                         }
                         FunctionArg::Named {
                             arg: FunctionArgExpr::Expr(e),
                             ..
                         } => {
-                            transform_expr_inplace(e);
+                            transform_expr(e);
                         }
                         _ => {}
                     }
@@ -331,212 +327,211 @@ fn transform_expr(expr: Expr) -> Expr {
             }
 
             if fn_name == "max" && arg_count >= 2 {
-                rename_function(&mut func, "GREATEST");
+                rename_function(func, "GREATEST");
             } else if fn_name == "min" && arg_count >= 2 {
-                rename_function(&mut func, "LEAST");
+                rename_function(func, "LEAST");
             }
-
-            Expr::Function(func)
         }
 
         // Fix FTS4: col MATCH 'term' → col_fts @@ to_tsquery('simple', E'converted_term')
         Expr::BinaryOp {
-            left,
             op: BinaryOperator::PGCustomBinaryOperator(ref custom_ops),
-            right,
+            ..
         } if custom_ops.len() == 1 && custom_ops[0] == "MATCH" => {
-            transform_fts_match(*left, *right)
-        }
-        Expr::BinaryOp {
-            left,
-            op: BinaryOperator::Match,
-            right,
-        } => transform_fts_match(*left, *right),
-
-        // Fix 12: Int/text mismatch — known text columns compared with int literals
-        // and known int columns compared with string literals
-        Expr::BinaryOp {
-            ref left,
-            ref op,
-            ref right,
-        } if matches!(op, BinaryOperator::Eq | BinaryOperator::NotEq)
-            && should_fix_int_text_mismatch(left, right) =>
-        {
-            let (left, op, right) = match expr {
-                Expr::BinaryOp { left, op, right } => (*left, op, *right),
-                _ => unreachable!(),
-            };
-            fix_int_text_mismatch(left, op, right)
-        }
-
-        // Fix 9: COLLATE NOCASE on equality → LOWER(x) = LOWER(y)
-        // Fix 10: 0/1 in boolean context (AND/OR) → FALSE/TRUE
-        // Fix general BinaryOp recursion
-        Expr::BinaryOp { left, op, right } => {
-            // Before recursing, check for COLLATE NOCASE at this level
-            let is_eq_op = matches!(op, BinaryOperator::Eq | BinaryOperator::NotEq);
-            let is_logical_op = matches!(op, BinaryOperator::And | BinaryOperator::Or);
-            let (left_stripped, left_nocase) = strip_collate_nocase_shallow(*left);
-            let (right_stripped, right_nocase) = strip_collate_nocase_shallow(*right);
-
-            if is_eq_op && (left_nocase || right_nocase) {
-                // Recurse into the stripped inner expressions
-                let left_t = transform_expr(left_stripped);
-                let right_t = transform_expr(right_stripped);
-                Expr::BinaryOp {
-                    left: Box::new(wrap_lower(left_t)),
-                    op,
-                    right: Box::new(wrap_lower(right_t)),
-                }
-            } else if is_logical_op {
-                // In AND/OR context, convert bare 0/1 to FALSE/TRUE
-                let left_t = maybe_bool_value(transform_expr(left_stripped));
-                let right_t = maybe_bool_value(transform_expr(right_stripped));
-                Expr::BinaryOp {
-                    left: Box::new(left_t),
-                    op,
-                    right: Box::new(right_t),
-                }
-            } else {
-                // Put back what we stripped (if nothing was NOCASE, strip_collate returns original)
-                let left_t = transform_expr(left_stripped);
-                let right_t = transform_expr(right_stripped);
-                Expr::BinaryOp {
-                    left: Box::new(left_t),
-                    op,
-                    right: Box::new(right_t),
-                }
+            let taken = std::mem::replace(
+                expr,
+                Expr::Value(ValueWithSpan {
+                    value: Value::Null,
+                    span: Span::empty(),
+                }),
+            );
+            if let Expr::BinaryOp { left, right, .. } = taken {
+                *expr = transform_fts_match(*left, *right);
             }
         }
-        Expr::UnaryOp { op, expr } => Expr::UnaryOp {
-            op,
-            expr: Box::new(transform_expr(*expr)),
-        },
-        Expr::Nested(inner) => Expr::Nested(Box::new(transform_expr(*inner))),
-        Expr::Cast {
-            kind,
-            expr,
-            data_type,
-            array,
-            format,
-        } => Expr::Cast {
-            kind,
-            expr: Box::new(transform_expr(*expr)),
-            data_type,
-            array,
-            format,
-        },
+        Expr::BinaryOp {
+            op: BinaryOperator::Match,
+            ..
+        } => {
+            let taken = std::mem::replace(
+                expr,
+                Expr::Value(ValueWithSpan {
+                    value: Value::Null,
+                    span: Span::empty(),
+                }),
+            );
+            if let Expr::BinaryOp { left, right, .. } = taken {
+                *expr = transform_fts_match(*left, *right);
+            }
+        }
+
+        // Fix 12 + Fix 9 + Fix 10 + general BinaryOp
+        Expr::BinaryOp { left, op, right } => {
+            let is_eq_op = matches!(op, BinaryOperator::Eq | BinaryOperator::NotEq);
+            let is_logical_op = matches!(op, BinaryOperator::And | BinaryOperator::Or);
+
+            // Fix 12: Int/text mismatch
+            if is_eq_op && should_fix_int_text_mismatch(left, right) {
+                let taken = std::mem::replace(
+                    expr,
+                    Expr::Value(ValueWithSpan {
+                        value: Value::Null,
+                        span: Span::empty(),
+                    }),
+                );
+                if let Expr::BinaryOp { left, op, right } = taken {
+                    *expr = fix_int_text_mismatch(*left, op, *right);
+                }
+                return;
+            }
+
+            // Fix 9: COLLATE NOCASE on equality → LOWER(x) = LOWER(y)
+            let left_nocase = is_collate_nocase(left);
+            let right_nocase = is_collate_nocase(right);
+
+            if is_eq_op && (left_nocase || right_nocase) {
+                strip_collate_nocase_inplace(left);
+                strip_collate_nocase_inplace(right);
+                transform_expr(left);
+                transform_expr(right);
+                wrap_lower_inplace(left);
+                wrap_lower_inplace(right);
+            } else if is_logical_op {
+                // Fix 10: 0/1 in boolean context (AND/OR) → FALSE/TRUE
+                strip_collate_nocase_inplace(left);
+                strip_collate_nocase_inplace(right);
+                transform_expr(left);
+                transform_expr(right);
+                maybe_bool_value_inplace(left);
+                maybe_bool_value_inplace(right);
+            } else {
+                strip_collate_nocase_inplace(left);
+                strip_collate_nocase_inplace(right);
+                transform_expr(left);
+                transform_expr(right);
+            }
+        }
+        Expr::UnaryOp { expr: inner, .. } => transform_expr(inner),
+        Expr::Nested(inner) => transform_expr(inner),
+        Expr::Cast { expr: inner, .. } => transform_expr(inner),
         Expr::InList {
-            expr,
-            list,
-            negated,
-        } => Expr::InList {
-            expr: Box::new(transform_expr(*expr)),
-            list: list.into_iter().map(transform_expr).collect(),
-            negated,
-        },
+            expr: inner, list, ..
+        } => {
+            transform_expr(inner);
+            for e in list {
+                transform_expr(e);
+            }
+        }
         Expr::Between {
-            expr,
-            negated,
+            expr: inner,
             low,
             high,
-        } => Expr::Between {
-            expr: Box::new(transform_expr(*expr)),
-            negated,
-            low: Box::new(transform_expr(*low)),
-            high: Box::new(transform_expr(*high)),
-        },
-        Expr::Collate { expr, collation } => {
+            ..
+        } => {
+            transform_expr(inner);
+            transform_expr(low);
+            transform_expr(high);
+        }
+        Expr::Collate { .. } => {
             // Fix 8: strip ICU collations entirely
             // Fix 9b: NOCASE outside equality → wrap in LOWER()
-            // Note: NOCASE on equality is handled in the BinaryOp arm above
-            let collation_name = collation
-                .0
-                .first()
-                .and_then(|p| match p {
-                    ObjectNamePart::Identifier(i) => Some(i.value.to_lowercase()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-
-            let inner = transform_expr(*expr);
+            let collation_name = match expr {
+                Expr::Collate { collation, .. } => collation
+                    .0
+                    .first()
+                    .and_then(|p| match p {
+                        ObjectNamePart::Identifier(i) => Some(i.value.to_lowercase()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+                _ => unreachable!(),
+            };
 
             if collation_name.starts_with("icu") || collation_name == "unicode" {
-                // Strip the collation entirely
-                inner
+                // Strip the collation entirely — unwrap inner expr
+                let taken = std::mem::replace(
+                    expr,
+                    Expr::Value(ValueWithSpan {
+                        value: Value::Null,
+                        span: Span::empty(),
+                    }),
+                );
+                if let Expr::Collate { expr: inner, .. } = taken {
+                    *expr = *inner;
+                }
+                transform_expr(expr);
             } else if collation_name == "nocase" {
                 // Standalone NOCASE (ORDER BY, non-equality) → LOWER(expr)
-                wrap_lower(inner)
+                let taken = std::mem::replace(
+                    expr,
+                    Expr::Value(ValueWithSpan {
+                        value: Value::Null,
+                        span: Span::empty(),
+                    }),
+                );
+                if let Expr::Collate { expr: inner, .. } = taken {
+                    *expr = *inner;
+                }
+                transform_expr(expr);
+                wrap_lower_inplace(expr);
             } else {
-                // Keep other collations
-                Expr::Collate {
-                    expr: Box::new(inner),
-                    collation,
+                // Keep other collations, recurse into inner
+                if let Expr::Collate { expr: inner, .. } = expr {
+                    transform_expr(inner);
                 }
             }
         }
         // Fix LIKE ... COLLATE NOCASE → ILIKE
         Expr::Like {
-            negated,
-            expr,
+            expr: like_expr,
             pattern,
-            escape_char,
-            any,
+            ..
         } => {
-            let (pat_inner, pat_nocase) = strip_collate_nocase_shallow(*pattern);
-            let expr_t = Box::new(transform_expr(*expr));
-            let pat_t = Box::new(transform_expr(pat_inner));
+            let pat_nocase = is_collate_nocase(pattern);
+            strip_collate_nocase_inplace(pattern);
+            transform_expr(like_expr);
+            transform_expr(pattern);
             if pat_nocase {
-                // Convert to ILIKE
-                Expr::ILike {
+                // Convert to ILIKE — need to take the whole node
+                let taken = std::mem::replace(
+                    expr,
+                    Expr::Value(ValueWithSpan {
+                        value: Value::Null,
+                        span: Span::empty(),
+                    }),
+                );
+                if let Expr::Like {
                     negated,
-                    expr: expr_t,
-                    pattern: pat_t,
+                    expr: e,
+                    pattern: p,
                     escape_char,
                     any,
-                }
-            } else {
-                Expr::Like {
-                    negated,
-                    expr: expr_t,
-                    pattern: pat_t,
-                    escape_char,
-                    any,
+                } = taken
+                {
+                    *expr = Expr::ILike {
+                        negated,
+                        expr: e,
+                        pattern: p,
+                        escape_char,
+                        any,
+                    };
                 }
             }
         }
         Expr::ILike {
-            negated,
-            expr,
+            expr: ilike_expr,
             pattern,
-            escape_char,
-            any,
+            ..
         } => {
             // Strip NOCASE from ILIKE too (already case-insensitive)
-            let (pat_inner, _) = strip_collate_nocase_shallow(*pattern);
-            Expr::ILike {
-                negated,
-                expr: Box::new(transform_expr(*expr)),
-                pattern: Box::new(transform_expr(pat_inner)),
-                escape_char,
-                any,
-            }
+            strip_collate_nocase_inplace(pattern);
+            transform_expr(ilike_expr);
+            transform_expr(pattern);
         }
-        Expr::IsNull(inner) => Expr::IsNull(Box::new(transform_expr(*inner))),
-        Expr::IsNotNull(inner) => Expr::IsNotNull(Box::new(transform_expr(*inner))),
-        other => other,
+        Expr::IsNull(inner) => transform_expr(inner),
+        Expr::IsNotNull(inner) => transform_expr(inner),
+        _ => {}
     }
-}
-
-fn transform_expr_inplace(expr: &mut Expr) {
-    let taken = std::mem::replace(
-        expr,
-        Expr::Value(ValueWithSpan {
-            value: Value::Null,
-            span: Span::empty(),
-        }),
-    );
-    *expr = transform_expr(taken);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -587,37 +582,49 @@ fn is_aggregate_expr(expr: &Expr) -> bool {
     }
 }
 
-/// If the expression is a numeric literal 1 or 0, replace with TRUE/FALSE.
-fn maybe_bool_value(expr: Expr) -> Expr {
+/// If the expression is a numeric literal 1 or 0, replace with TRUE/FALSE in place.
+fn maybe_bool_value_inplace(expr: &mut Expr) {
     if let Expr::Value(ValueWithSpan {
         value: Value::Number(ref s, _),
         ref span,
-    }) = expr
+    }) = *expr
     {
         if s == "1" {
-            return Expr::Value(ValueWithSpan {
+            *expr = Expr::Value(ValueWithSpan {
                 value: Value::Boolean(true),
                 span: *span,
             });
         } else if s == "0" {
-            return Expr::Value(ValueWithSpan {
+            *expr = Expr::Value(ValueWithSpan {
                 value: Value::Boolean(false),
                 span: *span,
             });
         }
     }
-    expr
 }
 
-/// Strip COLLATE NOCASE from an expression (shallow — does not recurse).
-/// Returns (inner_expr, was_nocase).
-fn strip_collate_nocase_shallow(expr: Expr) -> (Expr, bool) {
-    if let Expr::Collate {
-        expr: inner,
-        collation,
-    } = expr
-    {
-        let collation_name = collation
+/// Check if an expression is `COLLATE NOCASE` (shallow check).
+fn is_collate_nocase(expr: &Expr) -> bool {
+    if let Expr::Collate { collation, .. } = expr {
+        collation
+            .0
+            .first()
+            .and_then(|p| match p {
+                ObjectNamePart::Identifier(i) => Some(i.value.to_lowercase()),
+                _ => None,
+            })
+            .map(|name| name == "nocase")
+            .unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Strip COLLATE NOCASE or ICU collation from an expression in place (shallow).
+/// If the expression is `expr COLLATE NOCASE` or `expr COLLATE icu_*`, unwrap to just `expr`.
+fn strip_collate_nocase_inplace(expr: &mut Expr) {
+    let should_strip = if let Expr::Collate { collation, .. } = &*expr {
+        let name = collation
             .0
             .first()
             .and_then(|p| match p {
@@ -625,22 +632,22 @@ fn strip_collate_nocase_shallow(expr: Expr) -> (Expr, bool) {
                 _ => None,
             })
             .unwrap_or_default();
-
-        if collation_name == "nocase" {
-            return (*inner, true);
-        } else if collation_name.starts_with("icu") || collation_name == "unicode" {
-            // Strip ICU collation, not NOCASE
-            return (*inner, false);
-        }
-        return (
-            Expr::Collate {
-                expr: inner,
-                collation,
-            },
-            false,
+        name == "nocase" || name.starts_with("icu") || name == "unicode"
+    } else {
+        false
+    };
+    if should_strip {
+        let taken = std::mem::replace(
+            expr,
+            Expr::Value(ValueWithSpan {
+                value: Value::Null,
+                span: Span::empty(),
+            }),
         );
+        if let Expr::Collate { expr: inner, .. } = taken {
+            *expr = *inner;
+        }
     }
-    (expr, false)
 }
 
 // ─── Fix 11: Collections filter ───────────────────────────────────────────────
@@ -798,44 +805,51 @@ fn should_fix_int_text_mismatch(left: &Expr, right: &Expr) -> bool {
     false
 }
 
-/// Fix int/text mismatch by adding appropriate casts
-fn fix_int_text_mismatch(left: Expr, op: BinaryOperator, right: Expr) -> Expr {
+/// Fix int/text mismatch by adding appropriate casts.
+/// Takes ownership because the caller already extracted the parts via std::mem::replace.
+fn fix_int_text_mismatch(mut left: Expr, op: BinaryOperator, mut right: Expr) -> Expr {
     let left_col = get_column_name(&left);
     let right_col = get_column_name(&right);
 
-    let (new_left, new_right) = if left_col
+    // Recurse into both sides first
+    transform_expr(&mut left);
+    transform_expr(&mut right);
+
+    if left_col
         .as_ref()
         .map(|c| KNOWN_TEXT_COLUMNS.contains(&c.as_str()))
         .unwrap_or(false)
         && is_number_literal(&right)
     {
         // text_col = 123 → text_col = 123::text
-        (
-            transform_expr(left),
-            Expr::Cast {
+        Expr::BinaryOp {
+            left: Box::new(left),
+            op,
+            right: Box::new(Expr::Cast {
                 kind: CastKind::DoubleColon,
-                expr: Box::new(transform_expr(right)),
+                expr: Box::new(right),
                 data_type: DataType::Text,
                 array: false,
                 format: None,
-            },
-        )
+            }),
+        }
     } else if right_col
         .as_ref()
         .map(|c| KNOWN_TEXT_COLUMNS.contains(&c.as_str()))
         .unwrap_or(false)
         && is_number_literal(&left)
     {
-        (
-            Expr::Cast {
+        Expr::BinaryOp {
+            left: Box::new(Expr::Cast {
                 kind: CastKind::DoubleColon,
-                expr: Box::new(transform_expr(left)),
+                expr: Box::new(left),
                 data_type: DataType::Text,
                 array: false,
                 format: None,
-            },
-            transform_expr(right),
-        )
+            }),
+            op,
+            right: Box::new(right),
+        }
     } else if left_col
         .as_ref()
         .map(|c| KNOWN_INT_COLUMNS.contains(&c.as_str()))
@@ -843,40 +857,40 @@ fn fix_int_text_mismatch(left: Expr, op: BinaryOperator, right: Expr) -> Expr {
         && is_string_literal(&right)
     {
         // int_col = '123' → int_col = CAST('123' AS INTEGER)
-        (
-            transform_expr(left),
-            Expr::Cast {
+        Expr::BinaryOp {
+            left: Box::new(left),
+            op,
+            right: Box::new(Expr::Cast {
                 kind: CastKind::Cast,
-                expr: Box::new(transform_expr(right)),
+                expr: Box::new(right),
                 data_type: DataType::Integer(None),
                 array: false,
                 format: None,
-            },
-        )
+            }),
+        }
     } else if right_col
         .as_ref()
         .map(|c| KNOWN_INT_COLUMNS.contains(&c.as_str()))
         .unwrap_or(false)
         && is_string_literal(&left)
     {
-        (
-            Expr::Cast {
+        Expr::BinaryOp {
+            left: Box::new(Expr::Cast {
                 kind: CastKind::Cast,
-                expr: Box::new(transform_expr(left)),
+                expr: Box::new(left),
                 data_type: DataType::Integer(None),
                 array: false,
                 format: None,
-            },
-            transform_expr(right),
-        )
+            }),
+            op,
+            right: Box::new(right),
+        }
     } else {
-        (transform_expr(left), transform_expr(right))
-    };
-
-    Expr::BinaryOp {
-        left: Box::new(new_left),
-        op,
-        right: Box::new(new_right),
+        Expr::BinaryOp {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        }
     }
 }
 
@@ -1043,6 +1057,18 @@ fn convert_fts_term(input: &str) -> String {
         }
     }
     result
+}
+
+/// Wrap an expression in LOWER(…) in place.
+fn wrap_lower_inplace(expr: &mut Expr) {
+    let inner = std::mem::replace(
+        expr,
+        Expr::Value(ValueWithSpan {
+            value: Value::Null,
+            span: Span::empty(),
+        }),
+    );
+    *expr = wrap_lower(inner);
 }
 
 /// Wrap an expression in LOWER(…)
