@@ -20,6 +20,7 @@
 #include "../include/sql_translator.h"
 #include "pg_logging.h"
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 

@@ -5,7 +5,9 @@
  */
 
 // Must be defined before any includes for pthread_getattr_np on Linux/musl
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "db_interpose.h"
 #include "../include/str_utils.h"  // for safe_strcasestr

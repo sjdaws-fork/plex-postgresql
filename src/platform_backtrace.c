@@ -10,7 +10,9 @@
 #ifdef __APPLE__
 #include <execinfo.h>
 #else
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <dlfcn.h>
 #endif
 
