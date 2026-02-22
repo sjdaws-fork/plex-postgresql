@@ -1,18 +1,18 @@
 # plex-postgresql
 
-**Ejecuta Plex Media Serv1.0.0er con PostgreSQL en lugar de SQLite.**
+**Ejecuta Plex Media Server con PostgreSQL en lugar de SQLite.**
 
 [Read in English](README.md)
 
-Una librería shim pequeña que captura las llamadas SQLite de Plex y las env1.0.0ía a PostgreSQL. No necesitas modificar Plex.
+Una librería shim pequeña que captura las llamadas SQLite de Plex y las envía a PostgreSQL. No necesitas modificar Plex.
 
 | Plataforma | Estado |
 |------------|--------|
 | macOS | ✅ Probado en producción |
 | Linux (Docker) | ✅ Funciona (init y ejecución probados, no probado en producción) |
-| Linux (Nativ1.0.0o) | ⚠️ No probado |
+| Linux (Nativo) | ⚠️ No probado |
 
-## Última v1.0.0ersión: v1.0.01.0.0
+## Última versión: v1.0.0
 
 **Traductor SQL y módulos PG migrados a Rust** — toda la traducción SQLite-a-PostgreSQL ahora se ejecuta en el motor AST `sqlparser-rs` de Rust, y los 7 módulos backend están migrados a C/Rust híbrido.
 
@@ -20,16 +20,16 @@ Una librería shim pequeña que captura las llamadas SQLite de Plex y las env1.0
 - 🆕 **Módulos PG en Rust:** pg_config, pg_logging, pg_mem_telemetry, shim_alloc, pg_query_cache, pg_statement, pg_client
 - ✅ **1.075+ tests** (525 Rust + ~550 C en 25 suites)
 
-Descarga: https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.01.0.0
+Descarga: https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.0
 
 ## ¿Por qué PostgreSQL?
 
 SQLite funciona bien en muchos casos, pero tiene una limitación importante: **bloqueo de base de datos**.
 
-- **Menos bloqueos** - con PostgreSQL, escaneos y reproducción conv1.0.0iv1.0.0en mejor.
-- **Mejor para almacenamiento remoto** - útil con rclone y serv1.0.0icios en la nube.
+- **Menos bloqueos** - con PostgreSQL, escaneos y reproducción conviven mejor.
+- **Mejor para almacenamiento remoto** - útil con rclone y servicios en la nube.
 - **Mejor en bibliotecas grandes** - maneja catálogos grandes con más estabilidad.
-- **Herramientas conocidas** - `pg_dump` y clientes PostgreSQL para backup y rev1.0.0isión.
+- **Herramientas conocidas** - `pg_dump` y clientes PostgreSQL para backup y revisión.
 
 ## Inicio Rápido (Docker)
 
@@ -55,7 +55,7 @@ PostgreSQL se configura automáticamente y crea el esquema inicial.
 Edita `docker-compose.yml` para personalizar:
 
 ```yaml
-env1.0.0ironment:
+environment:
   - PLEX_PG_HOST=postgres
   - PLEX_PG_PORT=5432
   - PLEX_PG_DATABASE=plex
@@ -67,19 +67,19 @@ env1.0.0ironment:
 
 Monta tus medios:
 ```yaml
-v1.0.0olumes:
+volumes:
   - /ruta/a/medios:/media:ro
 ```
 
 ## Inicio Rápido (macOS)
 
-El instalador copia la librería shim dentro de `Plex Media Serv1.0.0er.app`, parchea los binarios y configura el wrapper. Todo queda dentro del app bundle de Plex.
+El instalador copia la librería shim dentro de `Plex Media Server.app`, parchea los binarios y configura el wrapper. Todo queda dentro del app bundle de Plex.
 
 ### 1. Configurar PostgreSQL
 
 ```bash
 brew install postgresql@15
-brew serv1.0.0ices start postgresql@15
+brew services start postgresql@15
 
 createuser plex
 createdb -O plex plex
@@ -89,11 +89,11 @@ psql -d plex -c "ALTER USER plex PASSWORD 'plex';"
 ### 2. Instalar (ZIP recomendado)
 
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v1.0.01.0.0/plex-postgresql-v1.0.01.0.0-macos.zip -o /tmp/plex-pg-macos.zip
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v1.0.0/plex-postgresql-v1.0.0-macos.zip -o /tmp/plex-pg-macos.zip
 mkdir -p /tmp/plex-pg-macos && cd /tmp/plex-pg-macos
 unzip /tmp/plex-pg-macos.zip
 
-pkill -f "Plex Media Serv1.0.0er" 2>/dev1.0.0/null || true
+pkill -f "Plex Media Server" 2>/dev/null || true
 ./scripts/install_wrappers.sh
 ```
 
@@ -104,28 +104,28 @@ git clone https://github.com/cgnl/plex-postgresql.git
 cd plex-postgresql
 make clean && make
 
-pkill -f "Plex Media Serv1.0.0er" 2>/dev1.0.0/null || true
+pkill -f "Plex Media Server" 2>/dev/null || true
 ./scripts/install_wrappers.sh
 ```
 
 ### 3. Iniciar Plex
 
 ```bash
-open "/Applications/Plex Media Serv1.0.0er.app"
+open "/Applications/Plex Media Server.app"
 ```
 
 El shim se inyecta automáticamente. Ver logs: `tail -f /tmp/plex_redirect_pg.log`
 
-Después de una actualización de Plex, ejecuta `install_wrappers.sh` de nuev1.0.0o.
+Después de una actualización de Plex, ejecuta `install_wrappers.sh` de nuevo.
 
 ### Desinstalar
 
 ```bash
-pkill -f "Plex Media Serv1.0.0er" 2>/dev1.0.0/null || true
+pkill -f "Plex Media Server" 2>/dev/null || true
 ./scripts/uninstall_wrappers.sh
 ```
 
-## Inicio Rápido (Linux Nativ1.0.0o)
+## Inicio Rápido (Linux Nativo)
 
 ### 1. Configurar PostgreSQL
 
@@ -140,7 +140,7 @@ psql -U plex -d plex -c "CREATE SCHEMA plex;"
 ### 2. Instalar (ZIP recomendado)
 
 ```bash
-curl -L https://github.com/cgnl/plex-postgresql/releases/download/v1.0.01.0.0/plex-postgresql-v1.0.01.0.0-linux.zip -o /tmp/plex-pg-linux.zip
+curl -L https://github.com/cgnl/plex-postgresql/releases/download/v1.0.0/plex-postgresql-v1.0.0-linux.zip -o /tmp/plex-pg-linux.zip
 mkdir -p /tmp/plex-pg && cd /tmp/plex-pg
 unzip /tmp/plex-pg-linux.zip
 
@@ -157,33 +157,33 @@ sudo ./scripts/install_wrappers_linux.sh
 ### Opción desde código fuente
 
 ```bash
-sudo apt install build-essential libsqlite3-dev1.0.0 libpq-dev1.0.0
+sudo apt install build-essential libsqlite3-dev libpq-dev
 
 git clone https://github.com/cgnl/plex-postgresql.git
 cd plex-postgresql
 make linux
 sudo make install
 
-sudo systemctl stop plexmediaserv1.0.0er
+sudo systemctl stop plexmediaserver
 sudo ./scripts/install_wrappers_linux.sh
 ```
 
 ### 3. Configurar e Iniciar
 
 ```bash
-# Añadir a /etc/default/plexmediaserv1.0.0er:
+# Añadir a /etc/default/plexmediaserver:
 # PLEX_PG_HOST=localhost
 # PLEX_PG_DATABASE=plex
 # PLEX_PG_USER=plex
 # PLEX_PG_PASSWORD=plex
 
-sudo systemctl start plexmediaserv1.0.0er
+sudo systemctl start plexmediaserver
 ```
 
 ### Desinstalar
 
 ```bash
-sudo systemctl stop plexmediaserv1.0.0er
+sudo systemctl stop plexmediaserver
 sudo ./scripts/uninstall_wrappers_linux.sh
 ```
 
@@ -195,10 +195,10 @@ sudo ./scripts/uninstall_wrappers_linux.sh
 | `PLEX_PG_PORT` | 5432 | Puerto de PostgreSQL |
 | `PLEX_PG_DATABASE` | plex | Nombre de la base de datos |
 | `PLEX_PG_USER` | plex | Usuario de la base de datos |
-| `PLEX_PG_PASSWORD` | (v1.0.0acío) | Contraseña de la base de datos |
+| `PLEX_PG_PASSWORD` | (vacío) | Contraseña de la base de datos |
 | `PLEX_PG_SCHEMA` | plex | Nombre del esquema |
 | `PLEX_PG_POOL_SIZE` | 50 | Tamaño inicial del pool de conexiones (crece automáticamente hasta 200) |
-| `PLEX_PG_IDLE_TIMEOUT` | 300 | Segundos antes de cerrar conexiones inactiv1.0.0as |
+| `PLEX_PG_IDLE_TIMEOUT` | 300 | Segundos antes de cerrar conexiones inactivas |
 | `PLEX_PG_LOG_LEVEL` | 1 | 0=ERROR, 1=INFO, 2=DEBUG |
 
 ## Cómo Funciona
@@ -220,7 +220,7 @@ Capa 1:   Traductor SQL Rust (sqlparser-rs)    — traducción AST completa SQLi
 ### Características Principales
 
 - **Pool de conexiones** - Reutiliza conexiones PostgreSQL
-- **Traducción SQL** - Conv1.0.0ierte sintaxis SQLite → PostgreSQL
+- **Traducción SQL** - Convierte sintaxis SQLite → PostgreSQL
 - **Prepared statements** - Usa caché de consultas para mejor rendimiento
 - **Inicialización del esquema** - Crea el esquema PostgreSQL en el primer arranque
 
@@ -242,7 +242,7 @@ docker-compose logs -f plex
 
 ### Problemas Comunes
 
-**Plex no inicia**: v1.0.0erifica que PostgreSQL esté activ1.0.0o y accesible.
+**Plex no inicia**: verifica que PostgreSQL esté activo y accesible.
 
 **Errores de base de datos**: Asegúrate de que el esquema existe: `psql -U plex -d plex -c "CREATE SCHEMA IF NOT EXISTS plex;"`
 
