@@ -10,10 +10,10 @@
 |  fishhook, constructor, DYLD_INTERPOSE       |
 |  db_interpose_{open,prepare,step,bind,...}    |
 +---------------------------------------------+
-| Laag 2: Rust PG modules (hybride C/Rust)  ✅ |  rust/sql-translator/src/
+| Laag 2: Rust PG modules (hybride C/Rust)  ✅ |  rust/plex-pg-core/src/
 |  pool, statement, cache, config, logging     |  pg_*.rs, shim_alloc.rs
 +---------------------------------------------+
-| Laag 1: Rust sql-translator               ✅ |  rust/sql-translator/src/
+| Laag 1: Rust sql-translator               ✅ |  rust/plex-pg-core/src/
 |  sqlparser-rs AST transforms                 |  lib.rs, functions.rs, etc.
 +---------------------------------------------+
 ```
@@ -94,7 +94,7 @@ Verwacht resultaat: ~103/273 groen, ~170 `#[ignore]`.
 ### Fase 1.3 ✅ -- Vergelijkende validatie (offline replay)
 
 1. Extraheer unieke SQLite queries uit `/tmp/plex_redirect_pg.log` (live Plex op main)
-2. Bouw standalone CLI (`rust/sql-translator/examples/compare.rs`)
+2. Bouw standalone CLI (`rust/plex-pg-core/examples/compare.rs`)
 3. Vergelijk C-output vs Rust-output, fix tot 0 diffs
 4. Plex blijft op main draaien -- develop wordt NIET live gebruikt
 
@@ -169,7 +169,7 @@ pg_types.h (foundation)
 ### Laag 2 crate-structuur
 
 ```
-rust/pg-core/
+rust/plex-pg-core/
 +-- Cargo.toml           (deps: libpq-sys, once_cell)
 +-- src/
     +-- lib.rs

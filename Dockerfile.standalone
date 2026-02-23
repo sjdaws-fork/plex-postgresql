@@ -32,26 +32,7 @@ RUN /lib/ld-musl-*.so.1 --version 2>&1 | head -2
 
 WORKDIR /build
 
-# Build PostgreSQL from source WITHOUT OpenSSL to avoid ENGINE_* symbol conflicts
-# This must happen BEFORE Rust install to avoid rustup env interfering with gcc
-RUN curl -L https://ftp.postgresql.org/pub/source/v15.10/postgresql-15.10.tar.gz | tar xz
-RUN cd postgresql-15.10 && \
-    ARCH=$(uname -m) && \
-    if [ "$ARCH" = "x86_64" ]; then \
-      PG_CFLAGS='-O0 -mno-sse4.2'; \
-    else \
-      PG_CFLAGS='-O2'; \
-    fi && \
-    CFLAGS="$PG_CFLAGS" ac_cv_func_getaddrinfo=yes ./configure --prefix=/usr/local/pgsql \
-        --without-readline \
-        --without-zlib \
-        --without-openssl \
-        --without-icu && \
-    cd src/include && make install && \
-    cd ../interfaces/libpq && make && make install && \
-    cd ../../bin/pg_config && make && make install
-
-# Install Rust toolchain (after PG build to avoid env interference with gcc)
+# Install Rust toolchain
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -59,52 +40,11 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 COPY src/ src/
 COPY include/ include/
 COPY rust/ rust/
+COPY scripts/docker-build-shim.sh scripts/docker-build-shim.sh
 
-# Build Rust sql-translator static library
-RUN cd rust/sql-translator && cargo build --release
-
-# Build shim with musl (same as Plex's bundled libc)
-RUN ARCH=$(uname -m) && \
-    echo "Building for architecture: $ARCH" && \
-    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
-        ARCH_FLAGS="-mno-outline-atomics"; \
-    else \
-        ARCH_FLAGS=""; \
-    fi && \
-    gcc -shared -fPIC -O2 -fno-stack-protector \
-        -std=c11 -D_GNU_SOURCE $ARCH_FLAGS \
-        -o db_interpose_pg.so \
-        src/db_interpose_core_linux.c \
-        src/db_interpose_common.c src/platform_backtrace.c \
-        src/db_interpose_open.c src/db_interpose_exec.c \
-        src/db_interpose_prepare.c src/db_interpose_bind.c \
-        src/db_interpose_step.c src/db_interpose_column.c \
-        src/db_interpose_value.c src/db_interpose_metadata.c \
-        src/sql_translator_rust_bridge.c src/str_utils.c \
-        src/pg_config.c src/pg_logging.c \
-        src/pg_client.c src/pg_statement.c src/pg_query_cache.c \
-        src/pg_mem_telemetry.c src/shim_alloc.c \
-        rust/sql-translator/target/release/libsql_translator.a \
-        -I/usr/local/pgsql/include -I/usr/include -Iinclude -Isrc \
-        -L/usr/local/pgsql/lib -lpq \
-        -ldl -lpthread \
-        -Wl,-rpath,/usr/local/lib/plex-postgresql \
-        -Wl,-rpath,/usr/lib/plexmediaserver/lib
-
-# Check dependencies
-RUN echo "=== Shim dependencies ===" && (LD_LIBRARY_PATH=/usr/local/pgsql/lib ldd db_interpose_pg.so || true)
-
-# Build a no-op binary for CrashUploader replacement
-# Must be a compiled binary (not shell script) to avoid LD_PRELOAD interference
-RUN printf '#include <unistd.h>\nint main(void){_exit(0);}\n' > noop.c && \
-    gcc -static -o noop noop.c
-
-# Gather libraries
-RUN mkdir -p /libs && \
-    cp db_interpose_pg.so /libs/ && \
-    cp /usr/local/pgsql/lib/libpq.so.5* /libs/ && \
-    cp noop /libs/ && \
-    ls -la /libs/
+# Build PostgreSQL/libpq, Rust core, shim, and collect runtime libs in /libs.
+# --with-noop adds a static no-op binary used for CrashUploader replacement.
+RUN sh scripts/docker-build-shim.sh --with-noop
 
 # ============================================================================
 # Stage 2: Runtime with plexinc/pms-docker

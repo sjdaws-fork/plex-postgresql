@@ -23,7 +23,7 @@ Release assets are zip-only:
 **Best for:** quick setup, testing, and multi-platform deployments
 
 ### Prerequisites
-- Docker & Docker Compose installed
+- Docker with the Compose plugin (`docker compose`) installed
 - 2GB RAM minimum
 - 10GB disk space
 
@@ -35,10 +35,10 @@ git clone https://github.com/cgnl/plex-postgresql.git
 cd plex-postgresql
 
 # 2. Start containers
-docker-compose up -d
+docker compose up -d
 
 # 3. Check startup progress
-docker-compose logs -f plex
+docker compose logs -f plex
 
 # Wait for: "PostgreSQL initialization complete"
 # Then open: http://localhost:8080/web
@@ -50,12 +50,19 @@ docker-compose logs -f plex
 3. Add libraries through web interface
 4. Done. Your library data is now in PostgreSQL.
 
+**Use a different host port (if local Plex already uses 32400):**
+```bash
+PLEX_HOST_PORT=32410 PLEX_DLNA_PORT=32471 docker compose up -d
+# Web UI: http://localhost:32410/web
+```
+
 **What happens:**
 - ✅ PostgreSQL 15 and Plex start automatically
 - ✅ An empty PostgreSQL schema is created
 - ✅ Current shim fixes are active
 - ✅ Works on x86_64 and ARM64
 - ✅ Required folders are created
+- ✅ Default test media mount: `./fixtures/media:/media:ro`
 
 ### Migration from Existing Plex Database
 
@@ -89,10 +96,10 @@ volumes:
 **2. Start containers with migration**
 
 ```bash
-docker-compose up -d
+docker compose up -d
 
 # Monitor migration progress
-docker-compose logs -f plex | grep -E "migration|Migration"
+docker compose logs -f plex | grep -E "migration|Migration"
 ```
 
 **Migration process:**
@@ -104,11 +111,12 @@ docker-compose logs -f plex | grep -E "migration|Migration"
 
 ### Configuration
 
-Default connection uses a Unix socket (usually a bit faster than TCP):
+Default connection in the included compose files uses TCP:
 
 ```yaml
 environment:
-  - PLEX_PG_HOST=/var/run/postgresql  # Unix socket
+  - PLEX_PG_HOST=postgres
+  - PLEX_PG_PORT=5432
   - PLEX_PG_DATABASE=plex
   - PLEX_PG_USER=plex
   - PLEX_PG_PASSWORD=plex
@@ -116,12 +124,13 @@ environment:
   - PLEX_PG_POOL_SIZE=50
   - PLEX_PG_IDLE_TIMEOUT=300  # seconds, default 300
   - PLEX_PG_LOG_LEVEL=DEBUG  # 0=ERROR, 1=INFO, 2=DEBUG
+  - PLEX_PG_VALIDATE_OUTPUT=off  # off|sample|all (default: off)
+  - PLEX_PG_VALIDATE_OUTPUT_SAMPLE_PCT=5  # only used when mode=sample
 ```
 
-**To use TCP instead:**
+**To use Unix socket mode instead:**
 ```yaml
-  - PLEX_PG_HOST=postgres  # Container name
-  - PLEX_PG_PORT=5432
+  - PLEX_PG_HOST=/var/run/postgresql
 ```
 
 ### Mount Media Libraries
@@ -140,28 +149,28 @@ volumes:
 
 ```bash
 # View logs
-docker-compose logs -f plex
+docker compose logs -f plex
 
 # Restart Plex
-docker-compose restart plex
+docker compose restart plex
 
 # Stop everything
-docker-compose down
+docker compose down
 
 # Stop and remove data (fresh start)
-docker-compose down -v
+docker compose down -v
 
 # Update to latest version
 git pull
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose up -d
 ```
 
 ### Troubleshooting
 
 **Plex shows "Maintenance" for a long time:**
 - This is normal on first start (database migrations)
-- Check logs: `docker-compose logs plex | tail -50`
+- Check logs: `docker compose logs plex | tail -50`
 - Wait a few minutes for initialization
 
 **Port 8080 already in use:**
@@ -173,7 +182,7 @@ ports:
 **PostgreSQL connection failed:**
 ```bash
 # Check PostgreSQL is healthy
-docker-compose ps
+docker compose ps
 # Should show "healthy" status for plex-postgres
 ```
 
@@ -496,7 +505,7 @@ tail -f /tmp/plex_redirect_pg.log
 sudo journalctl -u plexmediaserver -n 50
 
 # Docker
-docker-compose logs plex --tail 50
+docker compose logs plex --tail 50
 ```
 
 **Common issues:**
@@ -536,9 +545,9 @@ ls -la "/Users/$(whoami)/Library/Application Support/Plex Media Server/Plug-in S
 ./scripts/migrate_sqlite_to_pg.sh
 
 # Docker - restart containers
-docker-compose down
-docker-compose up -d
-docker-compose logs -f plex | grep migration
+docker compose down
+docker compose up -d
+docker compose logs -f plex | grep migration
 ```
 
 ### Performance Issues
@@ -575,7 +584,8 @@ psql -U plex -d plex -c "SELECT * FROM pg_stat_activity WHERE datname='plex';"
 
 After installation, verify these work:
 
-- [ ] Plex web interface accessible (http://localhost:32400/web)
+- [ ] Docker setup: Plex web interface accessible (http://localhost:8080/web, or your `PLEX_HOST_PORT`)
+- [ ] Native setup: Plex web interface accessible (http://localhost:32400/web)
 - [ ] Libraries visible and load correctly
 - [ ] Playback works
 - [ ] TV shows endpoint returns HTTP 200 (not 500)

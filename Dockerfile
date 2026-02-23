@@ -16,30 +16,7 @@ RUN /lib/ld-musl-*.so.1 --version 2>&1 | head -2
 
 WORKDIR /build
 
-# Download and build PostgreSQL with minimal features (just libpq)
-# This must happen BEFORE Rust install to avoid rustup env interfering with gcc
-RUN curl -L https://ftp.postgresql.org/pub/source/v15.10/postgresql-15.10.tar.gz | tar xz
-RUN cd postgresql-15.10 && \
-    # Configure WITHOUT OpenSSL to avoid ENGINE symbol conflicts
-    ARCH=$(uname -m) && \
-    if [ "$ARCH" = "x86_64" ]; then \
-      PG_CFLAGS='-O0 -mno-sse4.2'; \
-    else \
-      PG_CFLAGS='-O2'; \
-    fi && \
-    CFLAGS="$PG_CFLAGS" ac_cv_func_getaddrinfo=yes ./configure --prefix=/usr/local/pgsql \
-        --without-readline \
-        --without-zlib \
-        --without-openssl \
-        --without-icu && \
-    # Build and install include files first
-    cd src/include && make install && \
-    # Build and install libpq
-    cd ../interfaces/libpq && make && make install && \
-    # Build pg_config for headers
-    cd ../../bin/pg_config && make && make install
-
-# Install Rust toolchain (after PG build to avoid env interference with gcc)
+# Install Rust toolchain
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -47,51 +24,10 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 COPY src/ src/
 COPY include/ include/
 COPY rust/ rust/
+COPY scripts/docker-build-shim.sh scripts/docker-build-shim.sh
 
-# Build Rust sql-translator static library
-RUN cd rust/sql-translator && cargo build --release
-
-# Build shim with musl 1.2.2 (same as Plex)
-# Compiler flags match build_shim_musl.sh for consistency and performance
-# Note: Can't use -nodefaultlibs here because Plex's musl isn't available during build
-# Architecture-specific flags: -mno-outline-atomics is ARM64-only
-RUN ARCH=$(uname -m) && \
-    echo "Building for architecture: $ARCH" && \
-    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
-        ARCH_FLAGS="-mno-outline-atomics"; \
-        echo "ARM64 detected: adding -mno-outline-atomics flag"; \
-    else \
-        ARCH_FLAGS=""; \
-        echo "x86_64 detected: skipping ARM-specific flags"; \
-    fi && \
-    gcc -shared -fPIC -O2 -fno-stack-protector \
-        -std=c11 -D_GNU_SOURCE $ARCH_FLAGS \
-        -o db_interpose_pg.so \
-        src/db_interpose_core_linux.c \
-        src/db_interpose_common.c src/platform_backtrace.c \
-        src/db_interpose_open.c src/db_interpose_exec.c \
-        src/db_interpose_prepare.c src/db_interpose_bind.c \
-        src/db_interpose_step.c src/db_interpose_column.c \
-        src/db_interpose_value.c src/db_interpose_metadata.c \
-        src/sql_translator_rust_bridge.c src/str_utils.c \
-        src/pg_config.c src/pg_logging.c \
-        src/pg_client.c src/pg_statement.c src/pg_query_cache.c \
-        src/pg_mem_telemetry.c src/shim_alloc.c \
-        rust/sql-translator/target/release/libsql_translator.a \
-        -I/usr/local/pgsql/include -I/usr/include -Iinclude -Isrc \
-        -L/usr/local/pgsql/lib -lpq \
-        -ldl -lpthread \
-        -Wl,-rpath,/usr/local/lib/plex-postgresql \
-        -Wl,-rpath,/usr/lib/plexmediaserver/lib
-
-# Check dependencies
-RUN echo "=== Shim dependencies ===" && (LD_LIBRARY_PATH=/usr/local/pgsql/lib ldd db_interpose_pg.so || true)
-
-# Gather libraries
-RUN mkdir -p /libs && \
-    cp db_interpose_pg.so /libs/ && \
-    cp /usr/local/pgsql/lib/libpq.so.5* /libs/ && \
-    ls -la /libs/
+# Build PostgreSQL/libpq, Rust core, shim, and collect runtime libs in /libs
+RUN sh scripts/docker-build-shim.sh
 
 # Runtime stage
 FROM linuxserver/plex:latest

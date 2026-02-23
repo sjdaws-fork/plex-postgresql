@@ -10,15 +10,15 @@ A small shim library that catches Plex SQLite calls and sends them to PostgreSQL
 
 **SQL translator and PG modules migrated to Rust** — the entire SQLite-to-PostgreSQL translation pipeline now runs on Rust's `sqlparser-rs` AST engine, and all 7 backend modules have been migrated to hybrid C/Rust.
 
-- 🆕 **Rust SQL translator:** 525 Rust tests, full AST-based translation replacing the C string-manipulation translator
+- 🆕 **Rust SQL translator:** AST-based translation replacing the C string-manipulation translator
 - 🆕 **Rust PG modules:** pg_config, pg_logging, pg_mem_telemetry, shim_alloc, pg_query_cache, pg_statement, pg_client — all core logic in Rust
 - 🆕 **Log level cleanup:** informational pool messages demoted from ERROR to INFO
-- ✅ **1,075+ tests** (525 Rust + ~550 C across 25 suites)
+- ✅ **Extensive test coverage** across Rust and C test suites
 
 [📥 Download v1.0.0](https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.0) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.0)
 
 Linux and macOS release zips are built by GitHub Actions on tag push via `.github/workflows/release-linux-artifacts.yml` and `.github/workflows/release-macos-artifacts.yml`.
-Pull requests and `main` pushes run `.github/workflows/ci.yml` (script validation + Linux amd64 build check + **1,075+ tests**).
+Pull requests and `main` pushes run `.github/workflows/ci.yml` (script validation + Linux amd64 build check + full test suite).
 Docker images are published to GHCR on release tags via `.github/workflows/docker-publish.yml`:
 - `ghcr.io/cgnl/plex-postgresql-linuxserver`
 - `ghcr.io/cgnl/plex-postgresql-plexinc`
@@ -50,7 +50,7 @@ sudo mv /usr/local/lib/db_interpose_pg-linux-x86_64.so /usr/local/lib/db_interpo
 ```bash
 git clone https://github.com/cgnl/plex-postgresql.git
 cd plex-postgresql
-docker-compose up -d
+docker compose up -d
 ```
 
 See detailed installation instructions below for each platform.
@@ -125,17 +125,28 @@ git clone https://github.com/cgnl/plex-postgresql.git
 cd plex-postgresql
 
 # Start Plex + PostgreSQL
-docker-compose up -d
+docker compose up -d
 
 # Check logs
-docker-compose logs -f plex
+docker compose logs -f plex
 ```
 
 **Setup:**
-1. Open http://localhost:8080/web
-2. Claim your server with Plex account (or set `PLEX_CLAIM` in docker-compose.yml for headless claim)
+1. Open http://localhost:8080/web (or your `PLEX_HOST_PORT`)
+2. Claim your server with Plex account (or set `PLEX_CLAIM` in `docker-compose.yml` for headless claim)
 3. Add libraries via web interface
 4. Done. Your library data now lives in PostgreSQL.
+
+**Run on a different local port (recommended when local Plex is already running):**
+```bash
+PLEX_HOST_PORT=32410 PLEX_DLNA_PORT=32471 docker compose up -d
+```
+Then use `http://localhost:32410/web`.
+
+For local test media, the default Docker mount is `./fixtures/media:/media:ro`.
+
+Docker mode does **not** write `db_interpose_pg.dylib` into your local `Plex Media Server.app`.  
+Do **not** run `scripts/install_wrappers.sh` for this workflow.
 
 **What happens:**
 - ✅ PostgreSQL schema auto-created (empty)
@@ -164,12 +175,12 @@ If you already have a Plex library in SQLite, do this:
 
 3. **Start containers:**
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 4. **Monitor migration:**
    ```bash
-   docker-compose logs -f plex | grep -E "migration|Migration"
+   docker compose logs -f plex | grep -E "migration|Migration"
    ```
 
 **Migration includes:**
@@ -182,23 +193,25 @@ If you already have a Plex library in SQLite, do this:
 
 ### Configuration
 
-Default PostgreSQL connection (via Unix socket for best performance):
+Default PostgreSQL connection (TCP in the included compose files):
 ```yaml
 environment:
-  - PLEX_PG_HOST=/var/run/postgresql  # Unix socket (7% faster)
+  - PLEX_PG_HOST=postgres
+  - PLEX_PG_PORT=5432
   - PLEX_PG_DATABASE=plex
   - PLEX_PG_USER=plex
   - PLEX_PG_PASSWORD=plex
   - PLEX_PG_SCHEMA=plex
   - PLEX_PG_POOL_SIZE=50
   - PLEX_PG_LOG_LEVEL=DEBUG  # 0=ERROR, 1=INFO, 2=DEBUG
+  - PLEX_PG_VALIDATE_OUTPUT=off  # off|sample|all (default: off)
+  - PLEX_PG_VALIDATE_OUTPUT_SAMPLE_PCT=5  # only used when mode=sample
 ```
 
-To use TCP instead of Unix socket:
+To use a Unix socket instead of TCP:
 ```yaml
 environment:
-  - PLEX_PG_HOST=postgres  # TCP connection
-  - PLEX_PG_PORT=5432
+  - PLEX_PG_HOST=/var/run/postgresql
 ```
 
 Mount your media libraries:
@@ -329,7 +342,7 @@ More technical details are in **[wiki/How It Works](https://github.com/cgnl/plex
 ```bash
 make unit-test       # All C unit tests (25 suites, ~550 tests)
 make ci-test         # CI-safe subset (no LD_PRELOAD)
-cargo test           # Rust tests (525 tests) — in rust/sql-translator/
+cargo test           # Rust tests (525 tests) — in rust/plex-pg-core/
 make benchmark       # Shim micro-benchmarks
 ```
 
@@ -360,7 +373,7 @@ If `live` keeps growing over hours, there's a leak — the trace shows exactly w
 pg_isready -h localhost -U plex          # Check PostgreSQL
 ./scripts/doctor.sh                       # Check and fix schema + data
 tail -50 /tmp/plex_redirect_pg.log       # Check logs (macOS)
-docker-compose logs -f plex              # Check logs (Docker)
+docker compose logs -f plex              # Check logs (Docker)
 ```
 
 More: **[wiki/Troubleshooting](https://github.com/cgnl/plex-postgresql/wiki/Troubleshooting)**
