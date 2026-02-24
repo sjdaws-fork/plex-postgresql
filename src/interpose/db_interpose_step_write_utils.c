@@ -1,4 +1,6 @@
 #include "db_interpose_step_write_utils.h"
+#include "db_interpose_common.h"
+#include "db_interpose_conn_utils.h"
 #include "db_interpose_txn_utils.h"
 #include "db_interpose_rust.h"
 #include <stdio.h>
@@ -139,6 +141,127 @@ int step_write_should_skip_special_insert(pg_stmt_t *pg_stmt,
     }
 
     return 0;
+}
+
+step_result_t step_write_prepare_connection(pg_stmt_t *pg_stmt,
+                                            pg_connection_t **exec_conn_io,
+                                            int *pg_conn_error_out) {
+    if (pg_conn_error_out) *pg_conn_error_out = 0;
+    if (!pg_stmt || !exec_conn_io) return STEP_RESULT_ERROR;
+
+    pg_connection_t *exec_conn = *exec_conn_io;
+
+    if (!exec_conn || !exec_conn->conn) {
+        LOG_ERROR("STEP WRITE: NULL connection, retrying in 500ms (exec_conn=%p)",
+                  (void *)exec_conn);
+        pthread_mutex_unlock(&pg_stmt->mutex);
+        usleep(500000);
+        pthread_mutex_lock(&pg_stmt->mutex);
+
+        sqlite3 *retry_db = sqlite3_db_handle(pg_stmt->shadow_stmt);
+        pg_connection_t *retry_handle = pg_find_connection(retry_db);
+        if (retry_handle && retry_handle->db_path[0]) {
+            exec_conn = pg_get_thread_connection(retry_handle->db_path);
+        }
+        if (!exec_conn || !exec_conn->conn) {
+            LOG_ERROR("STEP WRITE: NULL connection after retry - giving up");
+            pg_stmt->write_executed = 1;
+            pthread_mutex_unlock(&pg_stmt->mutex);
+            if (pg_conn_error_out) *pg_conn_error_out = 1;
+            return STEP_RESULT_ERROR;
+        }
+        LOG_ERROR("STEP WRITE: reconnect retry succeeded (exec_conn=%p)", (void *)exec_conn);
+    }
+
+    pg_pool_touch_connection(exec_conn);
+    pthread_mutex_lock(&exec_conn->mutex);
+
+    if (!exec_conn->conn) {
+        LOG_ERROR("STEP WRITE: conn became NULL after lock (TOCTOU race)");
+        pthread_mutex_unlock(&exec_conn->mutex);
+        pg_stmt->write_executed = 1;
+        pthread_mutex_unlock(&pg_stmt->mutex);
+        if (pg_conn_error_out) *pg_conn_error_out = 1;
+        return STEP_RESULT_ERROR;
+    }
+
+    if (atomic_load(&exec_conn->streaming_active)) {
+        LOG_INFO("STEP WRITE: conn %p became streaming_active after lock, getting new connection",
+                 (void *)exec_conn);
+        pthread_mutex_unlock(&exec_conn->mutex);
+        pg_connection_t *alt_conn = pg_get_thread_connection(
+            pg_stmt->conn ? pg_stmt->conn->db_path : NULL);
+        if (alt_conn && alt_conn->conn && alt_conn != exec_conn &&
+            !atomic_load(&alt_conn->streaming_active)) {
+            exec_conn = alt_conn;
+            pg_pool_touch_connection(exec_conn);
+            pthread_mutex_lock(&exec_conn->mutex);
+            if (!exec_conn->conn || atomic_load(&exec_conn->streaming_active)) {
+                LOG_ERROR("STEP WRITE: alt conn also unavailable");
+                pthread_mutex_unlock(&exec_conn->mutex);
+                pg_stmt->write_executed = 1;
+                pthread_mutex_unlock(&pg_stmt->mutex);
+                if (pg_conn_error_out) *pg_conn_error_out = 1;
+                return STEP_RESULT_ERROR;
+            }
+        } else {
+            LOG_ERROR("STEP WRITE: no non-streaming connection available");
+            pg_stmt->write_executed = 1;
+            pthread_mutex_unlock(&pg_stmt->mutex);
+            if (pg_conn_error_out) *pg_conn_error_out = 1;
+            return STEP_RESULT_ERROR;
+        }
+    }
+
+    ConnStatusType write_conn_status = PQstatus(exec_conn->conn);
+    if (write_conn_status != CONNECTION_OK) {
+        const char *pg_err = PQerrorMessage(exec_conn->conn);
+        LOG_ERROR("=== CONNECTION_BAD DIAGNOSTIC (WRITE) ===");
+        LOG_ERROR("  Status: %d, Thread: %p", (int)write_conn_status, (void *)pthread_self());
+        LOG_ERROR("  Connection: %p, PGconn: %p", (void *)exec_conn, (void *)exec_conn->conn);
+        LOG_ERROR("  PG Error: %s", pg_err ? pg_err : "(null)");
+        LOG_ERROR("  SQL: %.100s", pg_stmt->sql ? pg_stmt->sql : "(null)");
+        platform_print_backtrace("CONNECTION_BAD in STEP WRITE", 1);
+        LOG_ERROR("=== END DIAGNOSTIC ===");
+        LOG_ERROR("STEP WRITE: Attempting PQreset...");
+        PQreset(exec_conn->conn);
+        if (PQstatus(exec_conn->conn) != CONNECTION_OK) {
+            LOG_ERROR("STEP WRITE: PQreset failed, trying fresh PQconnectdb...");
+            pg_stmt_cache_clear(exec_conn);
+            PQfinish(exec_conn->conn);
+            exec_conn->conn = NULL;
+
+            pg_conn_config_t *wcfg = pg_config_get();
+            char wconninfo[1024];
+            snprintf(wconninfo, sizeof(wconninfo),
+                     "host=%s port=%d dbname=%s user=%s password=%s "
+                     "connect_timeout=5 keepalives=1 keepalives_idle=30 "
+                     "keepalives_interval=10 keepalives_count=3",
+                     wcfg->host, wcfg->port, wcfg->database, wcfg->user, wcfg->password);
+            PGconn *new_write_conn = PQconnectdb(wconninfo);
+            if (PQstatus(new_write_conn) == CONNECTION_OK) {
+                exec_conn->conn = new_write_conn;
+                exec_conn->is_pg_active = 1;
+                LOG_INFO("STEP WRITE: fresh connection succeeded (reconnected)");
+            } else {
+                const char *reset_err = PQerrorMessage(new_write_conn);
+                LOG_ERROR("STEP WRITE: fresh connection also failed: %s", reset_err ? reset_err : "(null)");
+                PQfinish(new_write_conn);
+                exec_conn->is_pg_active = 0;
+                pthread_mutex_unlock(&exec_conn->mutex);
+                pg_stmt->write_executed = 1;
+                pthread_mutex_unlock(&pg_stmt->mutex);
+                if (pg_conn_error_out) *pg_conn_error_out = 1;
+                return STEP_RESULT_ERROR;
+            }
+        } else {
+            LOG_ERROR("STEP WRITE: PQreset succeeded, connection recovered");
+        }
+    }
+
+    step_conn_cancel_and_drain(exec_conn, "STEP WRITE");
+    *exec_conn_io = exec_conn;
+    return STEP_RESULT_DONE;
 }
 
 step_result_t step_write_execute_and_finalize(pg_stmt_t *pg_stmt,

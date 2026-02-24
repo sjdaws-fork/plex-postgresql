@@ -11,6 +11,9 @@ char *step_cached_write_build_exec_sql(const char *orig_sql, const char *transla
 int step_write_should_skip_special_insert(pg_stmt_t *pg_stmt,
                                           pg_connection_t *exec_conn,
                                           const char *paramValues[MAX_PARAMS]);
+step_result_t step_write_prepare_connection(pg_stmt_t *pg_stmt,
+                                            pg_connection_t **exec_conn_io,
+                                            int *pg_conn_error_out);
 step_result_t step_write_execute_and_finalize(pg_stmt_t *pg_stmt,
                                               pg_connection_t *exec_conn,
                                               const char *paramValues[MAX_PARAMS],

@@ -1,5 +1,6 @@
 #include "db_interpose_step_read_utils.h"
 #include "db_interpose_common.h"
+#include "db_interpose_conn_utils.h"
 #include "pg_query_cache.h"
 
 static void step_read_clear_row_caches(pg_stmt_t *stmt) {
@@ -236,36 +237,7 @@ step_result_t step_read_first_execute(pg_stmt_t *pg_stmt,
         }
     }
 
-    if (!atomic_load(&exec_conn->streaming_active)) {
-        PQsetnonblocking(exec_conn->conn, 0);
-        while (PQisBusy(exec_conn->conn)) {
-            PQconsumeInput(exec_conn->conn);
-        }
-        PGcancel *rd_cancel = PQgetCancel(exec_conn->conn);
-        if (rd_cancel) {
-            char rd_errbuf[256];
-            PQcancel(rd_cancel, rd_errbuf, sizeof(rd_errbuf));
-            PQfreeCancel(rd_cancel);
-        }
-        PGresult *pending;
-        int drain_count_r = 0;
-        while ((pending = PQgetResult(exec_conn->conn)) != NULL) {
-            drain_count_r++;
-            if (drain_count_r <= 3) {
-                LOG_INFO("STEP READ: Drained orphaned result from connection %p (status=%d: %s)",
-                         (void *)exec_conn, PQresultStatus(pending),
-                         PQresStatus(PQresultStatus(pending)));
-            }
-            PQclear(pending);
-            if (drain_count_r > 1000) {
-                LOG_INFO("STEP READ: Drain loop exceeded 1000 on %p — aborting drain", (void *)exec_conn);
-                break;
-            }
-        }
-        if (drain_count_r > 3) {
-            LOG_INFO("STEP READ: Drained %d orphaned results total from connection %p", drain_count_r, (void *)exec_conn);
-        }
-    }
+    step_conn_cancel_and_drain(exec_conn, "STEP READ");
 
     {
         PGresult *to_res = PQexec(exec_conn->conn, "SET statement_timeout = '5min'");

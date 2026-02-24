@@ -8,6 +8,7 @@
 #include "db_interpose.h"
 #include "db_interpose_common.h"  // For platform_print_backtrace
 #include "db_interpose_rust.h"
+#include "db_interpose_conn_utils.h"
 #include "db_interpose_step_cached_read_utils.h"
 #include "db_interpose_step_read_utils.h"
 #include "db_interpose_step_write_utils.h"
@@ -197,37 +198,8 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
                         do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
                     }
 
-                    // v0.9.33: Guard cancel+drain — skip if connection is streaming
-                    // (defense-in-depth: pool should never return a streaming connection)
-                    if (!atomic_load(&cached_exec_conn->streaming_active)) {
-                        // v0.9.29: Cancel + drain any pending results before executing
-                        PQsetnonblocking(cached_exec_conn->conn, 0);
-                        while (PQisBusy(cached_exec_conn->conn)) {
-                            PQconsumeInput(cached_exec_conn->conn);
-                        }
-                        // Cancel any in-progress query first (streaming leftovers)
-                        {
-                            PGcancel *ce_cancel = PQgetCancel(cached_exec_conn->conn);
-                            if (ce_cancel) {
-                                char ce_errbuf[256];
-                                PQcancel(ce_cancel, ce_errbuf, sizeof(ce_errbuf));
-                                PQfreeCancel(ce_cancel);
-                            }
-                        }
-                        PGresult *pending;
-                        int drain_ce = 0;
-                        while ((pending = PQgetResult(cached_exec_conn->conn)) != NULL) {
-                            drain_ce++;
-                            if (drain_ce <= 3)
-                                LOG_INFO("CACHED EXEC: Drained orphaned result from connection %p (status=%d)",
-                                         (void*)cached_exec_conn, PQresultStatus(pending));
-                            PQclear(pending);
-                            if (drain_ce > 1000) {
-                                LOG_INFO("CACHED EXEC: Drain loop exceeded 1000 on %p — aborting drain", (void*)cached_exec_conn);
-                                break;
-                            }
-                        }
-                    }
+                    // Guard cancel+drain — no-op while connection is in streaming mode.
+                    step_conn_cancel_and_drain(cached_exec_conn, "CACHED EXEC");
 
                     // Use prepared statement for better performance (skip parse/plan)
                     uint64_t sql_hash = pg_hash_sql(exec_sql);
@@ -520,152 +492,13 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
                 return SQLITE_DONE;
             }
 
-            // CRITICAL FIX v0.9.4: Check NULL but DON'T call PQstatus yet (TOCTOU fix)
-            if (!exec_conn || !exec_conn->conn) {
-                // v0.9.17: Retry once — pool may still be recovering after PG restart
-                LOG_ERROR("STEP WRITE: NULL connection, retrying in 500ms (exec_conn=%p)",
-                         (void*)exec_conn);
-                pthread_mutex_unlock(&pg_stmt->mutex);
-                usleep(500000);  // 500ms
-                pthread_mutex_lock(&pg_stmt->mutex);
-
-                sqlite3 *retry_db = sqlite3_db_handle(pg_stmt->shadow_stmt);
-                pg_connection_t *retry_handle = pg_find_connection(retry_db);
-                if (retry_handle && retry_handle->db_path[0]) {
-                    exec_conn = pg_get_thread_connection(retry_handle->db_path);
-                }
-                if (!exec_conn || !exec_conn->conn) {
-                    LOG_ERROR("STEP WRITE: NULL connection after retry — giving up");
-                    pg_stmt->write_executed = 1;
-                    pthread_mutex_unlock(&pg_stmt->mutex);
+            int prep_conn_error = 0;
+            step_result_t prep_rc = step_write_prepare_connection(pg_stmt, &exec_conn, &prep_conn_error);
+            if (prep_rc == STEP_RESULT_ERROR) {
+                if (prep_conn_error) {
                     do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
                 }
-                LOG_ERROR("STEP WRITE: reconnect retry succeeded (exec_conn=%p)", (void*)exec_conn);
-            }
-
-            // CRITICAL: Touch connection to prevent pool from releasing it during query
-            pg_pool_touch_connection(exec_conn);
-
-            // CRITICAL: Lock connection mutex BEFORE using conn (TOCTOU fix)
-            pthread_mutex_lock(&exec_conn->mutex);
-
-            // TOCTOU FIX v0.9.4.2: Re-check conn after acquiring lock
-            if (!exec_conn->conn) {
-                LOG_ERROR("STEP WRITE: conn became NULL after lock (TOCTOU race)");
-                pthread_mutex_unlock(&exec_conn->mutex);
-                pg_stmt->write_executed = 1;
-                pthread_mutex_unlock(&pg_stmt->mutex);
-                do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
-            }
-
-            // v0.9.33: TOCTOU guard — if connection became streaming after pool lookup
-            if (atomic_load(&exec_conn->streaming_active)) {
-                LOG_INFO("STEP WRITE: conn %p became streaming_active after lock, getting new connection",
-                         (void*)exec_conn);
-                pthread_mutex_unlock(&exec_conn->mutex);
-                pg_connection_t *alt_conn = pg_get_thread_connection(
-                    pg_stmt->conn ? pg_stmt->conn->db_path : NULL);
-                if (alt_conn && alt_conn->conn && alt_conn != exec_conn &&
-                    !atomic_load(&alt_conn->streaming_active)) {
-                    exec_conn = alt_conn;
-                    pg_pool_touch_connection(exec_conn);
-                    pthread_mutex_lock(&exec_conn->mutex);
-                    if (!exec_conn->conn || atomic_load(&exec_conn->streaming_active)) {
-                        LOG_ERROR("STEP WRITE: alt conn also unavailable");
-                        pthread_mutex_unlock(&exec_conn->mutex);
-                        pg_stmt->write_executed = 1;
-                        pthread_mutex_unlock(&pg_stmt->mutex);
-                        do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
-                    }
-                } else {
-                    LOG_ERROR("STEP WRITE: no non-streaming connection available");
-                    pg_stmt->write_executed = 1;
-                    pthread_mutex_unlock(&pg_stmt->mutex);
-                    do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
-                }
-            }
-
-            // Now safe to check connection status while holding lock
-            ConnStatusType write_conn_status = PQstatus(exec_conn->conn);
-            if (write_conn_status != CONNECTION_OK) {
-                // Enhanced diagnostics for CONNECTION_BAD (v0.9.4.3)
-                const char *pg_err = PQerrorMessage(exec_conn->conn);
-                LOG_ERROR("=== CONNECTION_BAD DIAGNOSTIC (WRITE) ===");
-                LOG_ERROR("  Status: %d, Thread: %p", (int)write_conn_status, (void*)pthread_self());
-                LOG_ERROR("  Connection: %p, PGconn: %p", (void*)exec_conn, (void*)exec_conn->conn);
-                LOG_ERROR("  PG Error: %s", pg_err ? pg_err : "(null)");
-                LOG_ERROR("  SQL: %.100s", pg_stmt->sql ? pg_stmt->sql : "(null)");
-                platform_print_backtrace("CONNECTION_BAD in STEP WRITE", 1);
-                LOG_ERROR("=== END DIAGNOSTIC ===");
-                LOG_ERROR("STEP WRITE: Attempting PQreset...");
-                PQreset(exec_conn->conn);
-                if (PQstatus(exec_conn->conn) != CONNECTION_OK) {
-                    LOG_ERROR("STEP WRITE: PQreset failed, trying fresh PQconnectdb...");
-                    pg_stmt_cache_clear(exec_conn);
-                    PQfinish(exec_conn->conn);
-                    exec_conn->conn = NULL;
-
-                    pg_conn_config_t *wcfg = pg_config_get();
-                    char wconninfo[1024];
-                    snprintf(wconninfo, sizeof(wconninfo),
-                             "host=%s port=%d dbname=%s user=%s password=%s "
-                             "connect_timeout=5 keepalives=1 keepalives_idle=30 "
-                             "keepalives_interval=10 keepalives_count=3",
-                             wcfg->host, wcfg->port, wcfg->database, wcfg->user, wcfg->password);
-                    PGconn *new_write_conn = PQconnectdb(wconninfo);
-                    if (PQstatus(new_write_conn) == CONNECTION_OK) {
-                        exec_conn->conn = new_write_conn;
-                        exec_conn->is_pg_active = 1;
-                        LOG_INFO("STEP WRITE: fresh connection succeeded (reconnected)");
-                    } else {
-                        const char *reset_err = PQerrorMessage(new_write_conn);
-                        LOG_ERROR("STEP WRITE: fresh connection also failed: %s", reset_err ? reset_err : "(null)");
-                        PQfinish(new_write_conn);
-                        exec_conn->is_pg_active = 0;
-                        pthread_mutex_unlock(&exec_conn->mutex);
-                        pg_stmt->write_executed = 1;
-                        pthread_mutex_unlock(&pg_stmt->mutex);
-                        do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
-                    }
-                } else {
-                    LOG_ERROR("STEP WRITE: PQreset succeeded, connection recovered");
-                }
-            }
-
-            // v0.9.33: Guard cancel+drain — skip if connection is streaming
-            if (!atomic_load(&exec_conn->streaming_active)) {
-                // v0.9.29: Cancel + drain any pending data before write
-                PQsetnonblocking(exec_conn->conn, 0);
-                while (PQisBusy(exec_conn->conn)) {
-                    PQconsumeInput(exec_conn->conn);
-                }
-                // Cancel any in-progress query first (streaming leftovers)
-                {
-                    PGcancel *wr_cancel = PQgetCancel(exec_conn->conn);
-                    if (wr_cancel) {
-                        char wr_errbuf[256];
-                        PQcancel(wr_cancel, wr_errbuf, sizeof(wr_errbuf));
-                        PQfreeCancel(wr_cancel);
-                    }
-                }
-                PGresult *pending;
-                int drain_count = 0;
-                while ((pending = PQgetResult(exec_conn->conn)) != NULL) {
-                    drain_count++;
-                    if (drain_count <= 3) {
-                        LOG_INFO("STEP WRITE: Drained orphaned result from connection %p (status=%d: %s)",
-                                  (void*)exec_conn, PQresultStatus(pending),
-                                  PQresStatus(PQresultStatus(pending)));
-                    }
-                    PQclear(pending);
-                    if (drain_count > 1000) {
-                        LOG_INFO("STEP WRITE: Drain loop exceeded 1000 on %p — aborting drain", (void*)exec_conn);
-                        break;
-                    }
-                }
-                if (drain_count > 3) {
-                    LOG_INFO("STEP WRITE: Drained %d orphaned results total from connection %p", drain_count, (void*)exec_conn);
-                }
+                return SQLITE_ERROR;
             }
 
             int write_conn_error = 0;

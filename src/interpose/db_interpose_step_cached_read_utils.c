@@ -1,4 +1,5 @@
 #include "db_interpose_step_cached_read_utils.h"
+#include "db_interpose_conn_utils.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -58,34 +59,7 @@ step_result_t step_cached_read_execute_translated(pg_stmt_t *stmt,
         return STEP_RESULT_ERROR;
     }
 
-    if (!atomic_load(&conn->streaming_active)) {
-        PQsetnonblocking(conn->conn, 0);
-        while (PQisBusy(conn->conn)) {
-            PQconsumeInput(conn->conn);
-        }
-
-        PGcancel *cr_cancel = PQgetCancel(conn->conn);
-        if (cr_cancel) {
-            char cr_errbuf[256];
-            PQcancel(cr_cancel, cr_errbuf, sizeof(cr_errbuf));
-            PQfreeCancel(cr_cancel);
-        }
-
-        PGresult *pending_read;
-        int drain_cr = 0;
-        while ((pending_read = PQgetResult(conn->conn)) != NULL) {
-            drain_cr++;
-            if (drain_cr <= 3) {
-                LOG_INFO("CACHED READ: Drained orphaned result from connection %p (status=%d)",
-                         (void *)conn, PQresultStatus(pending_read));
-            }
-            PQclear(pending_read);
-            if (drain_cr > 1000) {
-                LOG_INFO("CACHED READ: Drain loop exceeded 1000 on %p — aborting drain", (void *)conn);
-                break;
-            }
-        }
-    }
+    step_conn_cancel_and_drain(conn, "CACHED READ");
 
     uint64_t read_sql_hash = pg_hash_sql(translated_sql);
     char read_stmt_name[32];
