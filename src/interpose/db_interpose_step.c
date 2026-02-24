@@ -16,6 +16,7 @@
 
 // Forward declaration of the inner implementation
 static int my_sqlite3_step_impl(sqlite3_stmt *pStmt);
+static step_result_t step_handle_cached_stmt(sqlite3_stmt *pStmt);
 
 // Thread-local flag: set to 1 by step_impl whenever SQLITE_ERROR is caused by
 // a PG connection failure (not a SQL/logic error). Checked by the retry wrapper.
@@ -97,6 +98,108 @@ int my_sqlite3_step(sqlite3_stmt *pStmt) {
 // Step Function - Inner Implementation
 // ============================================================================
 
+static step_result_t step_handle_cached_stmt(sqlite3_stmt *pStmt) {
+    sqlite3 *db = sqlite3_db_handle(pStmt);
+    pg_connection_t *pg_conn = pg_find_connection(db);
+    if (!pg_conn) pg_conn = pg_find_any_library_connection();
+
+    if (!(pg_conn && pg_conn->is_pg_active && pg_conn->conn &&
+          is_library_db_path(pg_conn->db_path))) {
+        return STEP_RESULT_FALLBACK;
+    }
+
+    char *expanded_sql = sqlite3_expanded_sql(pStmt);
+    const char *sql = expanded_sql ? expanded_sql : sqlite3_sql(pStmt);
+
+    const char *orig_sql = sqlite3_sql(pStmt);
+    if (sql && is_write_operation(sql) && !should_skip_sql(sql) && !should_skip_sql(orig_sql)) {
+        if (sql && strcasestr(sql, "INSERT") && strcasestr(sql, "metadata_items")) {
+            LOG_DEBUG("CACHED INSERT metadata_items:");
+            LOG_DEBUG("  expanded_sql=%s", expanded_sql ? "YES" : "NO");
+            LOG_DEBUG("  sql (first 300): %.300s", sql ? sql : "(null)");
+        }
+        if (sql && rust_is_junk_metadata_insert(sql)) {
+            LOG_ERROR("GUARD: Blocked cached junk INSERT into metadata_items "
+                      "(library_section_id=NULL, metadata_type=NULL)");
+            if (expanded_sql) sqlite3_free(expanded_sql);
+            return STEP_RESULT_DONE;
+        }
+
+        pg_stmt_t *cached = pg_find_cached_stmt(pStmt);
+        if (cached && cached->write_executed) {
+            if (expanded_sql) sqlite3_free(expanded_sql);
+            return STEP_RESULT_DONE;
+        }
+
+        pg_connection_t *cached_exec_conn = NULL;
+        if (step_cached_write_should_noop(pg_conn, sql, &cached_exec_conn)) {
+            if (expanded_sql) sqlite3_free(expanded_sql);
+            return STEP_RESULT_DONE;
+        }
+
+        sql_translation_t trans = sql_translate(sql);
+        if (trans.success && trans.sql) {
+            const char *exec_sql = trans.sql;
+            char *insert_sql = step_cached_write_build_exec_sql(sql, trans.sql, &exec_sql);
+            int cached_write_conn_error = 0;
+            step_result_t cached_write_rc = step_cached_write_execute_and_finalize(
+                &cached, pStmt, pg_conn, cached_exec_conn, sql, exec_sql, &cached_write_conn_error);
+            if (insert_sql) free(insert_sql);
+            if (cached_write_rc == STEP_RESULT_ERROR) {
+                sql_translation_free(&trans);
+                if (expanded_sql) sqlite3_free(expanded_sql);
+                if (cached_write_conn_error) step_pg_conn_error = 1;
+                return STEP_RESULT_ERROR;
+            }
+        }
+        sql_translation_free(&trans);
+        if (expanded_sql) sqlite3_free(expanded_sql);
+        return STEP_RESULT_DONE;
+    }
+
+    if (sql && is_read_operation(sql) && !should_skip_sql(sql)) {
+        pg_connection_t *cached_read_conn = step_pick_thread_connection(pg_conn);
+        step_result_t cached_branch_rc = STEP_RESULT_FALLBACK;
+        pg_stmt_t *cached = pg_find_cached_stmt(pStmt);
+        int sqlite_result = orig_sqlite3_step ? orig_sqlite3_step(pStmt) : SQLITE_ERROR;
+
+        if (sqlite_result == SQLITE_ROW || sqlite_result == SQLITE_DONE) {
+            step_result_t cached_rc = STEP_RESULT_DONE;
+            if (step_cached_read_finalize_advance(cached, expanded_sql, &cached_rc)) {
+                return cached_rc;
+            }
+
+            sql_translation_t trans = sql_translate(sql);
+            if (trans.success && trans.sql) {
+                pg_stmt_t *new_stmt =
+                    step_cached_read_prepare_stmt(cached, cached_read_conn, sql, pStmt, trans.sql);
+                if (new_stmt) {
+                    int conn_error = 0;
+                    cached_branch_rc = step_cached_read_execute(
+                        new_stmt, cached_read_conn, sql, trans.sql, &conn_error);
+                    if (conn_error && cached_branch_rc == STEP_RESULT_ERROR) {
+                        step_pg_conn_error = 1;
+                    }
+                }
+            }
+            sql_translation_free(&trans);
+        }
+
+        if (cached_branch_rc == STEP_RESULT_ROW ||
+            cached_branch_rc == STEP_RESULT_DONE ||
+            cached_branch_rc == STEP_RESULT_ERROR) {
+            if (expanded_sql) sqlite3_free(expanded_sql);
+            return cached_branch_rc;
+        }
+
+        if (expanded_sql) sqlite3_free(expanded_sql);
+        return sqlite_result;
+    }
+
+    if (expanded_sql) sqlite3_free(expanded_sql);
+    return STEP_RESULT_FALLBACK;
+}
+
 static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
     // Periodic shim memory usage summary (every 60s, near-zero overhead)
     shim_alloc_maybe_log();
@@ -125,117 +228,9 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
 
     // Handle cached statements (prepared before our shim)
     if (!pg_stmt) {
-        sqlite3 *db = sqlite3_db_handle(pStmt);
-        pg_connection_t *pg_conn = pg_find_connection(db);
-        if (!pg_conn) pg_conn = pg_find_any_library_connection();
-
-        // v0.9.4.6: Only handle cached statements for library.db
-        // Non-library databases should use SQLite directly
-        if (pg_conn && pg_conn->is_pg_active && pg_conn->conn &&
-            is_library_db_path(pg_conn->db_path)) {
-            char *expanded_sql = sqlite3_expanded_sql(pStmt);
-            const char *sql = expanded_sql ? expanded_sql : sqlite3_sql(pStmt);
-
-            // Handle cached WRITE
-            // Check both expanded SQL and original SQL for skip patterns
-            const char *orig_sql = sqlite3_sql(pStmt);
-            if (sql && is_write_operation(sql) && !should_skip_sql(sql) && !should_skip_sql(orig_sql)) {
-                // Debug: log cached INSERT for metadata_items
-                if (sql && strcasestr(sql, "INSERT") && strcasestr(sql, "metadata_items")) {
-                    LOG_DEBUG("CACHED INSERT metadata_items:");
-                    LOG_DEBUG("  expanded_sql=%s", expanded_sql ? "YES" : "NO");
-                    LOG_DEBUG("  sql (first 300): %.300s", sql ? sql : "(null)");
-                }
-                // GUARD: Block cached junk INSERTs into metadata_items.
-                // For cached statements, expanded_sql includes literal values.
-                if (sql && rust_is_junk_metadata_insert(sql)) {
-                    LOG_ERROR("GUARD: Blocked cached junk INSERT into metadata_items "
-                              "(library_section_id=NULL, metadata_type=NULL)");
-                    if (expanded_sql) sqlite3_free(expanded_sql);
-                    return SQLITE_DONE;
-                }
-
-                // CRITICAL FIX: Check if this cached write was already executed
-                pg_stmt_t *cached = pg_find_cached_stmt(pStmt);
-                if (cached && cached->write_executed) {
-                    // Already executed, prevent duplicate execution
-                    if (expanded_sql) sqlite3_free(expanded_sql);
-                    return SQLITE_DONE;
-                }
-
-                pg_connection_t *cached_exec_conn = NULL;
-                // For cached writes this picks per-thread connection and handles txn no-op.
-                if (step_cached_write_should_noop(pg_conn, sql, &cached_exec_conn)) {
-                    if (expanded_sql) sqlite3_free(expanded_sql);
-                    return SQLITE_DONE;
-                }
-
-                sql_translation_t trans = sql_translate(sql);
-                if (trans.success && trans.sql) {
-                    const char *exec_sql = trans.sql;
-                    char *insert_sql = step_cached_write_build_exec_sql(sql, trans.sql, &exec_sql);
-                    int cached_write_conn_error = 0;
-                    step_result_t cached_write_rc = step_cached_write_execute_and_finalize(
-                        &cached, pStmt, pg_conn, cached_exec_conn, sql, exec_sql, &cached_write_conn_error);
-                    if (insert_sql) free(insert_sql);
-                    if (cached_write_rc == STEP_RESULT_ERROR) {
-                        sql_translation_free(&trans);
-                        if (expanded_sql) sqlite3_free(expanded_sql);
-                        if (cached_write_conn_error) {
-                            do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
-                        }
-                        return SQLITE_ERROR;
-                    }
-                }
-                sql_translation_free(&trans);
-                if (expanded_sql) sqlite3_free(expanded_sql);
-                return SQLITE_DONE;
-            }
-
-            // Handle cached READ
-            if (sql && is_read_operation(sql) && !should_skip_sql(sql)) {
-                // For cached statements, use per-thread pool connection when available.
-                pg_connection_t *cached_read_conn = step_pick_thread_connection(pg_conn);
-                step_result_t cached_branch_rc = STEP_RESULT_FALLBACK;
-                pg_stmt_t *cached = pg_find_cached_stmt(pStmt);
-                int sqlite_result = orig_sqlite3_step ? orig_sqlite3_step(pStmt) : SQLITE_ERROR;
-
-                if (sqlite_result == SQLITE_ROW || sqlite_result == SQLITE_DONE) {
-                    step_result_t cached_rc = STEP_RESULT_DONE;
-                    if (step_cached_read_finalize_advance(cached, expanded_sql, &cached_rc)) {
-                        return cached_rc;
-                    }
-
-                    // No result yet - execute PostgreSQL query
-                    sql_translation_t trans = sql_translate(sql);
-                    if (trans.success && trans.sql) {
-                        pg_stmt_t *new_stmt =
-                            step_cached_read_prepare_stmt(cached, cached_read_conn, sql, pStmt, trans.sql);
-                        if (new_stmt) {
-                            int conn_error = 0;
-                            cached_branch_rc = step_cached_read_execute(
-                                new_stmt, cached_read_conn, sql, trans.sql, &conn_error);
-                            if (conn_error && cached_branch_rc == STEP_RESULT_ERROR) {
-                                step_pg_conn_error = 1;
-                            }
-                        }
-                    }
-                    sql_translation_free(&trans);
-                }
-
-                if (cached_branch_rc == STEP_RESULT_ROW ||
-                    cached_branch_rc == STEP_RESULT_DONE ||
-                    cached_branch_rc == STEP_RESULT_ERROR) {
-                    if (expanded_sql) sqlite3_free(expanded_sql);
-                    if (cached_branch_rc == STEP_RESULT_ERROR) return SQLITE_ERROR;
-                    return cached_branch_rc;
-                }
-
-                if (expanded_sql) sqlite3_free(expanded_sql);
-                return sqlite_result;
-            }
-
-            if (expanded_sql) sqlite3_free(expanded_sql);
+        step_result_t cached_rc = step_handle_cached_stmt(pStmt);
+        if (cached_rc != STEP_RESULT_FALLBACK) {
+            return cached_rc;
         }
     }
 
