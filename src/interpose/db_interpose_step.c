@@ -8,7 +8,7 @@
 #include "db_interpose.h"
 #include "db_interpose_common.h"  // For platform_print_backtrace
 #include "db_interpose_rust.h"
-#include "db_interpose_txn_utils.h"
+#include "db_interpose_step_write_utils.h"
 #include "pg_query_cache.h"
 #include "shim_alloc.h"
 
@@ -161,46 +161,17 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
                     return SQLITE_DONE;
                 }
 
-                // For cached statements, also use thread-local connection
-                pg_connection_t *cached_exec_conn = pg_conn;
-                if (is_library_db_path(pg_conn->db_path)) {
-                    pg_connection_t *thread_conn = pg_get_thread_connection(pg_conn->db_path);
-                    if (thread_conn && thread_conn->is_pg_active && thread_conn->conn) {
-                        cached_exec_conn = thread_conn;
-                    }
-                }
-
-                // Treat COMMIT/ROLLBACK/END as no-op when there is no active tx.
-                if (txn_terminator_should_noop(cached_exec_conn, sql, NULL)) {
+                pg_connection_t *cached_exec_conn = NULL;
+                // For cached writes this picks per-thread connection and handles txn no-op.
+                if (step_cached_write_should_noop(pg_conn, sql, &cached_exec_conn)) {
                     if (expanded_sql) sqlite3_free(expanded_sql);
                     return SQLITE_DONE;
                 }
 
                 sql_translation_t trans = sql_translate(sql);
                 if (trans.success && trans.sql) {
-                    char *exec_sql = trans.sql;
-                    char *insert_sql = convert_metadata_settings_insert_to_upsert(trans.sql);
-                    if (insert_sql) {
-                        exec_sql = insert_sql;
-                    } else if (strncasecmp(sql, "INSERT", 6) == 0 &&
-                               strcasestr(trans.sql, "schema_migrations") &&
-                               !strcasestr(trans.sql, "ON CONFLICT")) {
-                        // schema_migrations: add ON CONFLICT DO NOTHING (no RETURNING id)
-                        size_t len = strlen(trans.sql);
-                        insert_sql = malloc(len + 40);
-                        if (insert_sql) {
-                            snprintf(insert_sql, len + 40, "%s ON CONFLICT DO NOTHING", trans.sql);
-                            exec_sql = insert_sql;
-                        }
-                    } else if (strncasecmp(sql, "INSERT", 6) == 0 && !strstr(trans.sql, "RETURNING") &&
-                               !strcasestr(trans.sql, "schema_migrations")) {
-                        size_t len = strlen(trans.sql);
-                        insert_sql = malloc(len + 20);
-                        if (insert_sql) {
-                            snprintf(insert_sql, len + 20, "%s RETURNING id", trans.sql);
-                            exec_sql = insert_sql;
-                        }
-                    }
+                    const char *exec_sql = trans.sql;
+                    char *insert_sql = step_cached_write_build_exec_sql(sql, trans.sql, &exec_sql);
 
                     // Log cached INSERT on play_queue_generators
                     if (strstr(sql, "play_queue_generators")) {
@@ -1047,7 +1018,7 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
             // Treat COMMIT/ROLLBACK/END as no-op when there is no active tx.
             // This matches SQLite behavior and avoids noisy PG warnings.
             int txn_state = PQTRANS_IDLE;
-            if (txn_terminator_should_noop(exec_conn, pg_stmt ? pg_stmt->pg_sql : NULL, &txn_state)) {
+            if (step_pg_write_should_noop(exec_conn, pg_stmt ? pg_stmt->pg_sql : NULL, &txn_state)) {
                 LOG_DEBUG("TXN_NOOP: skipping tx terminator in state=%d sql=%.120s",
                           txn_state, pg_stmt->pg_sql);
                 pg_stmt->write_executed = 1;
