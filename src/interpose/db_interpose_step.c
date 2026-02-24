@@ -46,6 +46,21 @@ static int is_txn_terminator_sql(const char *sql) {
            strncasecmp(s, "end", 3) == 0;
 }
 
+static int txn_terminator_should_noop(pg_connection_t *conn, const char *sql, int *txn_state_out) {
+    if (txn_state_out) *txn_state_out = PQTRANS_IDLE;
+    if (!conn || !conn->conn || !is_txn_terminator_sql(sql)) return 0;
+
+    int txn_state = PQTRANS_IDLE;
+    pthread_mutex_lock(&conn->mutex);
+    if (conn->conn) {
+        txn_state = (int)PQtransactionStatus(conn->conn);
+    }
+    pthread_mutex_unlock(&conn->mutex);
+
+    if (txn_state_out) *txn_state_out = txn_state;
+    return txn_state != PQTRANS_INTRANS && txn_state != PQTRANS_INERROR;
+}
+
 // ============================================================================
 // Step Function - Retry Wrapper (v0.9.34, fixes #8)
 // ============================================================================
@@ -198,17 +213,9 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
                 }
 
                 // Treat COMMIT/ROLLBACK/END as no-op when there is no active tx.
-                if (cached_exec_conn && cached_exec_conn->conn && is_txn_terminator_sql(sql)) {
-                    int txn_state = PQTRANS_IDLE;
-                    pthread_mutex_lock(&cached_exec_conn->mutex);
-                    if (cached_exec_conn->conn) {
-                        txn_state = (int)PQtransactionStatus(cached_exec_conn->conn);
-                    }
-                    pthread_mutex_unlock(&cached_exec_conn->mutex);
-                    if (txn_state != PQTRANS_INTRANS && txn_state != PQTRANS_INERROR) {
-                        if (expanded_sql) sqlite3_free(expanded_sql);
-                        return SQLITE_DONE;
-                    }
+                if (txn_terminator_should_noop(cached_exec_conn, sql, NULL)) {
+                    if (expanded_sql) sqlite3_free(expanded_sql);
+                    return SQLITE_DONE;
                 }
 
                 sql_translation_t trans = sql_translate(sql);
@@ -1081,21 +1088,13 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
 
             // Treat COMMIT/ROLLBACK/END as no-op when there is no active tx.
             // This matches SQLite behavior and avoids noisy PG warnings.
-            if (exec_conn && exec_conn->conn && pg_stmt->pg_sql &&
-                is_txn_terminator_sql(pg_stmt->pg_sql)) {
-                int txn_state = PQTRANS_IDLE;
-                pthread_mutex_lock(&exec_conn->mutex);
-                if (exec_conn->conn) {
-                    txn_state = (int)PQtransactionStatus(exec_conn->conn);
-                }
-                pthread_mutex_unlock(&exec_conn->mutex);
-                if (txn_state != PQTRANS_INTRANS && txn_state != PQTRANS_INERROR) {
-                    LOG_DEBUG("TXN_NOOP: skipping tx terminator in state=%d sql=%.120s",
-                              txn_state, pg_stmt->pg_sql);
-                    pg_stmt->write_executed = 1;
-                    pthread_mutex_unlock(&pg_stmt->mutex);
-                    return SQLITE_DONE;
-                }
+            int txn_state = PQTRANS_IDLE;
+            if (txn_terminator_should_noop(exec_conn, pg_stmt ? pg_stmt->pg_sql : NULL, &txn_state)) {
+                LOG_DEBUG("TXN_NOOP: skipping tx terminator in state=%d sql=%.120s",
+                          txn_state, pg_stmt->pg_sql);
+                pg_stmt->write_executed = 1;
+                pthread_mutex_unlock(&pg_stmt->mutex);
+                return SQLITE_DONE;
             }
 
             // Log INSERT on play_queue_generators for debugging

@@ -47,6 +47,8 @@ static int is_library_db(const char *path);
 static pg_connection_t* create_pool_connection(const char *db_path);
 static int probe_postgres_max_connections(void);
 static int probe_postgres_idle_timeouts(int *idle_session_seconds, int *idle_in_tx_seconds);
+static int parse_positive_env_or_default(const char *name, int default_value);
+static int align_idle_timeout_with_server(int idle_timeout);
 
 // ============================================================================
 // libpq-dependent helpers (stay in C)
@@ -233,6 +235,48 @@ static int probe_postgres_idle_timeouts(int *idle_session_seconds, int *idle_in_
     if (res) PQclear(res);
     PQfinish(probe);
     return ok;
+}
+
+static int parse_positive_env_or_default(const char *name, int default_value) {
+    const char *env = getenv(name);
+    if (!env) return default_value;
+    int value = atoi(env);
+    return value > 0 ? value : default_value;
+}
+
+static int align_idle_timeout_with_server(int idle_timeout) {
+    int server_idle_session_s = 0;
+    int server_idle_in_tx_s = 0;
+    if (!probe_postgres_idle_timeouts(&server_idle_session_s, &server_idle_in_tx_s)) {
+        LOG_INFO("Pool init: could not read PostgreSQL idle timeout settings; keeping pool idle_timeout=%ds",
+                 idle_timeout);
+        return idle_timeout;
+    }
+
+    int server_cutoff_s = 0;
+    if (server_idle_session_s > 0) {
+        server_cutoff_s = server_idle_session_s;
+    }
+    if (server_idle_in_tx_s > 0 &&
+        (server_cutoff_s == 0 || server_idle_in_tx_s < server_cutoff_s)) {
+        server_cutoff_s = server_idle_in_tx_s;
+    }
+    if (server_cutoff_s <= 0) {
+        return idle_timeout;
+    }
+
+    const int safety_margin_s = 10;
+    int target_idle_s = server_cutoff_s - safety_margin_s;
+    if (target_idle_s < 10) target_idle_s = 10;
+    if (idle_timeout >= server_cutoff_s) {
+        LOG_INFO(
+            "Pool idle timeout (%ds) >= PostgreSQL idle cutoff (%ds, session=%ds, in_tx=%ds); adjusting to %ds",
+            idle_timeout, server_cutoff_s, server_idle_session_s, server_idle_in_tx_s, target_idle_s
+        );
+        return target_idle_s;
+    }
+
+    return idle_timeout;
 }
 
 // Fast suffix check for library.db
@@ -436,24 +480,10 @@ static void do_client_init(void) {
     memset(connections, 0, sizeof(connections));
 
     // Read pool size from environment (default: 50)
-    int pool_size = POOL_SIZE_DEFAULT;
-    const char *pool_env = getenv("PLEX_PG_POOL_SIZE");
-    if (pool_env) {
-        int size = atoi(pool_env);
-        if (size > 0) {
-            pool_size = size;
-        }
-    }
+    int pool_size = parse_positive_env_or_default("PLEX_PG_POOL_SIZE", POOL_SIZE_DEFAULT);
 
     // Read pool max from environment (default: pool_size)
-    int pool_max = pool_size;
-    const char *pool_max_env = getenv(ENV_PG_POOL_MAX);
-    if (pool_max_env) {
-        int size = atoi(pool_max_env);
-        if (size > 0) {
-            pool_max = size;
-        }
-    }
+    int pool_max = parse_positive_env_or_default(ENV_PG_POOL_MAX, pool_size);
 
     // Align pool max with database max_connections when known.
     int db_max_connections = probe_postgres_max_connections();
@@ -484,34 +514,7 @@ static void do_client_init(void) {
 
     // Align client-side pool idle reap before server-side idle disconnects.
     // This prevents noisy server FATAL idle-timeout churn.
-    int server_idle_session_s = 0;
-    int server_idle_in_tx_s = 0;
-    if (probe_postgres_idle_timeouts(&server_idle_session_s, &server_idle_in_tx_s)) {
-        int server_cutoff_s = 0;
-        if (server_idle_session_s > 0) {
-            server_cutoff_s = server_idle_session_s;
-        }
-        if (server_idle_in_tx_s > 0 &&
-            (server_cutoff_s == 0 || server_idle_in_tx_s < server_cutoff_s)) {
-            server_cutoff_s = server_idle_in_tx_s;
-        }
-
-        if (server_cutoff_s > 0) {
-            const int safety_margin_s = 10;
-            int target_idle_s = server_cutoff_s - safety_margin_s;
-            if (target_idle_s < 10) target_idle_s = 10;
-            if (idle_timeout >= server_cutoff_s) {
-                LOG_INFO(
-                    "Pool idle timeout (%ds) >= PostgreSQL idle cutoff (%ds, session=%ds, in_tx=%ds); adjusting to %ds",
-                    idle_timeout, server_cutoff_s, server_idle_session_s, server_idle_in_tx_s, target_idle_s
-                );
-                idle_timeout = target_idle_s;
-            }
-        }
-    } else {
-        LOG_INFO("Pool init: could not read PostgreSQL idle timeout settings; keeping pool idle_timeout=%ds",
-                 idle_timeout);
-    }
+    idle_timeout = align_idle_timeout_with_server(idle_timeout);
 
     // Register all C callbacks with Rust
     rust_pool_set_callbacks(
