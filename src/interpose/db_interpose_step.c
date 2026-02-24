@@ -311,7 +311,7 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
             if (sql && is_read_operation(sql) && !should_skip_sql(sql)) {
                 // For cached statements, use per-thread pool connection when available.
                 pg_connection_t *cached_read_conn = step_pick_thread_connection(pg_conn);
-
+                int cached_branch_rc = STEP_CACHED_READ_UNHANDLED;
                 pg_stmt_t *cached = pg_find_cached_stmt(pStmt);
                 int sqlite_result = orig_sqlite3_step ? orig_sqlite3_step(pStmt) : SQLITE_ERROR;
 
@@ -324,129 +324,24 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
                     // No result yet - execute PostgreSQL query
                     sql_translation_t trans = sql_translate(sql);
                     if (trans.success && trans.sql) {
-                        // Verbose query logging disabled for performance
-
                         pg_stmt_t *new_stmt =
                             step_cached_read_get_or_create_stmt(cached, cached_read_conn, sql, pStmt, trans.sql);
                         if (new_stmt) {
-                            // CRITICAL: Touch connection to prevent pool from releasing it during query
-                            pg_pool_touch_connection(cached_read_conn);
-
-                            // CRITICAL: Lock connection mutex to prevent concurrent libpq access
-                            pthread_mutex_lock(&cached_read_conn->mutex);
-
-                            // TOCTOU FIX v0.9.4.2: Re-check conn after acquiring lock
-                            if (!cached_read_conn->conn) {
-                                LOG_ERROR("CACHED READ: conn became NULL after lock (TOCTOU race)");
-                                pthread_mutex_unlock(&cached_read_conn->mutex);
-                                sql_translation_free(&trans);
-                                if (expanded_sql) sqlite3_free(expanded_sql);
-                                do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
-                            }
-
-                            // v0.9.33: Guard cancel+drain — skip if connection is streaming
-                            if (!atomic_load(&cached_read_conn->streaming_active)) {
-                                // v0.9.29: Cancel + drain any pending results before executing
-                                PQsetnonblocking(cached_read_conn->conn, 0);
-                                while (PQisBusy(cached_read_conn->conn)) {
-                                    PQconsumeInput(cached_read_conn->conn);
-                                }
-                                // Cancel any in-progress query first
-                                {
-                                    PGcancel *cr_cancel = PQgetCancel(cached_read_conn->conn);
-                                    if (cr_cancel) {
-                                        char cr_errbuf[256];
-                                        PQcancel(cr_cancel, cr_errbuf, sizeof(cr_errbuf));
-                                        PQfreeCancel(cr_cancel);
-                                    }
-                                }
-                                PGresult *pending_read;
-                                int drain_cr = 0;
-                                while ((pending_read = PQgetResult(cached_read_conn->conn)) != NULL) {
-                                    drain_cr++;
-                                    if (drain_cr <= 3)
-                                        LOG_INFO("CACHED READ: Drained orphaned result from connection %p (status=%d)",
-                                                 (void*)cached_read_conn, PQresultStatus(pending_read));
-                                    PQclear(pending_read);
-                                    if (drain_cr > 1000) {
-                                        LOG_INFO("CACHED READ: Drain loop exceeded 1000 on %p — aborting drain", (void*)cached_read_conn);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            // Use prepared statement for better performance (skip parse/plan)
-                            uint64_t read_sql_hash = pg_hash_sql(trans.sql);
-                            char read_stmt_name[32];
-                            snprintf(read_stmt_name, sizeof(read_stmt_name), "cr_%llx", (unsigned long long)read_sql_hash);
-                            if (trans.sql && strcasestr(trans.sql, "DISTINCT")) {
-                                LOG_ERROR("TRACE_STEP_PGSQL hash=0x%llx sql=%.1200s",
-                                          (unsigned long long)read_sql_hash,
-                                          trans.sql);
-                            }
-                            
-                            const char *cached_read_stmt_name = NULL;
-                            if (pg_stmt_cache_lookup(cached_read_conn, read_sql_hash, &cached_read_stmt_name)) {
-                                // Cached - execute prepared
-                                LOG_DEBUG("CACHED READ (prepared): stmt=%s sql=%.60s", cached_read_stmt_name, trans.sql);
-                                new_stmt->result = PQexecPrepared(cached_read_conn->conn, cached_read_stmt_name, 0, NULL, NULL, NULL, 0);
-                            } else {
-                                // Not cached - prepare and execute
-                                PGresult *prep_res = PQprepare(cached_read_conn->conn, read_stmt_name, trans.sql, 0, NULL);
-                                if (PQresultStatus(prep_res) == PGRES_COMMAND_OK) {
-                                    pg_stmt_cache_add(cached_read_conn, read_sql_hash, read_stmt_name, 0);
-                                    PQclear(prep_res);
-                                    LOG_DEBUG("CACHED READ (new prepared): stmt=%s sql=%.60s", read_stmt_name, trans.sql);
-                                    new_stmt->result = PQexecPrepared(cached_read_conn->conn, read_stmt_name, 0, NULL, NULL, NULL, 0);
-                                } else if (pg_is_duplicate_prepared_stmt(prep_res)) {
-                                    pg_stmt_cache_add(cached_read_conn, read_sql_hash, read_stmt_name, 0);
-                                    PQclear(prep_res);
-                                    new_stmt->result = PQexecPrepared(cached_read_conn->conn, read_stmt_name, 0, NULL, NULL, NULL, 0);
-                                } else {
-                                    LOG_DEBUG("CACHED READ prepare failed, using PQexec: %s",
-                                              PQerrorMessage(cached_read_conn->conn));
-                                    PQclear(prep_res);
-                                    new_stmt->result = PQexec(cached_read_conn->conn, trans.sql);
-                                }
-                            }
-                            pthread_mutex_unlock(&cached_read_conn->mutex);
-                            if (PQresultStatus(new_stmt->result) == PGRES_TUPLES_OK) {
-                                new_stmt->num_rows = PQntuples(new_stmt->result);
-                                new_stmt->num_cols = PQnfields(new_stmt->result);
-                                new_stmt->current_row = 0;
-                                new_stmt->result_conn = cached_read_conn;
-
-                                // Resolve source table names for bare column lookup in decltype
-                                if (resolve_column_tables(new_stmt, cached_read_conn) < 0) {
-                                    LOG_ERROR("Failed to resolve column tables, cleaning up");
-                                    // Don't fail the query - just log warning
-                                    // Table resolution is for metadata only, not critical
-                                }
-
-                                // Verbose result logging disabled for performance
-                                sql_translation_free(&trans);
-                                if (expanded_sql) sqlite3_free(expanded_sql);
-                                return (new_stmt->num_rows > 0) ? SQLITE_ROW : SQLITE_DONE;
-                            } else {
-                                const char *err = (cached_read_conn && cached_read_conn->conn) ? PQerrorMessage(cached_read_conn->conn) : "NULL connection";
-                                log_sql_fallback(sql, trans.sql, err, "CACHED READ");
-                                // v0.9.38: Stale prepared statement recovery (SQLSTATE 26000)
-                                if (pg_is_stale_prepared_stmt(new_stmt->result)) {
-                                    pg_stmt_cache_clear_local(cached_read_conn);
-                                    PQclear(new_stmt->result);
-                                    new_stmt->result = NULL;
-                                    sql_translation_free(&trans);
-                                    if (expanded_sql) sqlite3_free(expanded_sql);
-                                    do { step_pg_conn_error = 1; return SQLITE_ERROR; } while(0);
-                                }
-                                PQclear(new_stmt->result);
-                                new_stmt->result = NULL;
-                                // CRITICAL: Check if connection is corrupted and needs reset
-                                pg_pool_check_connection_health(cached_read_conn);
+                            int conn_error = 0;
+                            cached_branch_rc = step_cached_read_execute_translated(
+                                new_stmt, cached_read_conn, sql, trans.sql, &conn_error);
+                            if (conn_error && cached_branch_rc == SQLITE_ERROR) {
+                                step_pg_conn_error = 1;
                             }
                         }
                     }
                     sql_translation_free(&trans);
+                }
+
+                if (cached_branch_rc == SQLITE_ROW || cached_branch_rc == SQLITE_DONE || cached_branch_rc == SQLITE_ERROR) {
+                    if (expanded_sql) sqlite3_free(expanded_sql);
+                    if (cached_branch_rc == SQLITE_ERROR) return SQLITE_ERROR;
+                    return cached_branch_rc;
                 }
 
                 if (expanded_sql) sqlite3_free(expanded_sql);
