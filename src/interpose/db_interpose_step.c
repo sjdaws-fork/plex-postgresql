@@ -9,6 +9,7 @@
 #include "db_interpose_common.h"  // For platform_print_backtrace
 #include "db_interpose_rust.h"
 #include "db_interpose_step_cached_read_utils.h"
+#include "db_interpose_step_read_utils.h"
 #include "db_interpose_step_write_utils.h"
 #include "pg_query_cache.h"
 #include "shim_alloc.h"
@@ -406,19 +407,7 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
             // The cache hit (below) sets current_row=0 and returns immediately.
             // On subsequent step() calls, we advance current_row here.
             if (pg_stmt->cached_result) {
-                // Advance to next row
-                // Cache hit set current_row=0, so second step increments to 1, etc.
-                pg_stmt->current_row++;
-                if (pg_stmt->current_row >= pg_stmt->num_rows) {
-                    // Done with cached result - release ref
-                    pg_query_cache_release(pg_stmt->cached_result);
-                    pg_stmt->cached_result = NULL;
-                    pg_stmt->read_done = 1;
-                    pthread_mutex_unlock(&pg_stmt->mutex);
-                    return SQLITE_DONE;
-                }
-                pthread_mutex_unlock(&pg_stmt->mutex);
-                return SQLITE_ROW;
+                return step_read_advance_cached_result(pg_stmt);
             }
 
             // Only log when result is NULL (new query) to reduce log spam
@@ -458,88 +447,12 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
 
              // === STREAMING: Subsequent step() — fetch next row ===
             if (pg_stmt->streaming_mode) {
-                // Clear previous single-row result
-                if (pg_stmt->result) {
-                    PQclear(pg_stmt->result);
-                    pg_stmt->result = NULL;
-                }
-
-                // Clear cached text/blob for previous row
-                for (int i = 0; i < MAX_PARAMS; i++) {
-                    if (pg_stmt->cached_text[i]) { free(pg_stmt->cached_text[i]); pg_stmt->cached_text[i] = NULL; }
-                    if (pg_stmt->cached_blob[i]) { free(pg_stmt->cached_blob[i]); pg_stmt->cached_blob[i] = NULL; pg_stmt->cached_blob_len[i] = 0; }
-                    if (pg_stmt->decoded_blobs[i]) { free(pg_stmt->decoded_blobs[i]); pg_stmt->decoded_blobs[i] = NULL; pg_stmt->decoded_blob_lens[i] = 0; }
-                }
-                pg_stmt->cached_row = -1;
-                pg_stmt->decoded_blob_row = -1;
-
-                // Fetch next row (connection mutex NOT held — single-row mode
-                // means the connection is exclusively ours until we drain all results)
-                PGresult *row_res = PQgetResult(pg_stmt->streaming_conn->conn);
-                if (!row_res) {
-                    // NULL = no more results (shouldn't happen before TUPLES_OK sentinel)
-                    LOG_ERROR("STREAM: NULL result (unexpected!) stmt=%p sql=%.100s streaming_conn=%p",
-                             (void*)pStmt, pg_stmt->pg_sql ? pg_stmt->pg_sql : "?",
-                             (void*)pg_stmt->streaming_conn);
-                    pg_stmt->streaming_mode = 0;
-                    if (pg_stmt->streaming_conn) atomic_store(&pg_stmt->streaming_conn->streaming_active, 0);
-                    pg_stmt->streaming_conn = NULL;
-                    pg_stmt->read_done = 1;
-                    pthread_mutex_unlock(&pg_stmt->mutex);
-                    return SQLITE_DONE;
-                }
-
-                ExecStatusType row_status = PQresultStatus(row_res);
-                if (row_status == PGRES_SINGLE_TUPLE) {
-                    // Got a row
-                    pg_stmt->result = row_res;
-                    pg_stmt->current_row = 0;  // Always row 0 in single-row result
-                    pg_stmt->num_rows = 1;
-                    pg_stmt->num_cols = PQnfields(row_res);
-                    pthread_mutex_unlock(&pg_stmt->mutex);
-                    return SQLITE_ROW;
-                } else if (row_status == PGRES_TUPLES_OK) {
-                    // Empty sentinel = end of rows. Drain final NULL.
-                    PQclear(row_res);
-                    PGresult *final_null = PQgetResult(pg_stmt->streaming_conn->conn);
-                    if (final_null) PQclear(final_null);  // Should be NULL, but be safe
-                    pg_stmt->streaming_mode = 0;
-                    if (pg_stmt->streaming_conn) atomic_store(&pg_stmt->streaming_conn->streaming_active, 0);
-                    pg_stmt->streaming_conn = NULL;
-                    pg_stmt->read_done = 1;
-                    pthread_mutex_unlock(&pg_stmt->mutex);
-                    return SQLITE_DONE;
-                } else {
-                    // Error during streaming
-                    const char *err = PQerrorMessage(pg_stmt->streaming_conn->conn);
-                    LOG_ERROR("STREAM ERROR: %s (status=%d) sql=%.100s",
-                             err ? err : "(null)", (int)row_status, pg_stmt->pg_sql ? pg_stmt->pg_sql : "?");
-                    PQclear(row_res);
-                    // Drain remaining results to free connection
-                    PGresult *drain;
-                    while ((drain = PQgetResult(pg_stmt->streaming_conn->conn)) != NULL) PQclear(drain);
-                    pg_stmt->streaming_mode = 0;
-                    if (pg_stmt->streaming_conn) atomic_store(&pg_stmt->streaming_conn->streaming_active, 0);
-                    pg_stmt->streaming_conn = NULL;
-                    pg_stmt->read_done = 1;
-                    pthread_mutex_unlock(&pg_stmt->mutex);
-                    return SQLITE_DONE;  // Treat as empty result rather than error
-                }
+                return step_read_streaming_next(pStmt, pg_stmt);
             }
 
             // === NON-STREAMING: Subsequent step() on eager result — advance row ===
             if (pg_stmt->result) {
-                pg_stmt->current_row++;
-                if (pg_stmt->current_row >= pg_stmt->num_rows) {
-                    PQclear(pg_stmt->result);
-                    pg_stmt->result = NULL;
-                    pg_stmt->result_conn = NULL;
-                    pg_stmt->read_done = 1;
-                    pthread_mutex_unlock(&pg_stmt->mutex);
-                    return SQLITE_DONE;
-                }
-                pthread_mutex_unlock(&pg_stmt->mutex);
-                return SQLITE_ROW;
+                return step_read_eager_next(pg_stmt);
             }
 
             // === FIRST step() — send query and decide streaming vs eager ===
