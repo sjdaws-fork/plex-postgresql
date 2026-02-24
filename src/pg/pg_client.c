@@ -45,6 +45,8 @@ static pthread_once_t client_init_once = PTHREAD_ONCE_INIT;
 // Forward declarations
 static int is_library_db(const char *path);
 static pg_connection_t* create_pool_connection(const char *db_path);
+static int probe_postgres_max_connections(void);
+static int probe_postgres_idle_timeouts(int *idle_session_seconds, int *idle_in_tx_seconds);
 
 // ============================================================================
 // libpq-dependent helpers (stay in C)
@@ -140,6 +142,97 @@ static pg_connection_t* create_pool_connection(const char *db_path) {
     }
 
     return conn;
+}
+
+// Probe PostgreSQL max_connections for pool sizing guardrails.
+// Returns >0 on success, 0 on failure.
+static int probe_postgres_max_connections(void) {
+    pg_conn_config_t *cfg = pg_config_get();
+    if (!cfg || cfg->host[0] == '\0' || cfg->port <= 0 || cfg->database[0] == '\0'
+        || cfg->user[0] == '\0') {
+        return 0;
+    }
+
+    char conninfo[1024];
+    snprintf(conninfo, sizeof(conninfo),
+             "host=%s port=%d dbname=%s user=%s password=%s connect_timeout=3",
+             cfg->host, cfg->port, cfg->database, cfg->user, cfg->password);
+
+    PGconn *probe = PQconnectdb(conninfo);
+    if (!probe || PQstatus(probe) != CONNECTION_OK) {
+        if (probe) {
+            LOG_INFO("Pool init: max_connections probe failed: %s", PQerrorMessage(probe));
+            PQfinish(probe);
+        }
+        return 0;
+    }
+
+    PGresult *res = PQexec(probe, "SHOW max_connections");
+    int max_connections = 0;
+    if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
+        const char *val = PQgetvalue(res, 0, 0);
+        if (val) {
+            max_connections = atoi(val);
+        }
+    }
+
+    if (res) {
+        PQclear(res);
+    }
+    PQfinish(probe);
+    return max_connections > 0 ? max_connections : 0;
+}
+
+// Probe PostgreSQL idle timeout settings (seconds).
+// Returns 1 on successful probe, 0 on failure.
+static int probe_postgres_idle_timeouts(int *idle_session_seconds, int *idle_in_tx_seconds) {
+    if (idle_session_seconds) *idle_session_seconds = 0;
+    if (idle_in_tx_seconds) *idle_in_tx_seconds = 0;
+
+    pg_conn_config_t *cfg = pg_config_get();
+    if (!cfg || cfg->host[0] == '\0' || cfg->port <= 0 || cfg->database[0] == '\0'
+        || cfg->user[0] == '\0') {
+        return 0;
+    }
+
+    char conninfo[1024];
+    snprintf(conninfo, sizeof(conninfo),
+             "host=%s port=%d dbname=%s user=%s password=%s connect_timeout=3",
+             cfg->host, cfg->port, cfg->database, cfg->user, cfg->password);
+
+    PGconn *probe = PQconnectdb(conninfo);
+    if (!probe || PQstatus(probe) != CONNECTION_OK) {
+        if (probe) {
+            LOG_INFO("Pool init: idle-timeout probe failed: %s", PQerrorMessage(probe));
+            PQfinish(probe);
+        }
+        return 0;
+    }
+
+    // Convert timeout GUCs to seconds in SQL to avoid unit parsing in C.
+    PGresult *res = PQexec(
+        probe,
+        "SELECT "
+        "CASE WHEN current_setting('idle_session_timeout') = '0' THEN 0 "
+        "     ELSE GREATEST(1, CEIL(EXTRACT(EPOCH FROM current_setting('idle_session_timeout')::interval))::int) "
+        "END, "
+        "CASE WHEN current_setting('idle_in_transaction_session_timeout') = '0' THEN 0 "
+        "     ELSE GREATEST(1, CEIL(EXTRACT(EPOCH FROM current_setting('idle_in_transaction_session_timeout')::interval))::int) "
+        "END"
+    );
+
+    int ok = 0;
+    if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0 && PQnfields(res) >= 2) {
+        const char *session_s = PQgetvalue(res, 0, 0);
+        const char *in_tx_s = PQgetvalue(res, 0, 1);
+        if (idle_session_seconds && session_s) *idle_session_seconds = atoi(session_s);
+        if (idle_in_tx_seconds && in_tx_s) *idle_in_tx_seconds = atoi(in_tx_s);
+        ok = 1;
+    }
+
+    if (res) PQclear(res);
+    PQfinish(probe);
+    return ok;
 }
 
 // Fast suffix check for library.db
@@ -240,6 +333,21 @@ static int cb_get_txn_status(void *conn_ptr) {
 static int cb_exec_simple(void *conn_ptr, const char *sql) {
     pg_connection_t *conn = (pg_connection_t *)conn_ptr;
     if (!conn || !conn->conn || !sql) return 0;
+
+    while (*sql == ' ' || *sql == '\t' || *sql == '\n' || *sql == '\r') sql++;
+
+    // Ignore COMMIT/ROLLBACK when connection is already idle.
+    // SQLite semantics treat this as a no-op; this avoids noisy PG warnings.
+    if (strncasecmp(sql, "COMMIT", 6) == 0 ||
+        strncasecmp(sql, "ROLLBACK", 8) == 0 ||
+        strncasecmp(sql, "END", 3) == 0) {
+        int txn = (int)PQtransactionStatus(conn->conn);
+        if (txn != PQTRANS_INTRANS && txn != PQTRANS_INERROR) {
+            LOG_DEBUG("cb_exec_simple: skipped %s in non-transaction state=%d", sql, txn);
+            return 1;
+        }
+    }
+
     PGresult *res = PQexec(conn->conn, sql);
     int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
     if (res) PQclear(res);
@@ -327,17 +435,41 @@ static void cb_log_debug(const char *msg) { LOG_DEBUG("%s", msg); }
 static void do_client_init(void) {
     memset(connections, 0, sizeof(connections));
 
-    // Read pool size from environment (default: 50, max: 200)
+    // Read pool size from environment (default: 50)
     int pool_size = POOL_SIZE_DEFAULT;
     const char *pool_env = getenv("PLEX_PG_POOL_SIZE");
     if (pool_env) {
         int size = atoi(pool_env);
-        if (size > 0 && size <= POOL_SIZE_MAX) {
+        if (size > 0) {
             pool_size = size;
-        } else if (size > POOL_SIZE_MAX) {
-            pool_size = POOL_SIZE_MAX;
-            LOG_INFO("PLEX_PG_POOL_SIZE=%d exceeds max, using %d", size, POOL_SIZE_MAX);
         }
+    }
+
+    // Read pool max from environment (default: pool_size)
+    int pool_max = pool_size;
+    const char *pool_max_env = getenv(ENV_PG_POOL_MAX);
+    if (pool_max_env) {
+        int size = atoi(pool_max_env);
+        if (size > 0) {
+            pool_max = size;
+        }
+    }
+
+    // Align pool max with database max_connections when known.
+    int db_max_connections = probe_postgres_max_connections();
+    if (db_max_connections > 0) {
+        if (pool_max != db_max_connections) {
+            LOG_INFO("Pool max (%d) does not match database max_connections (%d); adjusting to %d",
+                     pool_max, db_max_connections, db_max_connections);
+            pool_max = db_max_connections;
+        }
+    } else {
+        LOG_INFO("Pool init: could not read database max_connections; keeping pool max=%d", pool_max);
+    }
+
+    if (pool_size > pool_max) {
+        LOG_INFO("Pool size %d exceeds pool max %d; clamping", pool_size, pool_max);
+        pool_size = pool_max;
     }
 
     // Read idle timeout from environment (default: 300s)
@@ -348,6 +480,37 @@ static void do_client_init(void) {
         if (timeout >= 10) {
             idle_timeout = timeout;
         }
+    }
+
+    // Align client-side pool idle reap before server-side idle disconnects.
+    // This prevents noisy server FATAL idle-timeout churn.
+    int server_idle_session_s = 0;
+    int server_idle_in_tx_s = 0;
+    if (probe_postgres_idle_timeouts(&server_idle_session_s, &server_idle_in_tx_s)) {
+        int server_cutoff_s = 0;
+        if (server_idle_session_s > 0) {
+            server_cutoff_s = server_idle_session_s;
+        }
+        if (server_idle_in_tx_s > 0 &&
+            (server_cutoff_s == 0 || server_idle_in_tx_s < server_cutoff_s)) {
+            server_cutoff_s = server_idle_in_tx_s;
+        }
+
+        if (server_cutoff_s > 0) {
+            const int safety_margin_s = 10;
+            int target_idle_s = server_cutoff_s - safety_margin_s;
+            if (target_idle_s < 10) target_idle_s = 10;
+            if (idle_timeout >= server_cutoff_s) {
+                LOG_INFO(
+                    "Pool idle timeout (%ds) >= PostgreSQL idle cutoff (%ds, session=%ds, in_tx=%ds); adjusting to %ds",
+                    idle_timeout, server_cutoff_s, server_idle_session_s, server_idle_in_tx_s, target_idle_s
+                );
+                idle_timeout = target_idle_s;
+            }
+        }
+    } else {
+        LOG_INFO("Pool init: could not read PostgreSQL idle timeout settings; keeping pool idle_timeout=%ds",
+                 idle_timeout);
     }
 
     // Register all C callbacks with Rust
@@ -375,11 +538,11 @@ static void do_client_init(void) {
     );
 
     // Initialize Rust pool
-    rust_pool_init(pool_size, idle_timeout);
+    rust_pool_init(pool_size, pool_max, idle_timeout);
 
     client_initialized = 1;
-    LOG_INFO("pg_client initialized (Rust pool): pool_size=%d, max=%d, idle_timeout=%ds",
-             pool_size, POOL_SIZE_MAX, idle_timeout);
+    LOG_INFO("pg_client initialized (Rust pool): pool_size=%d, pool_max=%d, idle_timeout=%ds",
+             pool_size, pool_max, idle_timeout);
 }
 
 void pg_client_init(void) {
