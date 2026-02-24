@@ -872,6 +872,7 @@ fn is_pg_json_op(op: &str) -> bool {
 
 fn is_json_cast(expr: &Expr) -> bool {
     match expr {
+        Expr::Nested(inner) => is_json_cast(inner),
         Expr::Cast { data_type, .. } => match data_type {
             DataType::JSON => true,
             DataType::Custom(name, _) => name
