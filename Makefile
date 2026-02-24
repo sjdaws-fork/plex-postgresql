@@ -46,6 +46,10 @@ DB_INTERPOSE_SHARED = src/runtime/db_interpose_common.o src/runtime/platform_bac
                       src/interpose/db_interpose_exec.o src/interpose/db_interpose_prepare.o src/interpose/db_interpose_bind.o \
                       src/interpose/db_interpose_step.o src/interpose/db_interpose_stmt_lifecycle.o src/interpose/db_interpose_txn_utils.o src/interpose/db_interpose_conn_utils.o src/interpose/db_interpose_step_write_utils.o src/interpose/db_interpose_step_cached_read_utils.o src/interpose/db_interpose_step_read_utils.o src/interpose/db_interpose_column.o src/interpose/db_interpose_value.o \
                       src/interpose/db_interpose_metadata.o
+INTERPOSE_ONLY_OBJS = src/interpose/db_interpose_open.o src/interpose/db_interpose_exec.o src/interpose/db_interpose_prepare.o src/interpose/db_interpose_bind.o \
+                      src/interpose/db_interpose_step.o src/interpose/db_interpose_stmt_lifecycle.o src/interpose/db_interpose_txn_utils.o src/interpose/db_interpose_conn_utils.o \
+                      src/interpose/db_interpose_step_write_utils.o src/interpose/db_interpose_step_cached_read_utils.o src/interpose/db_interpose_step_read_utils.o \
+                      src/interpose/db_interpose_column.o src/interpose/db_interpose_value.o src/interpose/db_interpose_metadata.o
 
 # Platform-specific core module
 ifeq ($(UNAME_S),Darwin)
@@ -66,9 +70,13 @@ else
 endif
 LINUX_OBJECTS = $(SQL_TR_OBJS) $(PG_MODULES) $(DB_INTERPOSE_SHARED) src/runtime/db_interpose_core_linux.o
 
-.PHONY: all clean install test macos linux run stop unit-test ci-test test-recursion test-crash test-params test-logging test-soci test-fork test-fts test-buffer test-reaper test-upsert test-parity test-uri test-stmt-free test-bind-mismatch
+.PHONY: all clean install test macos linux run stop unit-test ci-test interpose-build-check test-recursion test-crash test-params test-logging test-soci test-fork test-fts test-buffer test-reaper test-upsert test-parity test-uri test-stmt-free test-bind-mismatch
 
 all: $(TARGET)
+
+# Fast compile-only check for interpose C modules (useful in CI/refactors).
+interpose-build-check: $(INTERPOSE_ONLY_OBJS)
+	@echo "Interpose modules compile check passed"
 
 # Build Rust plex-pg-core static library
 $(RUST_TRANSLATOR_LIB):

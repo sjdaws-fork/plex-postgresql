@@ -26,4 +26,8 @@ step_result_t step_read_first_execute(pg_stmt_t *stmt,
                                       const char *paramValues[MAX_PARAMS],
                                       int *pg_conn_error_out);
 
+/* Debug/context hooks for read orchestration. */
+void step_read_log_debug_context(pg_stmt_t *stmt, pg_connection_t *exec_conn);
+void step_read_prepare_reexecution_state(pg_stmt_t *stmt, pg_connection_t *exec_conn);
+
 #endif

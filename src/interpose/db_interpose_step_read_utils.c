@@ -394,3 +394,32 @@ step_result_t step_read_first_execute(pg_stmt_t *pg_stmt,
     if (pg_conn_error_out) *pg_conn_error_out = 1;
     return STEP_RESULT_ERROR;
 }
+
+void step_read_log_debug_context(pg_stmt_t *stmt, pg_connection_t *exec_conn) {
+    if (!stmt) return;
+    if (!stmt->result) {
+        LOG_DEBUG("STEP READ: thread=%p stmt=%p exec_conn=%p",
+                  (void *)pthread_self(), (void *)stmt, (void *)exec_conn);
+    }
+}
+
+void step_read_prepare_reexecution_state(pg_stmt_t *stmt, pg_connection_t *exec_conn) {
+    if (!stmt) return;
+
+    if (stmt->result && stmt->result_conn != exec_conn) {
+        LOG_DEBUG("STEP: Re-executing on current thread's connection (stmt shared across threads, result_conn=%p exec_conn=%p)",
+                  (void *)stmt->result_conn, (void *)exec_conn);
+        PQclear(stmt->result);
+        stmt->result = NULL;
+        stmt->result_conn = NULL;
+        stmt->current_row = 0;
+    }
+
+    if (stmt->result && stmt->metadata_only_result == 2) {
+        LOG_DEBUG("STEP: Clearing metadata-only result for re-execution with bound params");
+        PQclear(stmt->result);
+        stmt->result = NULL;
+        stmt->metadata_only_result = 0;
+        stmt->current_row = -1;
+    }
+}

@@ -296,33 +296,8 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
                 return step_read_advance_cached_result(pg_stmt);
             }
 
-            // Only log when result is NULL (new query) to reduce log spam
-            if (!pg_stmt->result) {
-                LOG_DEBUG("STEP READ: thread=%p stmt=%p exec_conn=%p",
-                         (void*)pthread_self(), (void*)pg_stmt, (void*)exec_conn);
-            }
-
-            // Shared statement used by different thread — clear stale result and re-execute
-            // This is expected when Plex reuses prepared statements across threads
-            if (pg_stmt->result && pg_stmt->result_conn != exec_conn) {
-                LOG_DEBUG("STEP: Re-executing on current thread's connection (stmt shared across threads, result_conn=%p exec_conn=%p)",
-                         (void*)pg_stmt->result_conn, (void*)exec_conn);
-                PQclear(pg_stmt->result);
-                pg_stmt->result = NULL;
-                pg_stmt->result_conn = NULL;
-                pg_stmt->current_row = 0;
-            }
-
-            // v0.8.9.1: Check if we need to re-execute due to metadata-only result
-            // When bind() was called after metadata execution, it set metadata_only_result=2
-            // to indicate we need to re-execute with the now-bound parameters
-            if (pg_stmt->result && pg_stmt->metadata_only_result == 2) {
-                LOG_DEBUG("STEP: Clearing metadata-only result for re-execution with bound params");
-                PQclear(pg_stmt->result);
-                pg_stmt->result = NULL;
-                pg_stmt->metadata_only_result = 0;
-                pg_stmt->current_row = -1;
-            }
+            step_read_log_debug_context(pg_stmt, exec_conn);
+            step_read_prepare_reexecution_state(pg_stmt, exec_conn);
 
             // ================================================================
             // v0.9.28: SINGLE-ROW STREAMING MODE
