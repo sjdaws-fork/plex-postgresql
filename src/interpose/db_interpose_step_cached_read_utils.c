@@ -4,7 +4,7 @@
 #include <string.h>
 #include <strings.h>
 
-int step_cached_read_maybe_advance(pg_stmt_t *cached, char *expanded_sql, step_result_t *step_rc_out) {
+int step_cached_read_finalize_advance(pg_stmt_t *cached, char *expanded_sql, step_result_t *step_rc_out) {
     if (step_rc_out) *step_rc_out = STEP_RESULT_DONE;
     if (!cached || !cached->result) return 0;
 
@@ -23,11 +23,11 @@ int step_cached_read_maybe_advance(pg_stmt_t *cached, char *expanded_sql, step_r
     return 1;
 }
 
-pg_stmt_t *step_cached_read_get_or_create_stmt(pg_stmt_t *cached,
-                                               pg_connection_t *conn,
-                                               const char *sql,
-                                               sqlite3_stmt *pStmt,
-                                               const char *translated_sql) {
+pg_stmt_t *step_cached_read_prepare_stmt(pg_stmt_t *cached,
+                                         pg_connection_t *conn,
+                                         const char *sql,
+                                         sqlite3_stmt *pStmt,
+                                         const char *translated_sql) {
     if (cached) return cached;
     if (!conn || !sql || !pStmt || !translated_sql) return NULL;
 
@@ -41,11 +41,11 @@ pg_stmt_t *step_cached_read_get_or_create_stmt(pg_stmt_t *cached,
     return new_stmt;
 }
 
-step_result_t step_cached_read_execute_translated(pg_stmt_t *stmt,
-                                                  pg_connection_t *conn,
-                                                  const char *orig_sql,
-                                                  const char *translated_sql,
-                                                  int *pg_conn_error_out) {
+step_result_t step_cached_read_execute(pg_stmt_t *stmt,
+                                       pg_connection_t *conn,
+                                       const char *orig_sql,
+                                       const char *translated_sql,
+                                       int *pg_conn_error_out) {
     if (pg_conn_error_out) *pg_conn_error_out = 0;
     if (!stmt || !conn || !conn->conn || !translated_sql) return STEP_RESULT_FALLBACK;
 

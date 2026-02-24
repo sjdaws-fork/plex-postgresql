@@ -290,7 +290,7 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
 
                 if (sqlite_result == SQLITE_ROW || sqlite_result == SQLITE_DONE) {
                     step_result_t cached_rc = STEP_RESULT_DONE;
-                    if (step_cached_read_maybe_advance(cached, expanded_sql, &cached_rc)) {
+                    if (step_cached_read_finalize_advance(cached, expanded_sql, &cached_rc)) {
                         return cached_rc;
                     }
 
@@ -298,10 +298,10 @@ static int my_sqlite3_step_impl(sqlite3_stmt *pStmt) {
                     sql_translation_t trans = sql_translate(sql);
                     if (trans.success && trans.sql) {
                         pg_stmt_t *new_stmt =
-                            step_cached_read_get_or_create_stmt(cached, cached_read_conn, sql, pStmt, trans.sql);
+                            step_cached_read_prepare_stmt(cached, cached_read_conn, sql, pStmt, trans.sql);
                         if (new_stmt) {
                             int conn_error = 0;
-                            cached_branch_rc = step_cached_read_execute_translated(
+                            cached_branch_rc = step_cached_read_execute(
                                 new_stmt, cached_read_conn, sql, trans.sql, &conn_error);
                             if (conn_error && cached_branch_rc == STEP_RESULT_ERROR) {
                                 step_pg_conn_error = 1;
