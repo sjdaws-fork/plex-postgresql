@@ -1,5 +1,6 @@
 #![cfg(target_os = "linux")]
 
+use std::cell::UnsafeCell;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
@@ -8,15 +9,24 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use crate::c_abi;
 use crate::db_interpose_common;
 use crate::db_interpose_common::stderr_ptr;
+use crate::exception_what::pg_exception_install_terminate_logger;
 use crate::ffi_types::{sqlite3, sqlite3_stmt, sqlite3_value};
 
 type SigactionFn = unsafe extern "C" fn(c_int, *const libc::sigaction, *mut libc::sigaction) -> c_int;
+type CxaThrowFn =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, Option<unsafe extern "C" fn(*mut c_void)>) -> !;
 
 static mut ORIG_SIGACTION: Option<SigactionFn> = None;
+static mut ORIG_CXA_THROW: Option<CxaThrowFn> = None;
 
 static FORCE_IGNORE_SIGCHLD: AtomicI32 = AtomicI32::new(1);
 static INTERCEPT_SIGACTION: AtomicI32 = AtomicI32::new(1);
 static SIGNAL_LOG_ENABLED_CACHED: AtomicI32 = AtomicI32::new(-1);
+static EXCEPTION_CATCHER_ENABLED_CACHED: AtomicI32 = AtomicI32::new(-1);
+
+thread_local! {
+    static IN_EXCEPTION_HANDLER: UnsafeCell<c_int> = UnsafeCell::new(0);
+}
 
 fn env_truthy(name: &[u8]) -> bool {
     unsafe {
@@ -38,10 +48,94 @@ fn signal_log_enabled() -> bool {
     enabled
 }
 
+fn exception_catcher_enabled() -> bool {
+    let cached = EXCEPTION_CATCHER_ENABLED_CACHED.load(Ordering::Acquire);
+    if cached != -1 {
+        return cached != 0;
+    }
+    let enabled = env_truthy(b"PLEX_PG_ENABLE_EXCEPTION_CATCHER\0");
+    EXCEPTION_CATCHER_ENABLED_CACHED.store(if enabled { 1 } else { 0 }, Ordering::Release);
+    enabled
+}
+
 fn log_info(msg: &str) {
     if let Ok(cs) = CString::new(msg) {
         crate::pg_logging::rust_logging_write(1, cs.as_ptr());
     }
+}
+
+unsafe fn resolve_cxa_throw() -> Option<CxaThrowFn> {
+    if let Some(f) = ORIG_CXA_THROW {
+        return Some(f);
+    }
+    let sym = libc::dlsym(libc::RTLD_NEXT, b"__cxa_throw\0".as_ptr() as *const c_char);
+    if sym.is_null() {
+        return None;
+    }
+    let f: CxaThrowFn = std::mem::transmute(sym);
+    ORIG_CXA_THROW = Some(f);
+    Some(f)
+}
+
+fn setup_exception_catcher_if_enabled() {
+    if !exception_catcher_enabled() {
+        return;
+    }
+    unsafe {
+        if resolve_cxa_throw().is_some() {
+            let _ = libc::fprintf(
+                stderr_ptr(),
+                b"[SHIM_INIT] Exception catcher enabled (__cxa_throw interposed)\n\0".as_ptr()
+                    as *const c_char,
+            );
+            pg_exception_install_terminate_logger();
+            let _ = libc::fprintf(
+                stderr_ptr(),
+                b"[SHIM_INIT] Exception terminate logger requested (see [EXC_TERMINATE])\n\0"
+                    .as_ptr() as *const c_char,
+            );
+        } else {
+            let _ = libc::fprintf(
+                stderr_ptr(),
+                b"[SHIM_INIT] WARNING: failed to resolve __cxa_throw\n\0".as_ptr()
+                    as *const c_char,
+            );
+        }
+        let _ = libc::fflush(stderr_ptr());
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __cxa_throw(
+    thrown_exception: *mut c_void,
+    tinfo: *mut c_void,
+    dest: Option<unsafe extern "C" fn(*mut c_void)>,
+) -> ! {
+    let orig = match resolve_cxa_throw() {
+        Some(f) => f,
+        None => libc::abort(),
+    };
+
+    if !exception_catcher_enabled() {
+        orig(thrown_exception, tinfo, dest);
+    }
+
+    let mut should_call_original: c_int = 1;
+    let handled = IN_EXCEPTION_HANDLER.with(|cell| {
+        let guard = cell.get();
+        db_interpose_common::common_handle_exception(
+            thrown_exception,
+            tinfo,
+            guard,
+            &mut should_call_original,
+        )
+    });
+
+    if handled == 0 {
+        return orig(thrown_exception, tinfo, dest);
+    }
+
+    orig(thrown_exception, tinfo, dest);
 }
 
 #[cfg(target_env = "musl")]
@@ -252,6 +346,7 @@ unsafe extern "C" fn shim_init() {
     let _ = libc::fflush(stderr_ptr());
 
     db_interpose_common::common_shim_init_modules();
+    setup_exception_catcher_if_enabled();
 
     if env_truthy(b"PLEX_PG_ENABLE_SIGNAL_LOG\0") {
         install_signal_handler(libc::SIGSEGV);

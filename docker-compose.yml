@@ -55,6 +55,8 @@ services:
       # Logging: 0=ERROR, 1=INFO, 2=DEBUG
       - PLEX_PG_LOG_LEVEL=ERROR
       - PLEX_PG_LOG_FILE=/config/plex_redirect_pg.log
+      # Clear log file on startup to avoid stale errors
+      - PLEX_PG_LOG_TRUNCATE_ON_START=1
     volumes:
       - plex_config:/config
       - postgres_socket:/var/run/postgresql

@@ -13,6 +13,8 @@ const MAX_FUNC_LEN: usize = 70;
 struct ResolvedSymbol {
     func: [c_char; 256],
     lib: [c_char; 256],
+    offset: usize,
+    has_offset: bool,
 }
 
 impl Default for ResolvedSymbol {
@@ -20,6 +22,8 @@ impl Default for ResolvedSymbol {
         ResolvedSymbol {
             func: [0; 256],
             lib: [0; 256],
+            offset: 0,
+            has_offset: false,
         }
     }
 }
@@ -100,6 +104,8 @@ unsafe fn resolve_symbols(frames: &[*mut c_void], out: &mut [ResolvedSymbol]) {
     for (i, sym) in out.iter_mut().enumerate() {
         sym.func[0] = 0;
         sym.lib[0] = 0;
+        sym.offset = 0;
+        sym.has_offset = false;
 
         if symbols.is_null() {
             continue;
@@ -187,24 +193,14 @@ impl Default for MapEntry {
 const MAX_MAPS_ENTRIES: usize = 256;
 
 #[cfg(target_os = "linux")]
-static mut MEMORY_MAP: [MapEntry; MAX_MAPS_ENTRIES] = [MapEntry {
-    start: 0,
-    end: 0,
-    path: [0; 256],
-}; MAX_MAPS_ENTRIES];
-
-#[cfg(target_os = "linux")]
-static mut MEMORY_MAP_COUNT: usize = 0;
-
-#[cfg(target_os = "linux")]
-unsafe fn load_memory_map() {
-    MEMORY_MAP_COUNT = 0;
+fn load_memory_map() -> Vec<MapEntry> {
+    let mut entries = Vec::new();
     let Ok(content) = std::fs::read_to_string("/proc/self/maps") else {
-        return;
+        return entries;
     };
 
     for line in content.lines() {
-        if MEMORY_MAP_COUNT >= MAX_MAPS_ENTRIES {
+        if entries.len() >= MAX_MAPS_ENTRIES {
             break;
         }
 
@@ -227,19 +223,19 @@ unsafe fn load_memory_map() {
         }
         entry.path[i] = 0;
 
-        MEMORY_MAP[MEMORY_MAP_COUNT] = entry;
-        MEMORY_MAP_COUNT += 1;
+        entries.push(entry);
     }
+
+    entries
 }
 
 #[cfg(target_os = "linux")]
-unsafe fn find_lib_for_addr(addr: usize) -> *const c_char {
-    for i in 0..MEMORY_MAP_COUNT {
-        let entry = &MEMORY_MAP[i];
+fn find_lib_for_addr(entries: &[MapEntry], addr: usize) -> *const c_char {
+    for entry in entries {
         if addr >= entry.start && addr < entry.end {
             let path_ptr = entry.path.as_ptr();
-            let base = libc::strrchr(path_ptr, b'/' as c_int);
-            return if base.is_null() { path_ptr } else { base.add(1) };
+            let base = unsafe { libc::strrchr(path_ptr, b'/' as c_int) };
+            return if base.is_null() { path_ptr } else { unsafe { base.add(1) } };
         }
     }
     b"[unknown]\0".as_ptr() as *const c_char
@@ -247,7 +243,7 @@ unsafe fn find_lib_for_addr(addr: usize) -> *const c_char {
 
 #[cfg(target_os = "linux")]
 unsafe fn resolve_symbols(frames: &[*mut c_void], out: &mut [ResolvedSymbol]) {
-    load_memory_map();
+    let memory_map = load_memory_map();
 
     for (i, sym) in out.iter_mut().enumerate() {
         sym.func[0] = 0;
@@ -282,10 +278,19 @@ unsafe fn resolve_symbols(frames: &[*mut c_void], out: &mut [ResolvedSymbol]) {
                     libc::strncpy(sym.func.as_mut_ptr(), info.dli_sname, sym.func.len() - 1);
                 }
             }
+
+            if !info.dli_fbase.is_null() {
+                let addr = frames[i] as usize;
+                let base = info.dli_fbase as usize;
+                if addr >= base {
+                    sym.offset = addr - base;
+                    sym.has_offset = true;
+                }
+            }
         }
 
         if sym.lib[0] == 0 {
-            let lib = find_lib_for_addr(frames[i] as usize);
+            let lib = find_lib_for_addr(&memory_map, frames[i] as usize);
             libc::strncpy(sym.lib.as_mut_ptr(), lib, sym.lib.len() - 1);
         }
 
@@ -351,13 +356,34 @@ pub extern "C" fn platform_print_backtrace(reason: *const c_char, skip_frames: c
         let func = unsafe { CStr::from_ptr(symbols[i].func.as_ptr()) }
             .to_string_lossy()
             .into_owned();
+        let lib = unsafe { CStr::from_ptr(symbols[i].lib.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
         let mut func_display = func;
         if func_display.len() > MAX_FUNC_LEN {
             func_display.truncate(MAX_FUNC_LEN - 3);
             func_display.push_str("...");
         }
 
-        let line = format!("[{:2}] {}", printed, func_display);
+        let lib_display = if lib.is_empty() { "?".to_string() } else { lib };
+        let lib_with_offset = if symbols[i].has_offset {
+            format!("{}+0x{:x}", lib_display, symbols[i].offset)
+        } else {
+            lib_display
+        };
+        let mut line = format!("[{:2}] {} ({})", printed, func_display, lib_with_offset);
+        if line.len() > 78 {
+            let prefix = format!("[{:2}] ", printed);
+            let suffix = format!(" ({})", lib_with_offset);
+            let max_func = 78usize.saturating_sub(prefix.len() + suffix.len());
+            if max_func >= 4 && func_display.len() > max_func {
+                func_display.truncate(max_func - 3);
+                func_display.push_str("...");
+                line = format!("{}{}{}", prefix, func_display, suffix);
+            } else if max_func < 4 {
+                line = format!("[{:2}] {}", printed, func_display);
+            }
+        }
         write_stderr(&format!("║ {:<78} ║\n", line));
         log_error(&format!("  {}", line));
         printed += 1;

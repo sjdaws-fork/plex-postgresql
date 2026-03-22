@@ -2,8 +2,8 @@ use std::os::raw::{c_char, c_int, c_void};
 
 use crate::db_interpose_common::{pg_exception_get_last_column, pg_exception_get_last_query, stderr_ptr};
 
-#[cfg(target_os = "macos")]
-mod impl_macos {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod impl_unix {
     use super::*;
     use std::ffi::CStr;
     use std::ptr;
@@ -47,19 +47,37 @@ mod impl_macos {
         current
     }
 
+    #[cfg(target_os = "macos")]
+    const ABI_LIBS: [&[u8]; 1] = [b"libc++abi.dylib\0"];
+
+    #[cfg(target_os = "linux")]
+    const ABI_LIBS: [&[u8]; 6] = [
+        b"libc++abi.so.1\0",
+        b"libc++abi.so\0",
+        b"libc++.so.2\0",
+        b"libc++.so\0",
+        b"libstdc++.so.6\0",
+        b"libstdc++.so\0",
+    ];
+
     unsafe fn load_sym(sym: &[u8]) -> *mut c_void {
         let ptr = libc::dlsym(libc::RTLD_DEFAULT, sym.as_ptr() as *const c_char);
         if !ptr.is_null() {
             return ptr;
         }
-        let handle = libc::dlopen(
-            b"libc++abi.dylib\0".as_ptr() as *const c_char,
-            libc::RTLD_NOW | libc::RTLD_LOCAL,
-        );
-        if handle.is_null() {
-            return ptr::null_mut();
+
+        for lib in ABI_LIBS.iter() {
+            let handle = libc::dlopen(lib.as_ptr() as *const c_char, libc::RTLD_NOW | libc::RTLD_LOCAL);
+            if handle.is_null() {
+                continue;
+            }
+            let sym_ptr = libc::dlsym(handle, sym.as_ptr() as *const c_char);
+            if !sym_ptr.is_null() {
+                return sym_ptr;
+            }
         }
-        libc::dlsym(handle, sym.as_ptr() as *const c_char)
+
+        ptr::null_mut()
     }
 
     unsafe fn cxa_set_terminate() -> Option<CxaSetTerminateFn> {
@@ -277,7 +295,18 @@ mod impl_macos {
             if let Some(set_term) = cxa_set_terminate() {
                 let prev = set_term(rust_terminate_logger);
                 PREV_TERMINATE = Some(prev);
+                let _ = libc::fprintf(
+                    stderr_ptr(),
+                    b"[EXC_TERMINATE] __cxa_set_terminate installed\n\0".as_ptr() as *const c_char,
+                );
+            } else {
+                let _ = libc::fprintf(
+                    stderr_ptr(),
+                    b"[EXC_TERMINATE] WARNING: __cxa_set_terminate not found\n\0".as_ptr()
+                        as *const c_char,
+                );
             }
+            let _ = libc::fflush(stderr_ptr());
         }
     }
 
@@ -369,14 +398,14 @@ mod impl_macos {
     }
 }
 
-#[cfg(target_os = "macos")]
-pub use impl_macos::{pg_exception_extract_what, pg_exception_install_terminate_logger};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use impl_unix::{pg_exception_extract_what, pg_exception_install_terminate_logger};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[no_mangle]
 pub extern "C" fn pg_exception_install_terminate_logger() {}
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[no_mangle]
 pub extern "C" fn pg_exception_extract_what(
     _thrown_exception: *mut c_void,

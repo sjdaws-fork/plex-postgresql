@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::ffi_types::{sqlite3, sqlite3_stmt, PgConnection, PgStmt, MAX_PARAMS};
 use crate::libpq_helpers::PGresult;
@@ -17,6 +17,8 @@ const PGRES_TUPLES_OK: c_int = 2;
 const PGRES_SINGLE_TUPLE: c_int = 9;
 const CONNECTION_OK: c_int = 0;
 const PG_DIAG_SQLSTATE: c_int = b'C' as c_int;
+
+static TRACE_PLAY_QUEUE: AtomicI32 = AtomicI32::new(-1);
 
 #[repr(C)]
 struct PgConnConfig {
@@ -60,6 +62,25 @@ fn log_debug(msg: &str) {
     }
 }
 
+fn ascii_lower(b: u8) -> u8 {
+    if (b'A'..=b'Z').contains(&b) {
+        b + 32
+    } else {
+        b
+    }
+}
+
+fn contains_icase_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| {
+        w.iter()
+            .zip(needle.iter())
+            .all(|(a, b)| ascii_lower(*a) == ascii_lower(*b))
+    })
+}
+
 fn cstr_to_str(ptr: *const c_char) -> &'static str {
     if ptr.is_null() {
         return "?";
@@ -67,11 +88,197 @@ fn cstr_to_str(ptr: *const c_char) -> &'static str {
     unsafe { CStr::from_ptr(ptr).to_str().unwrap_or("?") }
 }
 
+fn cstr_bytes(ptr: *const c_char) -> &'static [u8] {
+    if ptr.is_null() {
+        return &[];
+    }
+    unsafe { CStr::from_ptr(ptr).to_bytes() }
+}
+
 fn cbuf_to_str(buf: &[c_char]) -> &str {
     if buf.is_empty() {
         return "";
     }
     unsafe { CStr::from_ptr(buf.as_ptr()).to_str().unwrap_or("") }
+}
+
+fn trace_play_queue_enabled() -> bool {
+    let cached = TRACE_PLAY_QUEUE.load(Ordering::Relaxed);
+    if cached != -1 {
+        return cached == 1;
+    }
+    let key = CString::new("PLEX_PG_TRACE_PLAY_QUEUE").unwrap();
+    let val = unsafe { libc::getenv(key.as_ptr()) };
+    let enabled = crate::db_interpose_helpers::rust_env_truthy(val) != 0;
+    TRACE_PLAY_QUEUE.store(if enabled { 1 } else { 0 }, Ordering::Relaxed);
+    enabled
+}
+
+unsafe fn param_at(param_values: *const *const c_char, idx: usize) -> *const c_char {
+    if param_values.is_null() {
+        return std::ptr::null();
+    }
+    *param_values.add(idx)
+}
+
+fn bytes_preview(bytes: &[u8], max_len: usize) -> (String, bool, usize) {
+    let total_len = bytes.len();
+    let cut = total_len.min(max_len);
+    let mut out = String::new();
+    for &b in &bytes[..cut] {
+        match b {
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0 => out.push_str("\\0"),
+            0x20..=0x7e => out.push(b as char),
+            _ => {
+                out.push_str("\\x");
+                out.push_str(&format!("{:02x}", b));
+            }
+        }
+    }
+    (out, total_len > max_len, total_len)
+}
+
+unsafe fn is_play_queue_stmt(pg_stmt: *mut PgStmt) -> bool {
+    if pg_stmt.is_null() {
+        return false;
+    }
+    let sql_bytes = cstr_bytes((*pg_stmt).sql);
+    let pg_sql_bytes = cstr_bytes((*pg_stmt).pg_sql);
+    contains_icase_bytes(sql_bytes, b"play_queue") || contains_icase_bytes(pg_sql_bytes, b"play_queue")
+}
+
+unsafe fn trace_play_queue_params(
+    pg_stmt: *mut PgStmt,
+    param_values: *const *const c_char,
+    phase: &str,
+) {
+    if !trace_play_queue_enabled() || !is_play_queue_stmt(pg_stmt) {
+        return;
+    }
+    let param_count = (*pg_stmt).param_count;
+    let count = if param_count > 0 { param_count as usize } else { 0 };
+    let max_params = 16usize;
+    let max_len = 256usize;
+    log_info(&format!(
+        "PLAY_QUEUE TRACE {}: param_count={} sql={:.200}",
+        phase,
+        param_count,
+        cstr_to_str((*pg_stmt).pg_sql)
+    ));
+    if !(*pg_stmt).sql.is_null() && (*pg_stmt).sql != (*pg_stmt).pg_sql {
+        log_info(&format!(
+            "PLAY_QUEUE TRACE {}: sqlite_sql={:.200}",
+            phase,
+            cstr_to_str((*pg_stmt).sql)
+        ));
+    }
+    if count == 0 {
+        log_info(&format!("PLAY_QUEUE TRACE {} params: (none)", phase));
+        return;
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(count.min(max_params));
+    for i in 0..count.min(max_params) {
+        let val_ptr = param_at(param_values, i);
+        let val_str = if val_ptr.is_null() {
+            "NULL".to_string()
+        } else {
+            let bytes = CStr::from_ptr(val_ptr).to_bytes();
+            let (preview, truncated, total_len) = bytes_preview(bytes, max_len);
+            if truncated {
+                format!("{}...(len={})", preview, total_len)
+            } else {
+                preview
+            }
+        };
+        parts.push(format!("${}={}", i + 1, val_str));
+    }
+    log_info(&format!(
+        "PLAY_QUEUE TRACE {} params: {}",
+        phase,
+        parts.join(", ")
+    ));
+    if count > max_params {
+        log_info(&format!(
+            "PLAY_QUEUE TRACE {} params: truncated {} of {}",
+            phase, max_params, count
+        ));
+    }
+}
+
+unsafe fn trace_play_queue_result(
+    pg_stmt: *mut PgStmt,
+    result: *mut PGresult,
+    phase: &str,
+) {
+    if !trace_play_queue_enabled() || !is_play_queue_stmt(pg_stmt) || result.is_null() {
+        return;
+    }
+    let num_rows = crate::libpq_helpers::rust_pq_ntuples(result);
+    let num_cols = crate::libpq_helpers::rust_pq_nfields(result);
+    let max_rows = 5i32;
+    let max_cols = 16i32;
+    let max_len = 256usize;
+    log_info(&format!(
+        "PLAY_QUEUE TRACE {} result: rows={} cols={}",
+        phase, num_rows, num_cols
+    ));
+    let rows = if num_rows > 0 { num_rows } else { 0 };
+    let cols = if num_cols > 0 { num_cols } else { 0 };
+    let row_cap = rows.min(max_rows);
+    let col_cap = cols.min(max_cols);
+    for r in 0..row_cap {
+        let mut parts: Vec<String> = Vec::with_capacity(col_cap as usize);
+        for c in 0..col_cap {
+            let name_ptr = crate::db_interpose_helpers::rust_pg_result_col_name(result, c);
+            let name = if name_ptr.is_null() {
+                format!("col{}", c)
+            } else {
+                CStr::from_ptr(name_ptr).to_str().unwrap_or("?").to_string()
+            };
+            let mut buf = vec![0u8; max_len + 1];
+            let len = crate::db_interpose_helpers::rust_pg_result_text_copy(
+                result,
+                r,
+                c,
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len(),
+            );
+            let val = if len < 0 {
+                "NULL".to_string()
+            } else {
+                let total_len = len as usize;
+                let copy_len = total_len.min(buf.len().saturating_sub(1));
+                let (preview, truncated, _) = bytes_preview(&buf[..copy_len], max_len);
+                if truncated || total_len > copy_len {
+                    format!("{}...(len={})", preview, total_len)
+                } else {
+                    preview
+                }
+            };
+            parts.push(format!("{}={}", name, val));
+        }
+        log_info(&format!(
+            "PLAY_QUEUE TRACE {} row {}: {}",
+            phase,
+            r,
+            parts.join(", ")
+        ));
+    }
+    if rows > row_cap {
+        log_info(&format!(
+            "PLAY_QUEUE TRACE {} result: truncated rows {} of {}",
+            phase, row_cap, rows
+        ));
+    }
+    if cols > col_cap {
+        log_info(&format!(
+            "PLAY_QUEUE TRACE {} result: truncated cols {} of {}",
+            phase, col_cap, cols
+        ));
+    }
 }
 
 fn is_duplicate_prepared_stmt(res: *mut PGresult) -> bool {
@@ -174,6 +381,7 @@ pub extern "C" fn rust_step_read_streaming_next(
             (*stmt).current_row = 0;
             (*stmt).num_rows = 1;
             (*stmt).num_cols = crate::libpq_helpers::rust_pq_nfields(row_res);
+            trace_play_queue_result(stmt, row_res, "STREAM NEXT");
             libc::pthread_mutex_unlock(&mut (*stmt).mutex as *mut _);
             return STEP_RESULT_ROW;
         }
@@ -454,6 +662,8 @@ pub extern "C" fn rust_step_read_first_execute(
             pg_exception_note_query((*pg_stmt).pg_sql);
         }
 
+        trace_play_queue_params(pg_stmt, param_values, "EXEC");
+
         log_debug(&format!(
             "PREPARED CHECK: use_prepared={} stmt_name[0]={} pg_sql={:p}",
             (*pg_stmt).use_prepared,
@@ -613,6 +823,7 @@ pub extern "C" fn rust_step_read_first_execute(
                 (*pg_stmt).num_rows = 1;
                 (*pg_stmt).num_cols = crate::libpq_helpers::rust_pq_nfields(first_res);
                 resolve_column_tables(pg_stmt, exec_conn);
+                trace_play_queue_result(pg_stmt, first_res, "STREAM FIRST");
                 *exec_conn_io = exec_conn;
                 libc::pthread_mutex_unlock(&mut (*pg_stmt).mutex as *mut _);
                 return STEP_RESULT_ROW;
@@ -692,6 +903,7 @@ pub extern "C" fn rust_step_read_first_execute(
             (*pg_stmt).result_conn = exec_conn;
             (*pg_stmt).metadata_only_result = 0;
             resolve_column_tables(pg_stmt, exec_conn);
+            trace_play_queue_result(pg_stmt, (*pg_stmt).result, "EAGER");
             if (*pg_stmt).num_rows > 0 {
                 *exec_conn_io = exec_conn;
                 libc::pthread_mutex_unlock(&mut (*pg_stmt).mutex as *mut _);

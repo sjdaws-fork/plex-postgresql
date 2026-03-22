@@ -561,7 +561,9 @@ impl PoolManager {
         let size = self.pool_size();
         for i in 0..size {
             let slot = &self.slots[i];
-            if slot.conn.load(Ordering::Acquire) == conn_ptr as *mut c_void {
+            if slot.conn.load(Ordering::Acquire) == conn_ptr as *mut c_void
+                && slot.state.load(Ordering::Acquire) == SLOT_READY
+            {
                 return true;
             }
         }

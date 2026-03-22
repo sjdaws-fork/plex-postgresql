@@ -149,6 +149,12 @@ pub fn parse_log_level(s: &str) -> i32 {
     }
 }
 
+/// Parse a boolean-like string.
+/// Accepts "1", "true", or "yes" (case-insensitive) as true.
+pub fn parse_bool(s: &str) -> bool {
+    matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+}
+
 /// Format the current local time as `[YYYY-MM-DD HH:MM:SS]`.
 /// Uses only `std::time::SystemTime` to avoid libc / chrono dependency.
 pub fn format_timestamp() -> String {
@@ -209,6 +215,21 @@ fn open_log_file(path: &str) -> std::io::Result<File> {
         ));
     }
     OpenOptions::new().create(true).append(true).open(path)
+}
+
+fn fallback_log_path_for(path: &str, is_stdout: bool, is_stderr: bool) -> String {
+    if !is_stdout && !is_stderr {
+        if let Some(parent) = Path::new(path).parent() {
+            parent
+                .join("plex_pg_fallbacks.log")
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            FALLBACK_LOG_FILE.to_string()
+        }
+    } else {
+        FALLBACK_LOG_FILE.to_string()
+    }
 }
 
 /// Check whether the log file has grown beyond `max_size` bytes.
@@ -282,6 +303,7 @@ fn now_secs() -> i64 {
 ///   `PLEX_PG_LOG_LEVEL`    → "DEBUG"=2, "ERROR"=0, else INFO=1
 ///   `PLEX_PG_LOG_FILE`     → file path, "stdout", "stderr", or default
 ///   `PLEX_PG_LOG_MAX_SIZE` → "10M", "50K", or raw bytes (default 10 MB)
+///   `PLEX_PG_LOG_TRUNCATE_ON_START` → "1"/"true"/"yes" to truncate on init
 ///
 /// Opens the log file and sets it unbuffered. Thread-safe; call once.
 #[no_mangle]
@@ -300,13 +322,17 @@ pub extern "C" fn rust_logging_init() {
             .map(|v| parse_max_size(&v))
             .unwrap_or(DEFAULT_MAX_SIZE);
 
+        let truncate_on_start = std::env::var("PLEX_PG_LOG_TRUNCATE_ON_START")
+            .map(|v| parse_bool(&v))
+            .unwrap_or(false);
+
         LOG_LEVEL.store(level, Ordering::Relaxed);
         MAX_SIZE.store(max_size, Ordering::Relaxed);
 
         let mut path = requested_path.clone();
         let mut is_stdout = requested_path == "stdout";
         let mut is_stderr = requested_path == "stderr";
-        let file = if is_stdout || is_stderr {
+        let mut file = if is_stdout || is_stderr {
             None
         } else {
             match open_log_file(&requested_path) {
@@ -345,6 +371,24 @@ pub extern "C" fn rust_logging_init() {
                 }
             }
         };
+
+        if truncate_on_start && !is_stdout && !is_stderr {
+            let _ = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path);
+            file = open_log_file(&path).ok();
+        }
+
+        if truncate_on_start {
+            let fallback_path = fallback_log_path_for(&path, is_stdout, is_stderr);
+            let _ = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&fallback_path);
+        }
 
         let mut state = logger().lock().unwrap_or_else(|e| e.into_inner());
         state.path = path;
@@ -468,18 +512,7 @@ pub extern "C" fn rust_logging_fallback(
     // Write to the dedicated fallback log file.
     let fallback_path = {
         let state = logger().lock().unwrap_or_else(|e| e.into_inner());
-        if !state.is_stdout && !state.is_stderr {
-            if let Some(parent) = Path::new(&state.path).parent() {
-                parent
-                    .join("plex_pg_fallbacks.log")
-                    .to_string_lossy()
-                    .into_owned()
-            } else {
-                FALLBACK_LOG_FILE.to_string()
-            }
-        } else {
-            FALLBACK_LOG_FILE.to_string()
-        }
+        fallback_log_path_for(&state.path, state.is_stdout, state.is_stderr)
     };
 
     match OpenOptions::new()

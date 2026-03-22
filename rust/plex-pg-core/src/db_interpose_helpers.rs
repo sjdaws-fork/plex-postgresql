@@ -436,8 +436,12 @@ fn normalize_sql_literals_impl(sql: &str) -> Option<(String, Vec<String>)> {
 }
 
 fn is_library_db_path_impl(path: &str) -> bool {
-    path.as_bytes()
-        .ends_with(b"com.plexapp.plugins.library.db")
+    let mut bytes = path.as_bytes();
+    if bytes.len() > 4 && (bytes.ends_with(b"-wal") || bytes.ends_with(b"-shm")) {
+        bytes = &bytes[..bytes.len() - 4];
+    }
+    contains_ascii_icase(bytes, b"com.plexapp.plugins.library.db")
+        || contains_ascii_icase(bytes, b"com.plexapp.plugins.library.blobs.db")
 }
 
 fn is_library_or_blobs_db_path_impl(path: &str) -> bool {
@@ -884,23 +888,45 @@ pub extern "C" fn rust_decode_hex_bytes(
 
 #[no_mangle]
 pub extern "C" fn rust_expected_sqlite_type_for_decltype(decl: *const c_char) -> c_int {
-    let norm = normalize_sqlite_decltype_impl(cstr_to_str(decl));
-    if norm.is_null() {
-        return -1;
-    }
-    let norm_bytes = unsafe { CStr::from_ptr(norm) }.to_bytes();
-    if norm_bytes.eq_ignore_ascii_case(b"INTEGER") || norm_bytes.eq_ignore_ascii_case(b"dt_integer(8)") {
+    let t = match cstr_to_str(decl) {
+        Some(s) if !s.trim().is_empty() => s.trim(),
+        _ => return -1,
+    };
+    let bytes = t.as_bytes();
+
+    if starts_with_icase(bytes, b"DT_INTEGER") {
         return SQLITE_INTEGER_CONST;
     }
-    if norm_bytes.eq_ignore_ascii_case(b"TEXT") {
-        return SQLITE_TEXT_CONST;
+    if starts_with_icase(bytes, b"INTEGER") && has_boundary(bytes, 7) {
+        return SQLITE_INTEGER_CONST;
     }
-    if norm_bytes.eq_ignore_ascii_case(b"REAL") {
+    if starts_with_icase(bytes, b"BIGINT") && has_boundary(bytes, 6) {
+        return SQLITE_INTEGER_CONST;
+    }
+    if t.eq_ignore_ascii_case("INT8")
+        || t.eq_ignore_ascii_case("INT64")
+        || t.eq_ignore_ascii_case("LONG")
+        || t.eq_ignore_ascii_case("BOOLEAN")
+        || t.eq_ignore_ascii_case("TIMESTAMP")
+    {
+        return SQLITE_INTEGER_CONST;
+    }
+
+    if t.eq_ignore_ascii_case("FLOAT") || t.eq_ignore_ascii_case("DOUBLE") || t.eq_ignore_ascii_case("REAL") {
         return SQLITE_FLOAT_CONST;
     }
-    if norm_bytes.eq_ignore_ascii_case(b"BLOB") {
+
+    if starts_with_icase(bytes, b"VARCHAR") && has_boundary(bytes, 7) {
+        return SQLITE_TEXT_CONST;
+    }
+    if t.eq_ignore_ascii_case("STRING") || t.eq_ignore_ascii_case("CHAR") || t.eq_ignore_ascii_case("TEXT") {
+        return SQLITE_TEXT_CONST;
+    }
+
+    if t.eq_ignore_ascii_case("BLOB") {
         return SQLITE_BLOB_CONST;
     }
+
     -1
 }
 
@@ -2678,13 +2704,13 @@ mod tests {
 
     #[test]
     fn bind_helpers_bytes_to_pg_hex_known_values() {
-        let out = take_cstring(rust_bytes_to_pg_hex(&[0xAB].as_ptr(), 1));
+        let out = take_cstring(rust_bytes_to_pg_hex([0xAB].as_ptr(), 1));
         assert_eq!(out, "\\xab");
-        let out = take_cstring(rust_bytes_to_pg_hex(&[0xDE, 0xAD, 0xBE, 0xEF].as_ptr(), 4));
+        let out = take_cstring(rust_bytes_to_pg_hex([0xDE, 0xAD, 0xBE, 0xEF].as_ptr(), 4));
         assert_eq!(out, "\\xdeadbeef");
-        let out = take_cstring(rust_bytes_to_pg_hex(&[0x00, 0x00, 0x00].as_ptr(), 3));
+        let out = take_cstring(rust_bytes_to_pg_hex([0x00, 0x00, 0x00].as_ptr(), 3));
         assert_eq!(out, "\\x000000");
-        let out = take_cstring(rust_bytes_to_pg_hex(&[0xFF, 0xFF].as_ptr(), 2));
+        let out = take_cstring(rust_bytes_to_pg_hex([0xFF, 0xFF].as_ptr(), 2));
         assert_eq!(out, "\\xffff");
         let out = take_cstring(rust_bytes_to_pg_hex(b"AB".as_ptr(), 2));
         assert_eq!(out, "\\x4142");

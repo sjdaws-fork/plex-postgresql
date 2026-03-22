@@ -141,6 +141,7 @@ environment:
   - PLEX_PG_IDLE_TIMEOUT=300  # seconds, default 300
   - PLEX_PG_OPENSSL_ARMCAP=0  # optional ARM fallback for container/VM SIGILL crashes
   - PLEX_PG_LOG_LEVEL=DEBUG  # 0=ERROR, 1=INFO, 2=DEBUG
+  - PLEX_PG_LOG_TRUNCATE_ON_START=1  # clear log file on startup
   - PLEX_PG_SKIP_CLEAR_BINDINGS_FINALIZED=1  # default ON; set 0 to disable (debug only)
   - PLEX_PG_VALIDATE_OUTPUT=off  # off|sample|all (default: off)
   - PLEX_PG_VALIDATE_OUTPUT_SAMPLE_PCT=5  # only used when mode=sample
