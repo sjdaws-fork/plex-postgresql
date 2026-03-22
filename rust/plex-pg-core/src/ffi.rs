@@ -193,8 +193,8 @@ pub extern "C" fn sql_translator_last_error() -> *const c_char {
 #[repr(C)]
 pub struct SqlTranslation {
     pub sql: *mut c_char,
-    pub param_count: i32,
     pub param_names: *mut *mut c_char,
+    pub param_count: i32,
     pub success: i32,
     pub error: [u8; 256],
 }
