@@ -296,6 +296,12 @@ pub extern "C" fn pg_mem_telemetry_maybe_log() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     // ── Counter names ────────────────────────────────────────────────────────
 
@@ -357,6 +363,7 @@ mod tests {
 
     #[test]
     fn enabled_returns_false_when_env_not_set() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::remove_var("PLEX_PG_MEM_TELEMETRY");
@@ -372,6 +379,7 @@ mod tests {
 
     #[test]
     fn enabled_returns_true_when_env_is_1() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::set_var("PLEX_PG_MEM_TELEMETRY", "1");
@@ -387,6 +395,7 @@ mod tests {
 
     #[test]
     fn enabled_returns_false_when_env_is_0() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::set_var("PLEX_PG_MEM_TELEMETRY", "0");
@@ -402,6 +411,7 @@ mod tests {
 
     #[test]
     fn enabled_returns_false_when_env_is_arbitrary_string() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::set_var("PLEX_PG_MEM_TELEMETRY", "yes");
@@ -417,6 +427,7 @@ mod tests {
 
     #[test]
     fn ffi_enabled_returns_0_when_disabled() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::remove_var("PLEX_PG_MEM_TELEMETRY");
@@ -432,6 +443,7 @@ mod tests {
 
     #[test]
     fn ffi_enabled_returns_1_when_enabled() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::set_var("PLEX_PG_MEM_TELEMETRY", "1");
@@ -546,6 +558,7 @@ mod tests {
 
     #[test]
     fn maybe_log_inner_returns_none_when_disabled() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::remove_var("PLEX_PG_MEM_TELEMETRY");
@@ -564,6 +577,7 @@ mod tests {
 
     #[test]
     fn maybe_log_inner_returns_none_when_interval_not_elapsed() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::set_var("PLEX_PG_MEM_TELEMETRY", "1");
@@ -585,6 +599,7 @@ mod tests {
 
     #[test]
     fn maybe_log_inner_returns_some_after_60_seconds() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::set_var("PLEX_PG_MEM_TELEMETRY", "1");
@@ -608,6 +623,7 @@ mod tests {
 
     #[test]
     fn maybe_log_inner_returns_none_on_second_call_at_same_timestamp() {
+        let _guard = env_lock().lock().unwrap();
         reset_enabled();
         let prev = std::env::var("PLEX_PG_MEM_TELEMETRY").ok();
         std::env::set_var("PLEX_PG_MEM_TELEMETRY", "1");

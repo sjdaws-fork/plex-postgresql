@@ -59,6 +59,45 @@ pub(crate) fn log_shim_unloading(os_label: &str) {
     ));
 }
 
+pub(crate) fn shim_init_common<F, G, H, K>(
+    os_label: &str,
+    pre: F,
+    before_modules: G,
+    after_modules: H,
+    after_ready: K,
+)
+where
+    F: FnOnce() -> bool,
+    G: FnOnce(),
+    H: FnOnce(),
+    K: FnOnce(),
+{
+    if should_skip_shim_init() {
+        return;
+    }
+
+    log_ctor_start(os_label);
+
+    if !pre() {
+        return;
+    }
+
+    crate::pg_logging::pg_logging_init();
+    log_shim_loaded(os_label);
+    log_logging_initialized();
+
+    before_modules();
+    crate::db_interpose_common::common_shim_init_modules();
+    after_modules();
+
+    unsafe {
+        crate::db_interpose_common::shim_initialized = 1;
+    }
+
+    after_ready();
+    log_ctor_complete(os_label, unsafe { libc::getpid() });
+}
+
 fn log_stderr_line(msg: &str) {
     if let Ok(cs) = CString::new(msg) {
         unsafe {

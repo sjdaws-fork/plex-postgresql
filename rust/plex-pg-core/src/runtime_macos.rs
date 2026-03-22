@@ -9,8 +9,7 @@ use crate::db_interpose_common::stderr_ptr;
 use crate::exception_what::pg_exception_install_terminate_logger;
 use crate::fishhook::{self, Rebinding};
 use crate::runtime_common::{
-    handle_exception_with_tls, log_ctor_complete, log_ctor_start, log_logging_initialized,
-    log_shim_loaded, log_shim_unloading, should_skip_shim_init,
+    handle_exception_with_tls, log_shim_unloading, shim_init_common,
 };
 
 type CxaThrowFn =
@@ -247,47 +246,43 @@ pub extern "C" fn ensure_real_sqlite_loaded() {
 }
 
 unsafe extern "C" fn shim_init() {
-    if should_skip_shim_init() {
-        return;
-    }
-    log_ctor_start("macOS");
+    shim_init_common(
+        "macOS",
+        || {
+            db_interpose_common::common_check_fork();
 
-    db_interpose_common::common_check_fork();
+            if cfg!(debug_assertions) {
+                let handler: libc::sighandler_t = std::mem::transmute(
+                    db_interpose_common::common_signal_handler as extern "C" fn(c_int),
+                );
+                libc::signal(libc::SIGSEGV, handler);
+                libc::signal(libc::SIGABRT, handler);
+                libc::signal(libc::SIGBUS, handler);
+                libc::signal(libc::SIGFPE, handler);
+                libc::signal(libc::SIGILL, handler);
+            }
 
-    if cfg!(debug_assertions) {
-        let handler: libc::sighandler_t =
-            std::mem::transmute(db_interpose_common::common_signal_handler as extern "C" fn(c_int));
-        libc::signal(libc::SIGSEGV, handler);
-        libc::signal(libc::SIGABRT, handler);
-        libc::signal(libc::SIGBUS, handler);
-        libc::signal(libc::SIGFPE, handler);
-        libc::signal(libc::SIGILL, handler);
-    }
+            libc::pthread_atfork(
+                Some(db_interpose_common::common_atfork_prepare),
+                Some(db_interpose_common::common_atfork_parent),
+                Some(db_interpose_common::common_atfork_child),
+            );
+            let _ = libc::fprintf(
+                stderr_ptr(),
+                b"[SHIM_INIT] Registered pthread_atfork handlers\n\0".as_ptr() as *const c_char,
+            );
+            let _ = libc::fflush(stderr_ptr());
 
-    libc::pthread_atfork(
-        Some(db_interpose_common::common_atfork_prepare),
-        Some(db_interpose_common::common_atfork_parent),
-        Some(db_interpose_common::common_atfork_child),
+            true
+        },
+        || {
+            setup_fishhook_rebindings();
+            setup_exception_rebinding_if_enabled();
+            load_sqlite_fallback();
+        },
+        || {},
+        || {},
     );
-    let _ = libc::fprintf(
-        stderr_ptr(),
-        b"[SHIM_INIT] Registered pthread_atfork handlers\n\0".as_ptr() as *const c_char,
-    );
-    let _ = libc::fflush(stderr_ptr());
-
-    crate::pg_logging::pg_logging_init();
-    log_shim_loaded("macOS");
-
-    log_logging_initialized();
-
-    setup_fishhook_rebindings();
-    setup_exception_rebinding_if_enabled();
-    load_sqlite_fallback();
-    db_interpose_common::common_shim_init_modules();
-
-    db_interpose_common::shim_initialized = 1;
-
-    log_ctor_complete("macOS", libc::getpid());
 }
 
 unsafe extern "C" fn shim_cleanup() {

@@ -11,8 +11,7 @@ use crate::db_interpose_common::stderr_ptr;
 use crate::exception_what::pg_exception_install_terminate_logger;
 use crate::ffi_types::{sqlite3, sqlite3_stmt, sqlite3_value};
 use crate::runtime_common::{
-    env_truthy, handle_exception_with_tls, log_ctor_complete, log_ctor_start,
-    log_logging_initialized, log_shim_loaded, log_shim_unloading, should_skip_shim_init,
+    env_truthy, handle_exception_with_tls, log_shim_unloading, shim_init_common,
 };
 
 type SigactionFn = unsafe extern "C" fn(c_int, *const libc::sigaction, *mut libc::sigaction) -> c_int;
@@ -237,178 +236,176 @@ pub extern "C" fn ensure_real_sqlite_loaded() {
 }
 
 unsafe extern "C" fn shim_init() {
-    if should_skip_shim_init() {
-        return;
-    }
-    log_ctor_start("Linux");
+    shim_init_common(
+        "Linux",
+        || {
+            // Process name filtering: skip non-server/scanner processes.
+            if let Ok(cmdline) = std::fs::read("/proc/self/cmdline") {
+                let mut base = cmdline.as_slice();
+                if let Some(pos) = cmdline.iter().rposition(|&b| b == b'/') {
+                    base = &cmdline[pos + 1..];
+                }
+                if let Some(pos) = base.iter().position(|&b| b == 0) {
+                    base = &base[..pos];
+                }
+                let base_str = std::str::from_utf8(base).unwrap_or_default();
+                if !base_str.contains("Plex Media Server") && !base_str.contains("Plex Media Scanner") {
+                    FORCE_IGNORE_SIGCHLD.store(0, Ordering::Relaxed);
+                    INTERCEPT_SIGACTION.store(0, Ordering::Relaxed);
+                    db_interpose_common::shim_passthrough_only = 1;
+                    load_original_functions();
+                    db_interpose_common::shim_initialized = 1;
+                    let base_c = CString::new(base_str).unwrap_or_default();
+                    let _ = libc::fprintf(
+                        stderr_ptr(),
+                        b"[SHIM_INIT] Not Plex Server/Scanner ('%s'), skipping entirely (PID %d)\n\0"
+                            .as_ptr() as *const c_char,
+                        base_c.as_ptr(),
+                        libc::getpid(),
+                    );
+                    let _ = libc::fflush(stderr_ptr());
+                    return false;
+                }
 
-    // Process name filtering: skip non-server/scanner processes.
-    if let Ok(cmdline) = std::fs::read("/proc/self/cmdline") {
-        let mut base = cmdline.as_slice();
-        if let Some(pos) = cmdline.iter().rposition(|&b| b == b'/') {
-            base = &cmdline[pos + 1..];
-        }
-        if let Some(pos) = base.iter().position(|&b| b == 0) {
-            base = &base[..pos];
-        }
-        let base_str = std::str::from_utf8(base).unwrap_or_default();
-        if !base_str.contains("Plex Media Server") && !base_str.contains("Plex Media Scanner") {
-            FORCE_IGNORE_SIGCHLD.store(0, Ordering::Relaxed);
-            INTERCEPT_SIGACTION.store(0, Ordering::Relaxed);
-            db_interpose_common::shim_passthrough_only = 1;
-            load_original_functions();
-            db_interpose_common::shim_initialized = 1;
-            let base_c = CString::new(base_str).unwrap_or_default();
+                if env_truthy(b"PLEX_PG_DISABLE_SIGCHLD_IGNORE\0") {
+                    FORCE_IGNORE_SIGCHLD.store(0, Ordering::Relaxed);
+                }
+                if env_truthy(b"PLEX_PG_FORCE_SIGCHLD_IGNORE\0") {
+                    FORCE_IGNORE_SIGCHLD.store(1, Ordering::Relaxed);
+                }
+                if env_truthy(b"PLEX_PG_DISABLE_SIGACTION_INTERCEPT\0") {
+                    INTERCEPT_SIGACTION.store(0, Ordering::Relaxed);
+                }
+            }
+
+            db_interpose_common::common_check_fork();
+
             let _ = libc::fprintf(
                 stderr_ptr(),
-                b"[SHIM_INIT] Not Plex Server/Scanner ('%s'), skipping entirely (PID %d)\n\0"
-                    .as_ptr() as *const c_char,
-                base_c.as_ptr(),
-                libc::getpid(),
-            );
-            let _ = libc::fflush(stderr_ptr());
-            return;
-        }
-
-        if env_truthy(b"PLEX_PG_DISABLE_SIGCHLD_IGNORE\0") {
-            FORCE_IGNORE_SIGCHLD.store(0, Ordering::Relaxed);
-        }
-        if env_truthy(b"PLEX_PG_FORCE_SIGCHLD_IGNORE\0") {
-            FORCE_IGNORE_SIGCHLD.store(1, Ordering::Relaxed);
-        }
-        if env_truthy(b"PLEX_PG_DISABLE_SIGACTION_INTERCEPT\0") {
-            INTERCEPT_SIGACTION.store(0, Ordering::Relaxed);
-        }
-    }
-
-    db_interpose_common::common_check_fork();
-
-    let _ = libc::fprintf(
-        stderr_ptr(),
-        b"[SHIM_INIT] Fork safety: using PID-based detection (no pthread_atfork)\n\0".as_ptr()
-            as *const c_char,
-    );
-    let _ = libc::fflush(stderr_ptr());
-
-    load_original_functions();
-
-    if db_interpose_common::orig_sqlite3_open.is_none()
-        || db_interpose_common::orig_sqlite3_prepare_v2.is_none()
-    {
-        let _ = libc::fprintf(
-            stderr_ptr(),
-            b"[SHIM_INIT] SQLite not found in this process, skipping initialization\n\0".as_ptr()
-                as *const c_char,
-        );
-        let _ = libc::fflush(stderr_ptr());
-        return;
-    }
-
-    crate::pg_logging::pg_logging_init();
-    log_shim_loaded("Linux");
-    log_logging_initialized();
-
-    db_interpose_common::common_shim_init_modules();
-    setup_exception_catcher_if_enabled();
-
-    if env_truthy(b"PLEX_PG_ENABLE_SIGNAL_LOG\0") {
-        install_signal_handler(libc::SIGSEGV);
-        install_signal_handler(libc::SIGABRT);
-        install_signal_handler(libc::SIGFPE);
-        install_signal_handler(libc::SIGILL);
-        #[cfg(any(target_os = "linux"))]
-        {
-            install_signal_handler(libc::SIGBUS);
-        }
-        let _ = libc::fprintf(
-            stderr_ptr(),
-            b"[SHIM_INIT] Signal logging ENABLED via PLEX_PG_ENABLE_SIGNAL_LOG (PID %d)\n\0"
-                .as_ptr() as *const c_char,
-            libc::getpid(),
-        );
-        let _ = libc::fflush(stderr_ptr());
-    }
-
-    if ORIG_SIGACTION.is_none() {
-        let sym = libc::dlsym(libc::RTLD_NEXT, b"sigaction\0".as_ptr() as *const c_char);
-        if !sym.is_null() {
-            ORIG_SIGACTION = Some(std::mem::transmute(sym));
-        }
-    }
-
-    if FORCE_IGNORE_SIGCHLD.load(Ordering::Relaxed) != 0 {
-        if let Some(orig) = ORIG_SIGACTION {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = libc::SIG_IGN;
-            libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_flags = libc::SA_NOCLDSTOP;
-            orig(libc::SIGCHLD, &sa, ptr::null_mut());
-            let _ = libc::fprintf(
-                stderr_ptr(),
-                b"[SHIM_INIT] SIGCHLD forced to SIG_IGN (PID %d)\n\0".as_ptr() as *const c_char,
-                libc::getpid(),
-            );
-        } else {
-            let _ = libc::fprintf(
-                stderr_ptr(),
-                b"[SHIM_INIT] WARNING: could not resolve sigaction; SIGCHLD policy unchanged (PID %d)\n\0"
-                    .as_ptr() as *const c_char,
-                libc::getpid(),
-            );
-        }
-    } else {
-        let _ = libc::fprintf(
-            stderr_ptr(),
-            b"[SHIM_INIT] SIGCHLD force-ignore disabled via PLEX_PG_DISABLE_SIGCHLD_IGNORE (PID %d)\n\0"
-                .as_ptr() as *const c_char,
-            libc::getpid(),
-        );
-    }
-
-    if INTERCEPT_SIGACTION.load(Ordering::Relaxed) != 0 {
-        let _ = libc::fprintf(
-            stderr_ptr(),
-            b"[SHIM_INIT] sigaction interpose ENABLED (PID %d)\n\0".as_ptr() as *const c_char,
-            libc::getpid(),
-        );
-    } else {
-        let _ = libc::fprintf(
-            stderr_ptr(),
-            b"[SHIM_INIT] sigaction interpose DISABLED via PLEX_PG_DISABLE_SIGACTION_INTERCEPT (PID %d)\n\0"
-                .as_ptr() as *const c_char,
-            libc::getpid(),
-        );
-    }
-    let _ = libc::fflush(stderr_ptr());
-
-    db_interpose_common::shim_initialized = 1;
-
-    if !env_truthy(b"PLEX_PG_NO_INIT_DELAY\0") {
-        let delay_ms = std::env::var("PLEX_PG_INIT_DELAY_MS")
-            .ok()
-            .and_then(|s| s.parse::<i32>().ok())
-            .unwrap_or(200);
-        if delay_ms > 0 {
-            let _ = libc::fprintf(
-                stderr_ptr(),
-                b"[SHIM_INIT] Waiting %d ms for symbol resolution (PID %d)...\n\0".as_ptr()
+                b"[SHIM_INIT] Fork safety: using PID-based detection (no pthread_atfork)\n\0".as_ptr()
                     as *const c_char,
-                delay_ms,
-                libc::getpid(),
             );
             let _ = libc::fflush(stderr_ptr());
-            libc::usleep((delay_ms as u32) * 1000);
-        }
-    } else {
-        let _ = libc::fprintf(
-            stderr_ptr(),
-            b"[SHIM_INIT] Init delay DISABLED via PLEX_PG_NO_INIT_DELAY\n\0".as_ptr()
-                as *const c_char,
-        );
-        let _ = libc::fflush(stderr_ptr());
-    }
 
-    log_ctor_complete("Linux", libc::getpid());
+            load_original_functions();
+
+            if db_interpose_common::orig_sqlite3_open.is_none()
+                || db_interpose_common::orig_sqlite3_prepare_v2.is_none()
+            {
+                let _ = libc::fprintf(
+                    stderr_ptr(),
+                    b"[SHIM_INIT] SQLite not found in this process, skipping initialization\n\0"
+                        .as_ptr() as *const c_char,
+                );
+                let _ = libc::fflush(stderr_ptr());
+                return false;
+            }
+
+            true
+        },
+        || {},
+        || {
+            setup_exception_catcher_if_enabled();
+
+            if env_truthy(b"PLEX_PG_ENABLE_SIGNAL_LOG\0") {
+                install_signal_handler(libc::SIGSEGV);
+                install_signal_handler(libc::SIGABRT);
+                install_signal_handler(libc::SIGFPE);
+                install_signal_handler(libc::SIGILL);
+                #[cfg(any(target_os = "linux"))]
+                {
+                    install_signal_handler(libc::SIGBUS);
+                }
+                let _ = libc::fprintf(
+                    stderr_ptr(),
+                    b"[SHIM_INIT] Signal logging ENABLED via PLEX_PG_ENABLE_SIGNAL_LOG (PID %d)\n\0"
+                        .as_ptr() as *const c_char,
+                    libc::getpid(),
+                );
+                let _ = libc::fflush(stderr_ptr());
+            }
+
+            if ORIG_SIGACTION.is_none() {
+                let sym = libc::dlsym(libc::RTLD_NEXT, b"sigaction\0".as_ptr() as *const c_char);
+                if !sym.is_null() {
+                    ORIG_SIGACTION = Some(std::mem::transmute(sym));
+                }
+            }
+
+            if FORCE_IGNORE_SIGCHLD.load(Ordering::Relaxed) != 0 {
+                if let Some(orig) = ORIG_SIGACTION {
+                    let mut sa: libc::sigaction = std::mem::zeroed();
+                    sa.sa_sigaction = libc::SIG_IGN;
+                    libc::sigemptyset(&mut sa.sa_mask);
+                    sa.sa_flags = libc::SA_NOCLDSTOP;
+                    orig(libc::SIGCHLD, &sa, ptr::null_mut());
+                    let _ = libc::fprintf(
+                        stderr_ptr(),
+                        b"[SHIM_INIT] SIGCHLD forced to SIG_IGN (PID %d)\n\0".as_ptr()
+                            as *const c_char,
+                        libc::getpid(),
+                    );
+                } else {
+                    let _ = libc::fprintf(
+                        stderr_ptr(),
+                        b"[SHIM_INIT] WARNING: could not resolve sigaction; SIGCHLD policy unchanged (PID %d)\n\0"
+                            .as_ptr() as *const c_char,
+                        libc::getpid(),
+                    );
+                }
+            } else {
+                let _ = libc::fprintf(
+                    stderr_ptr(),
+                    b"[SHIM_INIT] SIGCHLD force-ignore disabled via PLEX_PG_DISABLE_SIGCHLD_IGNORE (PID %d)\n\0"
+                        .as_ptr() as *const c_char,
+                    libc::getpid(),
+                );
+            }
+
+            if INTERCEPT_SIGACTION.load(Ordering::Relaxed) != 0 {
+                let _ = libc::fprintf(
+                    stderr_ptr(),
+                    b"[SHIM_INIT] sigaction interpose ENABLED (PID %d)\n\0".as_ptr()
+                        as *const c_char,
+                    libc::getpid(),
+                );
+            } else {
+                let _ = libc::fprintf(
+                    stderr_ptr(),
+                    b"[SHIM_INIT] sigaction interpose DISABLED via PLEX_PG_DISABLE_SIGACTION_INTERCEPT (PID %d)\n\0"
+                        .as_ptr() as *const c_char,
+                    libc::getpid(),
+                );
+            }
+            let _ = libc::fflush(stderr_ptr());
+        },
+        || {
+            if !env_truthy(b"PLEX_PG_NO_INIT_DELAY\0") {
+                let delay_ms = std::env::var("PLEX_PG_INIT_DELAY_MS")
+                    .ok()
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .unwrap_or(200);
+                if delay_ms > 0 {
+                    let _ = libc::fprintf(
+                        stderr_ptr(),
+                        b"[SHIM_INIT] Waiting %d ms for symbol resolution (PID %d)...\n\0".as_ptr()
+                            as *const c_char,
+                        delay_ms,
+                        libc::getpid(),
+                    );
+                    let _ = libc::fflush(stderr_ptr());
+                    libc::usleep((delay_ms as u32) * 1000);
+                }
+            } else {
+                let _ = libc::fprintf(
+                    stderr_ptr(),
+                    b"[SHIM_INIT] Init delay DISABLED via PLEX_PG_NO_INIT_DELAY\n\0".as_ptr()
+                        as *const c_char,
+                );
+                let _ = libc::fflush(stderr_ptr());
+            }
+        },
+    );
 }
 
 unsafe extern "C" fn shim_cleanup() {
