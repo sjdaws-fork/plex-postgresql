@@ -1,4 +1,4 @@
-#![allow(clippy::missing_transmute_annotations, clippy::type_complexity)]
+#![allow(clippy::type_complexity)]
 
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_uchar, c_void};
@@ -49,6 +49,73 @@ type CollationCompare =
     Option<unsafe extern "C" fn(*mut c_void, c_int, *const c_void, c_int, *const c_void) -> c_int>;
 type CollationDestroy = Option<unsafe extern "C" fn(*mut c_void)>;
 
+type Sqlite3OpenFn = unsafe extern "C" fn(*const c_char, *mut *mut sqlite3) -> c_int;
+type Sqlite3OpenV2Fn =
+    unsafe extern "C" fn(*const c_char, *mut *mut sqlite3, c_int, *const c_char) -> c_int;
+type Sqlite3DbToIntFn = unsafe extern "C" fn(*mut sqlite3) -> c_int;
+type Sqlite3DbToI64Fn = unsafe extern "C" fn(*mut sqlite3) -> i64;
+type Sqlite3DbToCStrFn = unsafe extern "C" fn(*mut sqlite3) -> *const c_char;
+type Sqlite3ExecCallback =
+    Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>;
+type Sqlite3ExecFn =
+    unsafe extern "C" fn(*mut sqlite3, *const c_char, Sqlite3ExecCallback, *mut c_void, *mut *mut c_char)
+        -> c_int;
+type Sqlite3GetTableFn =
+    unsafe extern "C" fn(*mut sqlite3, *const c_char, *mut *mut *mut c_char, *mut c_int, *mut c_int, *mut *mut c_char)
+        -> c_int;
+type Sqlite3PrepareFn =
+    unsafe extern "C" fn(*mut sqlite3, *const c_char, c_int, *mut *mut sqlite3_stmt, *mut *const c_char) -> c_int;
+type Sqlite3PrepareV3Fn = unsafe extern "C" fn(
+    *mut sqlite3,
+    *const c_char,
+    c_int,
+    c_uint,
+    *mut *mut sqlite3_stmt,
+    *mut *const c_char,
+) -> c_int;
+type Sqlite3Prepare16Fn =
+    unsafe extern "C" fn(*mut sqlite3, *const c_void, c_int, *mut *mut sqlite3_stmt, *mut *const c_void) -> c_int;
+type Sqlite3BindIntFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int, c_int) -> c_int;
+type Sqlite3BindInt64Fn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int, i64) -> c_int;
+type Sqlite3BindDoubleFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int, f64) -> c_int;
+type Sqlite3BindTextFn =
+    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_char, c_int, *mut c_void) -> c_int;
+type Sqlite3BindText64Fn =
+    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_char, u64, *mut c_void, c_uchar) -> c_int;
+type Sqlite3BindBlobFn =
+    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_void, c_int, *mut c_void) -> c_int;
+type Sqlite3BindBlob64Fn =
+    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_void, u64, *mut c_void) -> c_int;
+type Sqlite3BindValueFn =
+    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const crate::ffi_types::sqlite3_value) -> c_int;
+type Sqlite3BindNullFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int;
+type Sqlite3StmtToIntFn = unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int;
+type Sqlite3StmtToDbFn = unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut sqlite3;
+type Sqlite3StmtToCStrFn = unsafe extern "C" fn(*mut sqlite3_stmt) -> *const c_char;
+type Sqlite3StmtToMutCStrFn = unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut c_char;
+type Sqlite3StmtIndexToIntFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int;
+type Sqlite3StmtIndexToI64Fn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> i64;
+type Sqlite3StmtIndexToDoubleFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> f64;
+type Sqlite3StmtIndexToTextFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_uchar;
+type Sqlite3StmtIndexToBlobFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_void;
+type Sqlite3StmtIndexToNameFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char;
+type Sqlite3StmtIndexToValueFn =
+    unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *mut crate::ffi_types::sqlite3_value;
+type Sqlite3StmtIdx2ToIntFn = unsafe extern "C" fn(*mut sqlite3_stmt, c_int, c_int) -> c_int;
+type Sqlite3StmtNameToIntFn = unsafe extern "C" fn(*mut sqlite3_stmt, *const c_char) -> c_int;
+type Sqlite3ValueToIntFn = unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> c_int;
+type Sqlite3ValueToI64Fn = unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> i64;
+type Sqlite3ValueToDoubleFn = unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> f64;
+type Sqlite3ValueToTextFn = unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> *const c_uchar;
+type Sqlite3ValueToBlobFn = unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> *const c_void;
+type Sqlite3CreateCollationFn =
+    unsafe extern "C" fn(*mut sqlite3, *const c_char, c_int, *mut c_void, CollationCompare) -> c_int;
+type Sqlite3CreateCollationV2Fn =
+    unsafe extern "C" fn(*mut sqlite3, *const c_char, c_int, *mut c_void, CollationCompare, CollationDestroy)
+        -> c_int;
+type Sqlite3FreeFn = unsafe extern "C" fn(*mut c_void);
+type Sqlite3MallocFn = unsafe extern "C" fn(c_int) -> *mut c_void;
+
 #[repr(C)]
 struct TlsState {
     in_interpose_call: c_int,
@@ -71,12 +138,12 @@ static mut TLS_FALLBACK: TlsState = TlsState {
 };
 
 macro_rules! load_sym {
-    ($slot:ident, $handle:expr, $name:expr) => {{
+    ($slot:ident, $handle:expr, $name:expr, $ty:ty) => {{
         let slot = ptr::addr_of_mut!($slot);
         if (*slot).is_none() {
             let sym = libc::dlsym($handle, $name.as_ptr() as *const c_char);
             if !sym.is_null() {
-                *slot = Some(std::mem::transmute(sym));
+                *slot = Some(std::mem::transmute::<*mut libc::c_void, $ty>(sym));
             }
         }
     }};
@@ -935,77 +1002,222 @@ pub extern "C" fn rust_common_load_sqlite_symbols(handle: *mut c_void) {
     }
 
     unsafe {
-        load_sym!(orig_sqlite3_open, handle, b"sqlite3_open\0");
-        load_sym!(orig_sqlite3_open_v2, handle, b"sqlite3_open_v2\0");
-        load_sym!(orig_sqlite3_close, handle, b"sqlite3_close\0");
-        load_sym!(orig_sqlite3_close_v2, handle, b"sqlite3_close_v2\0");
+        load_sym!(orig_sqlite3_open, handle, b"sqlite3_open\0", Sqlite3OpenFn);
+        load_sym!(orig_sqlite3_open_v2, handle, b"sqlite3_open_v2\0", Sqlite3OpenV2Fn);
+        load_sym!(orig_sqlite3_close, handle, b"sqlite3_close\0", Sqlite3DbToIntFn);
+        load_sym!(orig_sqlite3_close_v2, handle, b"sqlite3_close_v2\0", Sqlite3DbToIntFn);
 
-        load_sym!(orig_sqlite3_exec, handle, b"sqlite3_exec\0");
-        load_sym!(orig_sqlite3_get_table, handle, b"sqlite3_get_table\0");
+        load_sym!(orig_sqlite3_exec, handle, b"sqlite3_exec\0", Sqlite3ExecFn);
+        load_sym!(orig_sqlite3_get_table, handle, b"sqlite3_get_table\0", Sqlite3GetTableFn);
 
-        load_sym!(orig_sqlite3_changes, handle, b"sqlite3_changes\0");
-        load_sym!(orig_sqlite3_changes64, handle, b"sqlite3_changes64\0");
-        load_sym!(orig_sqlite3_last_insert_rowid, handle, b"sqlite3_last_insert_rowid\0");
+        load_sym!(orig_sqlite3_changes, handle, b"sqlite3_changes\0", Sqlite3DbToIntFn);
+        load_sym!(orig_sqlite3_changes64, handle, b"sqlite3_changes64\0", Sqlite3DbToI64Fn);
+        load_sym!(
+            orig_sqlite3_last_insert_rowid,
+            handle,
+            b"sqlite3_last_insert_rowid\0",
+            Sqlite3DbToI64Fn
+        );
 
-        load_sym!(orig_sqlite3_errmsg, handle, b"sqlite3_errmsg\0");
-        load_sym!(orig_sqlite3_errcode, handle, b"sqlite3_errcode\0");
-        load_sym!(orig_sqlite3_extended_errcode, handle, b"sqlite3_extended_errcode\0");
+        load_sym!(orig_sqlite3_errmsg, handle, b"sqlite3_errmsg\0", Sqlite3DbToCStrFn);
+        load_sym!(orig_sqlite3_errcode, handle, b"sqlite3_errcode\0", Sqlite3DbToIntFn);
+        load_sym!(
+            orig_sqlite3_extended_errcode,
+            handle,
+            b"sqlite3_extended_errcode\0",
+            Sqlite3DbToIntFn
+        );
 
-        load_sym!(orig_sqlite3_prepare, handle, b"sqlite3_prepare\0");
-        load_sym!(orig_sqlite3_prepare_v2, handle, b"sqlite3_prepare_v2\0");
-        load_sym!(orig_sqlite3_prepare_v3, handle, b"sqlite3_prepare_v3\0");
-        load_sym!(orig_sqlite3_prepare16_v2, handle, b"sqlite3_prepare16_v2\0");
+        load_sym!(orig_sqlite3_prepare, handle, b"sqlite3_prepare\0", Sqlite3PrepareFn);
+        load_sym!(orig_sqlite3_prepare_v2, handle, b"sqlite3_prepare_v2\0", Sqlite3PrepareFn);
+        load_sym!(orig_sqlite3_prepare_v3, handle, b"sqlite3_prepare_v3\0", Sqlite3PrepareV3Fn);
+        load_sym!(orig_sqlite3_prepare16_v2, handle, b"sqlite3_prepare16_v2\0", Sqlite3Prepare16Fn);
 
-        load_sym!(orig_sqlite3_bind_int, handle, b"sqlite3_bind_int\0");
-        load_sym!(orig_sqlite3_bind_int64, handle, b"sqlite3_bind_int64\0");
-        load_sym!(orig_sqlite3_bind_double, handle, b"sqlite3_bind_double\0");
-        load_sym!(orig_sqlite3_bind_text, handle, b"sqlite3_bind_text\0");
-        load_sym!(orig_sqlite3_bind_text64, handle, b"sqlite3_bind_text64\0");
-        load_sym!(orig_sqlite3_bind_blob, handle, b"sqlite3_bind_blob\0");
-        load_sym!(orig_sqlite3_bind_blob64, handle, b"sqlite3_bind_blob64\0");
-        load_sym!(orig_sqlite3_bind_value, handle, b"sqlite3_bind_value\0");
-        load_sym!(orig_sqlite3_bind_null, handle, b"sqlite3_bind_null\0");
+        load_sym!(orig_sqlite3_bind_int, handle, b"sqlite3_bind_int\0", Sqlite3BindIntFn);
+        load_sym!(
+            orig_sqlite3_bind_int64,
+            handle,
+            b"sqlite3_bind_int64\0",
+            Sqlite3BindInt64Fn
+        );
+        load_sym!(
+            orig_sqlite3_bind_double,
+            handle,
+            b"sqlite3_bind_double\0",
+            Sqlite3BindDoubleFn
+        );
+        load_sym!(orig_sqlite3_bind_text, handle, b"sqlite3_bind_text\0", Sqlite3BindTextFn);
+        load_sym!(
+            orig_sqlite3_bind_text64,
+            handle,
+            b"sqlite3_bind_text64\0",
+            Sqlite3BindText64Fn
+        );
+        load_sym!(orig_sqlite3_bind_blob, handle, b"sqlite3_bind_blob\0", Sqlite3BindBlobFn);
+        load_sym!(
+            orig_sqlite3_bind_blob64,
+            handle,
+            b"sqlite3_bind_blob64\0",
+            Sqlite3BindBlob64Fn
+        );
+        load_sym!(
+            orig_sqlite3_bind_value,
+            handle,
+            b"sqlite3_bind_value\0",
+            Sqlite3BindValueFn
+        );
+        load_sym!(orig_sqlite3_bind_null, handle, b"sqlite3_bind_null\0", Sqlite3BindNullFn);
 
-        load_sym!(orig_sqlite3_step, handle, b"sqlite3_step\0");
-        load_sym!(orig_sqlite3_reset, handle, b"sqlite3_reset\0");
-        load_sym!(orig_sqlite3_finalize, handle, b"sqlite3_finalize\0");
-        load_sym!(orig_sqlite3_clear_bindings, handle, b"sqlite3_clear_bindings\0");
+        load_sym!(orig_sqlite3_step, handle, b"sqlite3_step\0", Sqlite3StmtToIntFn);
+        load_sym!(orig_sqlite3_reset, handle, b"sqlite3_reset\0", Sqlite3StmtToIntFn);
+        load_sym!(orig_sqlite3_finalize, handle, b"sqlite3_finalize\0", Sqlite3StmtToIntFn);
+        load_sym!(
+            orig_sqlite3_clear_bindings,
+            handle,
+            b"sqlite3_clear_bindings\0",
+            Sqlite3StmtToIntFn
+        );
 
-        load_sym!(orig_sqlite3_column_count, handle, b"sqlite3_column_count\0");
-        load_sym!(orig_sqlite3_column_type, handle, b"sqlite3_column_type\0");
-        load_sym!(orig_sqlite3_column_int, handle, b"sqlite3_column_int\0");
-        load_sym!(orig_sqlite3_column_int64, handle, b"sqlite3_column_int64\0");
-        load_sym!(orig_sqlite3_column_double, handle, b"sqlite3_column_double\0");
-        load_sym!(orig_sqlite3_column_text, handle, b"sqlite3_column_text\0");
-        load_sym!(orig_sqlite3_column_blob, handle, b"sqlite3_column_blob\0");
-        load_sym!(orig_sqlite3_column_bytes, handle, b"sqlite3_column_bytes\0");
-        load_sym!(orig_sqlite3_column_name, handle, b"sqlite3_column_name\0");
-        load_sym!(orig_sqlite3_column_decltype, handle, b"sqlite3_column_decltype\0");
-        load_sym!(orig_sqlite3_column_value, handle, b"sqlite3_column_value\0");
-        load_sym!(orig_sqlite3_data_count, handle, b"sqlite3_data_count\0");
+        load_sym!(
+            orig_sqlite3_column_count,
+            handle,
+            b"sqlite3_column_count\0",
+            Sqlite3StmtToIntFn
+        );
+        load_sym!(
+            orig_sqlite3_column_type,
+            handle,
+            b"sqlite3_column_type\0",
+            Sqlite3StmtIndexToIntFn
+        );
+        load_sym!(
+            orig_sqlite3_column_int,
+            handle,
+            b"sqlite3_column_int\0",
+            Sqlite3StmtIndexToIntFn
+        );
+        load_sym!(
+            orig_sqlite3_column_int64,
+            handle,
+            b"sqlite3_column_int64\0",
+            Sqlite3StmtIndexToI64Fn
+        );
+        load_sym!(
+            orig_sqlite3_column_double,
+            handle,
+            b"sqlite3_column_double\0",
+            Sqlite3StmtIndexToDoubleFn
+        );
+        load_sym!(
+            orig_sqlite3_column_text,
+            handle,
+            b"sqlite3_column_text\0",
+            Sqlite3StmtIndexToTextFn
+        );
+        load_sym!(
+            orig_sqlite3_column_blob,
+            handle,
+            b"sqlite3_column_blob\0",
+            Sqlite3StmtIndexToBlobFn
+        );
+        load_sym!(
+            orig_sqlite3_column_bytes,
+            handle,
+            b"sqlite3_column_bytes\0",
+            Sqlite3StmtIndexToIntFn
+        );
+        load_sym!(
+            orig_sqlite3_column_name,
+            handle,
+            b"sqlite3_column_name\0",
+            Sqlite3StmtIndexToNameFn
+        );
+        load_sym!(
+            orig_sqlite3_column_decltype,
+            handle,
+            b"sqlite3_column_decltype\0",
+            Sqlite3StmtIndexToNameFn
+        );
+        load_sym!(
+            orig_sqlite3_column_value,
+            handle,
+            b"sqlite3_column_value\0",
+            Sqlite3StmtIndexToValueFn
+        );
+        load_sym!(orig_sqlite3_data_count, handle, b"sqlite3_data_count\0", Sqlite3StmtToIntFn);
 
-        load_sym!(orig_sqlite3_value_type, handle, b"sqlite3_value_type\0");
-        load_sym!(orig_sqlite3_value_text, handle, b"sqlite3_value_text\0");
-        load_sym!(orig_sqlite3_value_int, handle, b"sqlite3_value_int\0");
-        load_sym!(orig_sqlite3_value_int64, handle, b"sqlite3_value_int64\0");
-        load_sym!(orig_sqlite3_value_double, handle, b"sqlite3_value_double\0");
-        load_sym!(orig_sqlite3_value_bytes, handle, b"sqlite3_value_bytes\0");
-        load_sym!(orig_sqlite3_value_blob, handle, b"sqlite3_value_blob\0");
+        load_sym!(orig_sqlite3_value_type, handle, b"sqlite3_value_type\0", Sqlite3ValueToIntFn);
+        load_sym!(orig_sqlite3_value_text, handle, b"sqlite3_value_text\0", Sqlite3ValueToTextFn);
+        load_sym!(orig_sqlite3_value_int, handle, b"sqlite3_value_int\0", Sqlite3ValueToIntFn);
+        load_sym!(
+            orig_sqlite3_value_int64,
+            handle,
+            b"sqlite3_value_int64\0",
+            Sqlite3ValueToI64Fn
+        );
+        load_sym!(
+            orig_sqlite3_value_double,
+            handle,
+            b"sqlite3_value_double\0",
+            Sqlite3ValueToDoubleFn
+        );
+        load_sym!(orig_sqlite3_value_bytes, handle, b"sqlite3_value_bytes\0", Sqlite3ValueToIntFn);
+        load_sym!(orig_sqlite3_value_blob, handle, b"sqlite3_value_blob\0", Sqlite3ValueToBlobFn);
 
-        load_sym!(orig_sqlite3_create_collation, handle, b"sqlite3_create_collation\0");
-        load_sym!(orig_sqlite3_create_collation_v2, handle, b"sqlite3_create_collation_v2\0");
+        load_sym!(
+            orig_sqlite3_create_collation,
+            handle,
+            b"sqlite3_create_collation\0",
+            Sqlite3CreateCollationFn
+        );
+        load_sym!(
+            orig_sqlite3_create_collation_v2,
+            handle,
+            b"sqlite3_create_collation_v2\0",
+            Sqlite3CreateCollationV2Fn
+        );
 
-        load_sym!(orig_sqlite3_free, handle, b"sqlite3_free\0");
-        load_sym!(orig_sqlite3_malloc, handle, b"sqlite3_malloc\0");
-        load_sym!(orig_sqlite3_db_handle, handle, b"sqlite3_db_handle\0");
-        load_sym!(orig_sqlite3_sql, handle, b"sqlite3_sql\0");
-        load_sym!(orig_sqlite3_expanded_sql, handle, b"sqlite3_expanded_sql\0");
-        load_sym!(orig_sqlite3_bind_parameter_count, handle, b"sqlite3_bind_parameter_count\0");
-        load_sym!(orig_sqlite3_bind_parameter_index, handle, b"sqlite3_bind_parameter_index\0");
-        load_sym!(orig_sqlite3_bind_parameter_name, handle, b"sqlite3_bind_parameter_name\0");
-        load_sym!(orig_sqlite3_stmt_readonly, handle, b"sqlite3_stmt_readonly\0");
-        load_sym!(orig_sqlite3_stmt_busy, handle, b"sqlite3_stmt_busy\0");
-        load_sym!(orig_sqlite3_stmt_status, handle, b"sqlite3_stmt_status\0");
+        load_sym!(orig_sqlite3_free, handle, b"sqlite3_free\0", Sqlite3FreeFn);
+        load_sym!(orig_sqlite3_malloc, handle, b"sqlite3_malloc\0", Sqlite3MallocFn);
+        load_sym!(orig_sqlite3_db_handle, handle, b"sqlite3_db_handle\0", Sqlite3StmtToDbFn);
+        load_sym!(orig_sqlite3_sql, handle, b"sqlite3_sql\0", Sqlite3StmtToCStrFn);
+        load_sym!(orig_sqlite3_expanded_sql, handle, b"sqlite3_expanded_sql\0", Sqlite3StmtToMutCStrFn);
+        load_sym!(
+            orig_sqlite3_bind_parameter_count,
+            handle,
+            b"sqlite3_bind_parameter_count\0",
+            Sqlite3StmtToIntFn
+        );
+        load_sym!(
+            orig_sqlite3_bind_parameter_index,
+            handle,
+            b"sqlite3_bind_parameter_index\0",
+            Sqlite3StmtNameToIntFn
+        );
+        load_sym!(
+            orig_sqlite3_bind_parameter_name,
+            handle,
+            b"sqlite3_bind_parameter_name\0",
+            Sqlite3StmtIndexToNameFn
+        );
+        load_sym!(
+            orig_sqlite3_stmt_readonly,
+            handle,
+            b"sqlite3_stmt_readonly\0",
+            Sqlite3StmtToIntFn
+        );
+        load_sym!(
+            orig_sqlite3_stmt_busy,
+            handle,
+            b"sqlite3_stmt_busy\0",
+            Sqlite3StmtToIntFn
+        );
+        load_sym!(
+            orig_sqlite3_stmt_status,
+            handle,
+            b"sqlite3_stmt_status\0",
+            Sqlite3StmtIdx2ToIntFn
+        );
 
         if read_option(ptr::addr_of!(shim_sqlite3_prepare_v2)).is_none() {
             *ptr::addr_of_mut!(shim_sqlite3_prepare_v2) = read_option(ptr::addr_of!(orig_sqlite3_prepare_v2));
@@ -1076,14 +1288,24 @@ pub extern "C" fn rust_shim_ensure_ready() -> c_int {
 
             if cfg!(target_os = "macos") {
                 if !sqlite_handle.is_null() {
-                    load_sym!(orig_sqlite3_open, sqlite_handle, b"sqlite3_open\0");
-                    load_sym!(orig_sqlite3_prepare_v2, sqlite_handle, b"sqlite3_prepare_v2\0");
-                    load_sym!(orig_sqlite3_step, sqlite_handle, b"sqlite3_step\0");
+                    load_sym!(orig_sqlite3_open, sqlite_handle, b"sqlite3_open\0", Sqlite3OpenFn);
+                    load_sym!(
+                        orig_sqlite3_prepare_v2,
+                        sqlite_handle,
+                        b"sqlite3_prepare_v2\0",
+                        Sqlite3PrepareFn
+                    );
+                    load_sym!(orig_sqlite3_step, sqlite_handle, b"sqlite3_step\0", Sqlite3StmtToIntFn);
                 }
             } else {
-                load_sym!(orig_sqlite3_open, libc::RTLD_NEXT, b"sqlite3_open\0");
-                load_sym!(orig_sqlite3_prepare_v2, libc::RTLD_NEXT, b"sqlite3_prepare_v2\0");
-                load_sym!(orig_sqlite3_step, libc::RTLD_NEXT, b"sqlite3_step\0");
+                load_sym!(orig_sqlite3_open, libc::RTLD_NEXT, b"sqlite3_open\0", Sqlite3OpenFn);
+                load_sym!(
+                    orig_sqlite3_prepare_v2,
+                    libc::RTLD_NEXT,
+                    b"sqlite3_prepare_v2\0",
+                    Sqlite3PrepareFn
+                );
+                load_sym!(orig_sqlite3_step, libc::RTLD_NEXT, b"sqlite3_step\0", Sqlite3StmtToIntFn);
             }
 
             let open_missing = read_option(ptr::addr_of!(orig_sqlite3_open)).is_none();
@@ -1429,7 +1651,10 @@ pub extern "C" fn rust_print_exception_info(
         if read_option(ptr::addr_of!(cxa_demangle_fn)).is_none() {
             let sym = libc::dlsym(libc::RTLD_DEFAULT, b"__cxa_demangle\0".as_ptr() as *const c_char);
             if !sym.is_null() {
-                *ptr::addr_of_mut!(cxa_demangle_fn) = Some(std::mem::transmute(sym));
+                *ptr::addr_of_mut!(cxa_demangle_fn) = Some(std::mem::transmute::<
+                    *mut libc::c_void,
+                    unsafe extern "C" fn(*const c_char, *mut c_char, *mut libc::size_t, *mut c_int) -> *mut c_char,
+                >(sym));
             }
         }
 

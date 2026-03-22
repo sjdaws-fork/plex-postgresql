@@ -726,6 +726,7 @@ pub extern "C" fn shim_strdup_tracked(s: *const c_char, file: *const c_char, lin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::env_lock;
 
     /// Ensure each test starts from a clean state.
     fn reset() {
@@ -965,6 +966,7 @@ mod tests {
 
     #[test]
     fn enabled_returns_zero_when_env_unset() {
+        let _guard = env_lock().lock().unwrap();
         // Clear any cached value and env vars.
         G_ENABLED.store(-1, Ordering::Relaxed);
         let prev_track = std::env::var("PLEX_PG_ALLOC_TRACK").ok();
@@ -987,6 +989,7 @@ mod tests {
 
     #[test]
     fn enabled_returns_one_for_track() {
+        let _guard = env_lock().lock().unwrap();
         G_ENABLED.store(-1, Ordering::Relaxed);
         let prev_track = std::env::var("PLEX_PG_ALLOC_TRACK").ok();
         let prev_trace = std::env::var("PLEX_PG_ALLOC_TRACE").ok();
@@ -1008,6 +1011,7 @@ mod tests {
 
     #[test]
     fn enabled_returns_two_for_trace() {
+        let _guard = env_lock().lock().unwrap();
         G_ENABLED.store(-1, Ordering::Relaxed);
         let prev_trace = std::env::var("PLEX_PG_ALLOC_TRACE").ok();
         std::env::set_var("PLEX_PG_ALLOC_TRACE", "1");
@@ -1083,6 +1087,7 @@ mod tests {
 
     #[test]
     fn maybe_log_does_not_panic_when_disabled() {
+        let _guard = env_lock().lock().unwrap();
         G_ENABLED.store(-1, Ordering::Relaxed);
         let prev_track = std::env::var("PLEX_PG_ALLOC_TRACK").ok();
         std::env::remove_var("PLEX_PG_ALLOC_TRACK");
