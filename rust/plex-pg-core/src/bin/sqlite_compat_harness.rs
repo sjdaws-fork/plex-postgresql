@@ -11,6 +11,7 @@ use rusqlite::{types::ValueRef, Connection};
 
 use plex_pg_core::translate;
 use plex_pg_core::env_utils;
+use plex_pg_core::pg_config::PgEnvConfig;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SortMode {
@@ -504,14 +505,23 @@ fn build_pg_url(cli: &Cli) -> String {
     if let Some(v) = env_utils::env_string("SLT_PG_URL") {
         return v;
     }
-    let host = env_utils::env_string_or_else("PLEX_PG_HOST", || "127.0.0.1".to_string());
-    let port = env_utils::env_string_or_else("PLEX_PG_PORT", || "5432".to_string());
-    let db = env_utils::env_string_or_else("PLEX_PG_DATABASE", || "plex".to_string());
-    let user = env_utils::env_string_or_else("PLEX_PG_USER", || "plex".to_string());
-    let pass = env_utils::env_string_or_else("PLEX_PG_PASSWORD", || "plex".to_string());
+    let mut cfg = PgEnvConfig::from_env();
+    if cfg.host.is_empty() {
+        cfg.host = "127.0.0.1".to_string();
+    }
+    if cfg.database.is_empty() {
+        cfg.database = "plex".to_string();
+    }
+    if cfg.user.is_empty() {
+        cfg.user = "plex".to_string();
+    }
+    if cfg.password.is_empty() {
+        cfg.password = "plex".to_string();
+    }
+    let port = if cfg.port > 0 { cfg.port } else { 5432 };
     format!(
         "host={} port={} dbname={} user={} password={}",
-        host, port, db, user, pass
+        cfg.host, port, cfg.database, cfg.user, cfg.password
     )
 }
 

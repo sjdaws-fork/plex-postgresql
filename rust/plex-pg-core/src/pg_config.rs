@@ -261,6 +261,53 @@ pub struct PgConnConfig {
     pub schema: [u8; 64],
 }
 
+/// Rust-native connection config parsed from environment variables.
+#[derive(Clone, Debug, Default)]
+pub struct PgEnvConfig {
+    pub host: String,
+    pub port: i32,
+    pub database: String,
+    pub user: String,
+    pub password: String,
+    pub schema: String,
+}
+
+impl PgEnvConfig {
+    /// Load configuration from `PLEX_PG_*` environment variables.
+    pub fn from_env() -> Self {
+        let port = env_utils::env_string("PLEX_PG_PORT")
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .unwrap_or(0);
+        Self {
+            host: env_utils::env_string("PLEX_PG_HOST").unwrap_or_default(),
+            port,
+            database: env_utils::env_string("PLEX_PG_DATABASE").unwrap_or_default(),
+            user: env_utils::env_string("PLEX_PG_USER").unwrap_or_default(),
+            password: env_utils::env_string("PLEX_PG_PASSWORD").unwrap_or_default(),
+            schema: env_utils::env_string("PLEX_PG_SCHEMA").unwrap_or_default(),
+        }
+    }
+
+    fn write_to_conn_config(&self, cfg: &mut PgConnConfig) {
+        if !self.host.is_empty() {
+            write_str_to_buf(&mut cfg.host, &self.host);
+        }
+        cfg.port = self.port;
+        if !self.database.is_empty() {
+            write_str_to_buf(&mut cfg.database, &self.database);
+        }
+        if !self.user.is_empty() {
+            write_str_to_buf(&mut cfg.user, &self.user);
+        }
+        if !self.password.is_empty() {
+            write_str_to_buf(&mut cfg.password, &self.password);
+        }
+        if !self.schema.is_empty() {
+            write_str_to_buf(&mut cfg.schema, &self.schema);
+        }
+    }
+}
+
 static CONFIG_INIT: Once = Once::new();
 static mut GLOBAL_CONFIG: PgConnConfig = PgConnConfig {
     host: [0; 256],
@@ -375,29 +422,8 @@ pub extern "C" fn pg_config_load(config: *mut PgConnConfig) -> i32 {
     cfg.password.fill(0);
     cfg.schema.fill(0);
 
-    if let Some(v) = env_utils::env_string("PLEX_PG_HOST") {
-        write_str_to_buf(&mut cfg.host, &v);
-    }
-
-    if let Some(v) = env_utils::env_string("PLEX_PG_PORT") {
-        cfg.port = v.trim().parse::<i32>().unwrap_or(0);
-    }
-
-    if let Some(v) = env_utils::env_string("PLEX_PG_DATABASE") {
-        write_str_to_buf(&mut cfg.database, &v);
-    }
-
-    if let Some(v) = env_utils::env_string("PLEX_PG_USER") {
-        write_str_to_buf(&mut cfg.user, &v);
-    }
-
-    if let Some(v) = env_utils::env_string("PLEX_PG_PASSWORD") {
-        write_str_to_buf(&mut cfg.password, &v);
-    }
-
-    if let Some(v) = env_utils::env_string("PLEX_PG_SCHEMA") {
-        write_str_to_buf(&mut cfg.schema, &v);
-    }
+    let env_cfg = PgEnvConfig::from_env();
+    env_cfg.write_to_conn_config(cfg);
 
     1
 }

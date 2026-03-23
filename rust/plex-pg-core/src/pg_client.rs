@@ -25,6 +25,7 @@ pub use crate::pg_client_stmt_cache::{
     rust_stmt_cache_add, rust_stmt_cache_clear, rust_stmt_cache_clear_local,
     rust_stmt_cache_drop, rust_stmt_cache_lookup,
 };
+use crate::pg_config::PgEnvConfig;
 
 const PG_DIAG_SQLSTATE: c_int = b'C' as c_int;
 
@@ -524,34 +525,13 @@ pub(crate) fn pool() -> &'static PoolManager {
 
 // ─── Config Helpers ─────────────────────────────────────────────────────────
 
-#[derive(Clone)]
-struct ConnConfig {
-    host: String,
-    port: i32,
-    database: String,
-    user: String,
-    password: String,
-    schema: String,
-}
+type ConnConfig = PgEnvConfig;
 
 static CONN_CONFIG: OnceLock<ConnConfig> = OnceLock::new();
 static CLIENT_INIT: Once = Once::new();
 
 fn load_conn_config() -> ConnConfig {
-    fn env(name: &str) -> String {
-        env_utils::env_string(name).unwrap_or_default()
-    }
-    let port = env_utils::env_string("PLEX_PG_PORT")
-        .and_then(|v| v.trim().parse::<i32>().ok())
-        .unwrap_or(0);
-    ConnConfig {
-        host: env("PLEX_PG_HOST"),
-        port,
-        database: env("PLEX_PG_DATABASE"),
-        user: env("PLEX_PG_USER"),
-        password: env("PLEX_PG_PASSWORD"),
-        schema: env("PLEX_PG_SCHEMA"),
-    }
+    PgEnvConfig::from_env()
 }
 
 fn conn_config() -> &'static ConnConfig {
