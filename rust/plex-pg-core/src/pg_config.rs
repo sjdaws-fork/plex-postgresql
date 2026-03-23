@@ -7,6 +7,7 @@ use std::os::raw::{c_char, c_int};
 use std::sync::Once;
 
 use crate::db_interpose_helpers::cstr_to_str_or_empty;
+use crate::env_utils;
 
 // ─── Internal pure helpers ────────────────────────────────────────────────────
 
@@ -97,7 +98,7 @@ pub(crate) fn should_skip_sql_str(sql: &str) -> bool {
     // C) Debug override: skip any SQL containing configured substring(s).
     // Comma-separated, case-insensitive. Example:
     //   PLEX_PG_DEBUG_SKIP_CONTAINS=plugins,tags
-    if let Ok(skip_contains) = std::env::var("PLEX_PG_DEBUG_SKIP_CONTAINS") {
+    if let Some(skip_contains) = env_utils::env_string("PLEX_PG_DEBUG_SKIP_CONTAINS") {
         for token in skip_contains.split(',') {
             let t = token.trim().to_lowercase();
             if !t.is_empty() && full_lower.contains(&t) {
@@ -167,7 +168,7 @@ const MAX_DELAY_MS: i32 = 60_000;
 /// Return the configured retry delays.  Uses PLEX_PG_RETRY_DELAYS env var if
 /// present and parseable; otherwise falls back to `DEFAULT_DELAYS`.
 pub(crate) fn get_retry_delays_vec() -> Vec<i32> {
-    if let Ok(val) = std::env::var("PLEX_PG_RETRY_DELAYS") {
+    if let Some(val) = env_utils::env_string("PLEX_PG_RETRY_DELAYS") {
         let parsed = parse_delay_list(&val, MAX_DELAYS, MAX_DELAY_MS);
         if !parsed.is_empty() {
             return parsed;
@@ -374,27 +375,27 @@ pub extern "C" fn pg_config_load(config: *mut PgConnConfig) -> i32 {
     cfg.password.fill(0);
     cfg.schema.fill(0);
 
-    if let Ok(v) = std::env::var("PLEX_PG_HOST") {
+    if let Some(v) = env_utils::env_string("PLEX_PG_HOST") {
         write_str_to_buf(&mut cfg.host, &v);
     }
 
-    if let Ok(v) = std::env::var("PLEX_PG_PORT") {
+    if let Some(v) = env_utils::env_string("PLEX_PG_PORT") {
         cfg.port = v.trim().parse::<i32>().unwrap_or(0);
     }
 
-    if let Ok(v) = std::env::var("PLEX_PG_DATABASE") {
+    if let Some(v) = env_utils::env_string("PLEX_PG_DATABASE") {
         write_str_to_buf(&mut cfg.database, &v);
     }
 
-    if let Ok(v) = std::env::var("PLEX_PG_USER") {
+    if let Some(v) = env_utils::env_string("PLEX_PG_USER") {
         write_str_to_buf(&mut cfg.user, &v);
     }
 
-    if let Ok(v) = std::env::var("PLEX_PG_PASSWORD") {
+    if let Some(v) = env_utils::env_string("PLEX_PG_PASSWORD") {
         write_str_to_buf(&mut cfg.password, &v);
     }
 
-    if let Ok(v) = std::env::var("PLEX_PG_SCHEMA") {
+    if let Some(v) = env_utils::env_string("PLEX_PG_SCHEMA") {
         write_str_to_buf(&mut cfg.schema, &v);
     }
 

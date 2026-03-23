@@ -7,6 +7,7 @@ use std::sync::{Mutex, Once};
 
 use crate::db_interpose_common::{tls_column_type_calls_ptr, tls_in_resolve_tables_ptr, tls_last_query_ptr};
 use crate::db_interpose_conn_utils::{cstr_prefix, cstr_to_string_or, log_debug, log_error, log_info, PthreadMutexGuard};
+use crate::env_utils;
 use crate::db_interpose_trace_helpers::{list_any_token_in_haystack, list_contains_idx};
 use crate::db_interpose_value_helpers::{
     pg_oid_to_sqlite_type_impl, pg_text_to_double_impl, pg_text_to_int64_impl, pg_text_to_int_impl,
@@ -2657,14 +2658,9 @@ pub extern "C" fn rust_my_sqlite3_column_value(p_stmt: *mut sqlite3_stmt, idx: c
         return unsafe { orig_sqlite3_column_value.map(|f| f(p_stmt, idx)).unwrap_or(ptr::null_mut()) };
     }
 
-    if let Ok(val) = std::env::var("PLEX_PG_DISABLE_COLUMN_VALUE") {
-        if !val.is_empty() {
-            let first = val.as_bytes()[0];
-            if matches!(first, b'1' | b'y' | b'Y' | b't' | b'T') {
-                log_error("COLUMN_VALUE: disabled via PLEX_PG_DISABLE_COLUMN_VALUE");
-                return ptr::null_mut();
-            }
-        }
+    if env_utils::env_truthy_str("PLEX_PG_DISABLE_COLUMN_VALUE") {
+        log_error("COLUMN_VALUE: disabled via PLEX_PG_DISABLE_COLUMN_VALUE");
+        return ptr::null_mut();
     }
 
     let _guard = unsafe { PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _) };

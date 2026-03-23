@@ -1,6 +1,7 @@
-use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+
+use crate::env_utils;
 
 pub(crate) fn list_contains_idx(list: &str, idx: i32) -> bool {
     if list.is_empty() {
@@ -44,10 +45,7 @@ pub(crate) fn trim_first_line(line: &str) -> Option<String> {
 }
 
 pub(crate) fn getenv_nonempty(key: &str) -> Option<String> {
-    match env::var(key) {
-        Ok(v) if !v.is_empty() => Some(v),
-        _ => None,
-    }
+    env_utils::env_string(key).filter(|v| !v.is_empty())
 }
 
 pub(crate) fn read_first_line_trimmed(path: &str) -> Option<String> {

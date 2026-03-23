@@ -31,6 +31,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::env_utils;
+
 // ─── Enabled state ────────────────────────────────────────────────────────────
 //
 // -1 = not yet checked, 0 = off, 1 = track, 2 = track+trace
@@ -47,12 +49,12 @@ fn shim_alloc_enabled() -> i32 {
         return v;
     }
     // First call: inspect environment variables and cache the result.
-    let result = if std::env::var("PLEX_PG_ALLOC_TRACE")
+    let result = if env_utils::env_string("PLEX_PG_ALLOC_TRACE")
         .map(|v| v.starts_with('1'))
         .unwrap_or(false)
     {
         2 // trace implies track
-    } else if std::env::var("PLEX_PG_ALLOC_TRACK")
+    } else if env_utils::env_string("PLEX_PG_ALLOC_TRACK")
         .map(|v| v.starts_with('1'))
         .unwrap_or(false)
     {
@@ -498,7 +500,7 @@ fn shim_guard_alloc_enabled() -> bool {
     if cached != -1 {
         return cached == 1;
     }
-    let enabled = std::env::var("PLEX_PG_GUARD_ALLOC")
+    let enabled = env_utils::env_string("PLEX_PG_GUARD_ALLOC")
         .map(|v| !v.is_empty() && v != "0")
         .unwrap_or(false);
     SHIM_GUARD_ENABLED.store(if enabled { 1 } else { 0 }, Ordering::Relaxed);

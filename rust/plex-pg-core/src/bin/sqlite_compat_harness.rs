@@ -1,6 +1,4 @@
 
-#![allow(clippy::enum_variant_names)]
-
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,12 +10,13 @@ use regex::Regex;
 use rusqlite::{types::ValueRef, Connection};
 
 use plex_pg_core::translate;
+use plex_pg_core::env_utils;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SortMode {
-    NoSort,
-    RowSort,
-    ValueSort,
+    Unsorted,
+    Row,
+    Value,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -156,11 +155,11 @@ fn collect_suite_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
 fn parse_sort_mode(header: &str) -> SortMode {
     let lower = header.to_ascii_lowercase();
     if lower.contains("rowsort") {
-        SortMode::RowSort
+        SortMode::Row
     } else if lower.contains("valuesort") {
-        SortMode::ValueSort
+        SortMode::Value
     } else {
-        SortMode::NoSort
+        SortMode::Unsorted
     }
 }
 
@@ -274,11 +273,11 @@ fn canonicalize_scalar(raw: &str) -> String {
 fn canonicalize_rows(rows: Vec<Vec<String>>, sort: SortMode) -> Vec<String> {
     let unit = '\u{001f}';
     match sort {
-        SortMode::NoSort => rows
+        SortMode::Unsorted => rows
             .into_iter()
             .map(|r| r.join(&unit.to_string()))
             .collect(),
-        SortMode::RowSort => {
+        SortMode::Row => {
             let mut out: Vec<String> = rows
                 .into_iter()
                 .map(|r| r.join(&unit.to_string()))
@@ -286,7 +285,7 @@ fn canonicalize_rows(rows: Vec<Vec<String>>, sort: SortMode) -> Vec<String> {
             out.sort();
             out
         }
-        SortMode::ValueSort => {
+        SortMode::Value => {
             let mut vals: Vec<String> = rows.into_iter().flatten().collect();
             vals.sort();
             vec![vals.join(&unit.to_string())]
@@ -502,14 +501,14 @@ fn build_pg_url(cli: &Cli) -> String {
     if let Some(v) = &cli.pg_url {
         return v.clone();
     }
-    if let Ok(v) = env::var("SLT_PG_URL") {
+    if let Some(v) = env_utils::env_string("SLT_PG_URL") {
         return v;
     }
-    let host = env::var("PLEX_PG_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = env::var("PLEX_PG_PORT").unwrap_or_else(|_| "5432".to_string());
-    let db = env::var("PLEX_PG_DATABASE").unwrap_or_else(|_| "plex".to_string());
-    let user = env::var("PLEX_PG_USER").unwrap_or_else(|_| "plex".to_string());
-    let pass = env::var("PLEX_PG_PASSWORD").unwrap_or_else(|_| "plex".to_string());
+    let host = env_utils::env_string_or_else("PLEX_PG_HOST", || "127.0.0.1".to_string());
+    let port = env_utils::env_string_or_else("PLEX_PG_PORT", || "5432".to_string());
+    let db = env_utils::env_string_or_else("PLEX_PG_DATABASE", || "plex".to_string());
+    let user = env_utils::env_string_or_else("PLEX_PG_USER", || "plex".to_string());
+    let pass = env_utils::env_string_or_else("PLEX_PG_PASSWORD", || "plex".to_string());
     format!(
         "host={} port={} dbname={} user={} password={}",
         host, port, db, user, pass
@@ -520,7 +519,7 @@ fn build_pg_schema(cli: &Cli) -> String {
     if let Some(v) = &cli.pg_schema {
         return v.clone();
     }
-    if let Ok(v) = env::var("SLT_PG_SCHEMA") {
+    if let Some(v) = env_utils::env_string("SLT_PG_SCHEMA") {
         return v;
     }
     let now = SystemTime::now()

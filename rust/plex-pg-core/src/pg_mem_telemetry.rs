@@ -16,6 +16,8 @@ use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::env_utils;
+
 // ─── Counter definitions ──────────────────────────────────────────────────────
 
 /// Number of tracked memory counter types.
@@ -108,7 +110,7 @@ pub fn is_enabled() -> bool {
         return v == 1;
     }
     // First call: read env var and cache.
-    let result = std::env::var("PLEX_PG_MEM_TELEMETRY")
+    let result = env_utils::env_string("PLEX_PG_MEM_TELEMETRY")
         .map(|s| s.starts_with('1'))
         .unwrap_or(false);
     let flag: i32 = if result { 1 } else { 0 };

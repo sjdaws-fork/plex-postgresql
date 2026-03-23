@@ -40,6 +40,8 @@ use std::os::raw::c_char;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI32, Ordering};
 
+use crate::env_utils;
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /// Number of cached queries per thread.
@@ -300,10 +302,9 @@ thread_local! {
 ///
 /// Disabled when `PLEX_PG_DISABLE_QUERY_CACHE` is set to anything except "0".
 static QUERY_CACHE_DISABLED: LazyLock<bool> = LazyLock::new(|| {
-    match std::env::var("PLEX_PG_DISABLE_QUERY_CACHE") {
-        Ok(v) => !v.is_empty() && v != "0",
-        Err(_) => false,
-    }
+    env_utils::env_string("PLEX_PG_DISABLE_QUERY_CACHE")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
 });
 
 #[inline]

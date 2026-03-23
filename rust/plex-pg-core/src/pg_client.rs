@@ -13,6 +13,7 @@ use std::os::raw::{c_char, c_int, c_void};
 
 use crate::db_interpose_conn_utils::{log_debug, log_error, log_info, PthreadMutexGuard};
 use crate::db_interpose_helpers::cstr_to_str_or_empty;
+use crate::env_utils;
 use crate::ffi_types::{sqlite3, PgConnection};
 use crate::libpq_helpers::{
     rust_pg_align_idle_timeout_with_server, rust_pg_probe_max_connections, rust_pq_clear,
@@ -538,10 +539,9 @@ static CLIENT_INIT: Once = Once::new();
 
 fn load_conn_config() -> ConnConfig {
     fn env(name: &str) -> String {
-        std::env::var(name).unwrap_or_default()
+        env_utils::env_string(name).unwrap_or_default()
     }
-    let port = std::env::var("PLEX_PG_PORT")
-        .ok()
+    let port = env_utils::env_string("PLEX_PG_PORT")
         .and_then(|v| v.trim().parse::<i32>().ok())
         .unwrap_or(0);
     ConnConfig {
@@ -559,22 +559,16 @@ fn conn_config() -> &'static ConnConfig {
 }
 
 fn parse_positive_env_or_default(name: &str, default_value: i32) -> i32 {
-    match std::env::var(name) {
-        Ok(v) => v
-            .trim()
-            .parse::<i32>()
-            .ok()
-            .filter(|n| *n > 0)
-            .unwrap_or(default_value),
-        Err(_) => default_value,
-    }
+    env_utils::env_string(name)
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(default_value)
 }
 
 fn env_nonzero(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => !v.is_empty() && v != "0",
-        Err(_) => false,
-    }
+    env_utils::env_string(name)
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
 }
 
 fn write_str_to_cbuf(buf: &mut [c_char], src: &str) {
@@ -1980,7 +1974,7 @@ pub extern "C" fn rust_pg_client_init() {
         }
 
         let mut idle_timeout = 300;
-        if let Ok(val) = std::env::var("PLEX_PG_IDLE_TIMEOUT") {
+        if let Some(val) = env_utils::env_string("PLEX_PG_IDLE_TIMEOUT") {
             if let Ok(v) = val.trim().parse::<i32>() {
                 if v >= 10 {
                     idle_timeout = v;

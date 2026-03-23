@@ -1,5 +1,3 @@
-#![allow(clippy::type_complexity)]
-
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_uchar, c_void};
 use std::mem::size_of;
@@ -227,203 +225,142 @@ static SYMBOLS_VERIFIED: AtomicI32 = AtomicI32::new(0);
 pub static mut sqlite_handle: *mut c_void = ptr::null_mut();
 
 #[no_mangle]
-pub static mut orig_sqlite3_open: Option<unsafe extern "C" fn(*const c_char, *mut *mut sqlite3) -> c_int> = None;
+pub static mut orig_sqlite3_open: Option<Sqlite3OpenFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_open_v2: Option<
-    unsafe extern "C" fn(*const c_char, *mut *mut sqlite3, c_int, *const c_char) -> c_int,
-> = None;
+pub static mut orig_sqlite3_open_v2: Option<Sqlite3OpenV2Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_close: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int> = None;
+pub static mut orig_sqlite3_close: Option<Sqlite3DbToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_close_v2: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int> = None;
+pub static mut orig_sqlite3_close_v2: Option<Sqlite3DbToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_exec: Option<
-    unsafe extern "C" fn(*mut sqlite3, *const c_char, Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>, *mut c_void, *mut *mut c_char) -> c_int,
-> = None;
+pub static mut orig_sqlite3_exec: Option<Sqlite3ExecFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_changes: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int> = None;
+pub static mut orig_sqlite3_changes: Option<Sqlite3DbToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_changes64: Option<unsafe extern "C" fn(*mut sqlite3) -> i64> = None;
+pub static mut orig_sqlite3_changes64: Option<Sqlite3DbToI64Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_last_insert_rowid: Option<unsafe extern "C" fn(*mut sqlite3) -> i64> = None;
+pub static mut orig_sqlite3_last_insert_rowid: Option<Sqlite3DbToI64Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_get_table: Option<
-    unsafe extern "C" fn(
-        *mut sqlite3,
-        *const c_char,
-        *mut *mut *mut c_char,
-        *mut c_int,
-        *mut c_int,
-        *mut *mut c_char,
-    ) -> c_int,
-> = None;
+pub static mut orig_sqlite3_get_table: Option<Sqlite3GetTableFn> = None;
 
 #[no_mangle]
-pub static mut orig_sqlite3_errmsg: Option<unsafe extern "C" fn(*mut sqlite3) -> *const c_char> = None;
+pub static mut orig_sqlite3_errmsg: Option<Sqlite3DbToCStrFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_errcode: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int> = None;
+pub static mut orig_sqlite3_errcode: Option<Sqlite3DbToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_extended_errcode: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int> = None;
+pub static mut orig_sqlite3_extended_errcode: Option<Sqlite3DbToIntFn> = None;
 
 #[no_mangle]
-pub static mut orig_sqlite3_prepare: Option<
-    unsafe extern "C" fn(*mut sqlite3, *const c_char, c_int, *mut *mut sqlite3_stmt, *mut *const c_char) -> c_int,
-> = None;
+pub static mut orig_sqlite3_prepare: Option<Sqlite3PrepareFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_prepare_v2: Option<
-    unsafe extern "C" fn(*mut sqlite3, *const c_char, c_int, *mut *mut sqlite3_stmt, *mut *const c_char) -> c_int,
-> = None;
+pub static mut orig_sqlite3_prepare_v2: Option<Sqlite3PrepareFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_prepare_v3: Option<
-    unsafe extern "C" fn(
-        *mut sqlite3,
-        *const c_char,
-        c_int,
-        c_uint,
-        *mut *mut sqlite3_stmt,
-        *mut *const c_char,
-    ) -> c_int,
-> = None;
+pub static mut orig_sqlite3_prepare_v3: Option<Sqlite3PrepareV3Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_prepare16_v2: Option<
-    unsafe extern "C" fn(*mut sqlite3, *const c_void, c_int, *mut *mut sqlite3_stmt, *mut *const c_void) -> c_int,
-> = None;
+pub static mut orig_sqlite3_prepare16_v2: Option<Sqlite3Prepare16Fn> = None;
 
 #[no_mangle]
-pub static mut orig_sqlite3_bind_int: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, c_int) -> c_int> = None;
+pub static mut orig_sqlite3_bind_int: Option<Sqlite3BindIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_int64: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, i64) -> c_int> = None;
+pub static mut orig_sqlite3_bind_int64: Option<Sqlite3BindInt64Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_double: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, f64) -> c_int> = None;
+pub static mut orig_sqlite3_bind_double: Option<Sqlite3BindDoubleFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_text: Option<
-    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_char, c_int, *mut c_void) -> c_int,
-> = None;
+pub static mut orig_sqlite3_bind_text: Option<Sqlite3BindTextFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_text64: Option<
-    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_char, u64, *mut c_void, c_uchar) -> c_int,
-> = None;
+pub static mut orig_sqlite3_bind_text64: Option<Sqlite3BindText64Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_blob: Option<
-    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_void, c_int, *mut c_void) -> c_int,
-> = None;
+pub static mut orig_sqlite3_bind_blob: Option<Sqlite3BindBlobFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_blob64: Option<
-    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_void, u64, *mut c_void) -> c_int,
-> = None;
+pub static mut orig_sqlite3_bind_blob64: Option<Sqlite3BindBlob64Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_value: Option<
-    unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const crate::ffi_types::sqlite3_value) -> c_int,
-> = None;
+pub static mut orig_sqlite3_bind_value: Option<Sqlite3BindValueFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_null: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int> = None;
+pub static mut orig_sqlite3_bind_null: Option<Sqlite3BindNullFn> = None;
 
 #[no_mangle]
-pub static mut orig_sqlite3_step: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_step: Option<Sqlite3StmtToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_reset: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_reset: Option<Sqlite3StmtToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_finalize: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_finalize: Option<Sqlite3StmtToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_clear_bindings: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_clear_bindings: Option<Sqlite3StmtToIntFn> = None;
 
 #[no_mangle]
-pub static mut orig_sqlite3_column_count: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_column_count: Option<Sqlite3StmtToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_type: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int> = None;
+pub static mut orig_sqlite3_column_type: Option<Sqlite3StmtIndexToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_int: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int> = None;
+pub static mut orig_sqlite3_column_int: Option<Sqlite3StmtIndexToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_int64: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> i64> = None;
+pub static mut orig_sqlite3_column_int64: Option<Sqlite3StmtIndexToI64Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_double: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> f64> = None;
+pub static mut orig_sqlite3_column_double: Option<Sqlite3StmtIndexToDoubleFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_text: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_uchar> =
-    None;
+pub static mut orig_sqlite3_column_text: Option<Sqlite3StmtIndexToTextFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_blob: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_void> =
-    None;
+pub static mut orig_sqlite3_column_blob: Option<Sqlite3StmtIndexToBlobFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_bytes: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int> = None;
+pub static mut orig_sqlite3_column_bytes: Option<Sqlite3StmtIndexToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_name: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char> =
-    None;
+pub static mut orig_sqlite3_column_name: Option<Sqlite3StmtIndexToNameFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_decltype: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char> =
-    None;
+pub static mut orig_sqlite3_column_decltype: Option<Sqlite3StmtIndexToNameFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_column_value: Option<
-    unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *mut crate::ffi_types::sqlite3_value,
-> = None;
+pub static mut orig_sqlite3_column_value: Option<Sqlite3StmtIndexToValueFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_data_count: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_data_count: Option<Sqlite3StmtToIntFn> = None;
 
 #[no_mangle]
-pub static mut orig_sqlite3_value_type: Option<unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> c_int> =
-    None;
+pub static mut orig_sqlite3_value_type: Option<Sqlite3ValueToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_value_text: Option<
-    unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> *const c_uchar,
-> = None;
+pub static mut orig_sqlite3_value_text: Option<Sqlite3ValueToTextFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_value_int: Option<unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> c_int> =
-    None;
+pub static mut orig_sqlite3_value_int: Option<Sqlite3ValueToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_value_int64: Option<unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> i64> =
-    None;
+pub static mut orig_sqlite3_value_int64: Option<Sqlite3ValueToI64Fn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_value_double: Option<unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> f64> =
-    None;
+pub static mut orig_sqlite3_value_double: Option<Sqlite3ValueToDoubleFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_value_bytes: Option<unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> c_int> =
-    None;
+pub static mut orig_sqlite3_value_bytes: Option<Sqlite3ValueToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_value_blob: Option<unsafe extern "C" fn(*mut crate::ffi_types::sqlite3_value) -> *const c_void> =
-    None;
+pub static mut orig_sqlite3_value_blob: Option<Sqlite3ValueToBlobFn> = None;
 
 #[no_mangle]
-pub static mut orig_sqlite3_create_collation: Option<
-    unsafe extern "C" fn(*mut sqlite3, *const c_char, c_int, *mut c_void, CollationCompare) -> c_int,
-> = None;
+pub static mut orig_sqlite3_create_collation: Option<Sqlite3CreateCollationFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_create_collation_v2: Option<
-    unsafe extern "C" fn(*mut sqlite3, *const c_char, c_int, *mut c_void, CollationCompare, CollationDestroy) -> c_int,
-> = None;
+pub static mut orig_sqlite3_create_collation_v2: Option<Sqlite3CreateCollationV2Fn> = None;
 
 #[no_mangle]
-pub static mut orig_sqlite3_free: Option<unsafe extern "C" fn(*mut c_void)> = None;
+pub static mut orig_sqlite3_free: Option<Sqlite3FreeFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_malloc: Option<unsafe extern "C" fn(c_int) -> *mut c_void> = None;
+pub static mut orig_sqlite3_malloc: Option<Sqlite3MallocFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_db_handle: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut sqlite3> = None;
+pub static mut orig_sqlite3_db_handle: Option<Sqlite3StmtToDbFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_sql: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *const c_char> = None;
+pub static mut orig_sqlite3_sql: Option<Sqlite3StmtToCStrFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_expanded_sql: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut c_char> = None;
+pub static mut orig_sqlite3_expanded_sql: Option<Sqlite3StmtToMutCStrFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_parameter_count: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_bind_parameter_count: Option<Sqlite3StmtToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_parameter_index: Option<unsafe extern "C" fn(*mut sqlite3_stmt, *const c_char) -> c_int> =
-    None;
+pub static mut orig_sqlite3_bind_parameter_index: Option<Sqlite3StmtNameToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_stmt_readonly: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_stmt_readonly: Option<Sqlite3StmtToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_stmt_busy: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int> = None;
+pub static mut orig_sqlite3_stmt_busy: Option<Sqlite3StmtToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_stmt_status: Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, c_int) -> c_int> = None;
+pub static mut orig_sqlite3_stmt_status: Option<Sqlite3StmtIdx2ToIntFn> = None;
 #[no_mangle]
-pub static mut orig_sqlite3_bind_parameter_name: Option<
-    unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char,
-> = None;
+pub static mut orig_sqlite3_bind_parameter_name: Option<Sqlite3StmtIndexToNameFn> = None;
 
 #[no_mangle]
-pub static mut shim_sqlite3_prepare_v2: Option<
-    unsafe extern "C" fn(*mut sqlite3, *const c_char, c_int, *mut *mut sqlite3_stmt, *mut *const c_char) -> c_int,
-> = None;
+pub static mut shim_sqlite3_prepare_v2: Option<Sqlite3PrepareFn> = None;
 #[no_mangle]
-pub static mut shim_sqlite3_errmsg: Option<unsafe extern "C" fn(*mut sqlite3) -> *const c_char> = None;
+pub static mut shim_sqlite3_errmsg: Option<Sqlite3DbToCStrFn> = None;
 #[no_mangle]
-pub static mut shim_sqlite3_errcode: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int> = None;
+pub static mut shim_sqlite3_errcode: Option<Sqlite3DbToIntFn> = None;
 
 #[no_mangle]
 pub static mut worker_thread: libc::pthread_t = 0 as libc::pthread_t;

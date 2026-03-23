@@ -22,6 +22,8 @@ use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::env_utils;
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_LOG_FILE: &str = "/tmp/plex_redirect_pg.log";
@@ -95,7 +97,7 @@ fn logger() -> &'static Mutex<LoggerState> {
 }
 
 fn tmpdir_log_file_path() -> Option<String> {
-    let tmpdir = std::env::var("TMPDIR").ok()?;
+    let tmpdir = env_utils::env_string("TMPDIR")?;
     let trimmed = tmpdir.trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
@@ -311,18 +313,17 @@ pub extern "C" fn rust_logging_init() {
     // Ensure we only initialise once.
     INITIALIZED.get_or_init(|| {
         // Parse env vars.
-        let level = std::env::var("PLEX_PG_LOG_LEVEL")
+        let level = env_utils::env_string("PLEX_PG_LOG_LEVEL")
             .map(|v| parse_log_level(&v))
             .unwrap_or(LEVEL_INFO);
 
-        let requested_path =
-            std::env::var("PLEX_PG_LOG_FILE").unwrap_or_else(|_| default_log_file_path());
+        let requested_path = env_utils::env_string_or_else("PLEX_PG_LOG_FILE", default_log_file_path);
 
-        let max_size = std::env::var("PLEX_PG_LOG_MAX_SIZE")
+        let max_size = env_utils::env_string("PLEX_PG_LOG_MAX_SIZE")
             .map(|v| parse_max_size(&v))
             .unwrap_or(DEFAULT_MAX_SIZE);
 
-        let truncate_on_start = std::env::var("PLEX_PG_LOG_TRUNCATE_ON_START")
+        let truncate_on_start = env_utils::env_string("PLEX_PG_LOG_TRUNCATE_ON_START")
             .map(|v| parse_bool(&v))
             .unwrap_or(false);
 

@@ -22,6 +22,9 @@ pub struct PthreadMutexGuard {
 }
 
 impl PthreadMutexGuard {
+    /// # Safety
+    /// `mutex` must be a valid, initialized pthread mutex pointer.
+    /// The caller must ensure the mutex outlives the guard.
     pub unsafe fn lock(mutex: *mut libc::pthread_mutex_t) -> Self {
         libc::pthread_mutex_lock(mutex);
         Self {
@@ -30,6 +33,9 @@ impl PthreadMutexGuard {
         }
     }
 
+    /// # Safety
+    /// `mutex` must be a valid, initialized pthread mutex pointer that is
+    /// already locked by the current thread.
     pub unsafe fn adopt(mutex: *mut libc::pthread_mutex_t) -> Self {
         Self {
             mutex,
@@ -37,6 +43,8 @@ impl PthreadMutexGuard {
         }
     }
 
+    /// # Safety
+    /// The guard must currently hold the lock and `mutex` must still be valid.
     pub unsafe fn unlock(&mut self) {
         if self.locked {
             libc::pthread_mutex_unlock(self.mutex);

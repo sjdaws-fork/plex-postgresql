@@ -16,7 +16,6 @@
     clippy::manual_strip,
     clippy::manual_unwrap_or,
     clippy::missing_const_for_thread_local,
-    clippy::missing_safety_doc,
     clippy::needless_range_loop,
     clippy::not_unsafe_ptr_arg_deref,
     clippy::ptr_eq,
@@ -223,8 +222,8 @@ pub fn translate(sqlite_sql: &str) -> Result<Translation, String> {
         .collect::<Vec<_>>()
         .join("; ");
 
-    let validation_mode = parse_output_validation_mode(std::env::var(VALIDATE_MODE_ENV).ok().as_deref());
-    let sample_pct = parse_sample_pct(std::env::var(VALIDATE_SAMPLE_PCT_ENV).ok().as_deref());
+    let validation_mode = parse_output_validation_mode(env_utils::env_string(VALIDATE_MODE_ENV).as_deref());
+    let sample_pct = parse_sample_pct(env_utils::env_string(VALIDATE_SAMPLE_PCT_ENV).as_deref());
     if should_validate_output(validation_mode, &sql, sample_pct) {
         validate_postgres_output(&sql)?;
     }

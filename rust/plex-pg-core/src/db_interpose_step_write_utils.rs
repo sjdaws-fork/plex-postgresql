@@ -7,6 +7,7 @@ use crate::db_interpose_conn_utils::{
     apply_pg_session_settings, connect_new, cstr_prefix, cstr_to_string_or, log_debug, log_error,
     log_info, PthreadMutexGuard, PgConnConfig,
 };
+use crate::env_utils;
 use crate::ffi_types::{sqlite3, sqlite3_stmt, PgConnection, PgStmt, STMT_NAME_LEN};
 use crate::libpq_helpers::PGresult;
 
@@ -68,8 +69,7 @@ fn skip_stats_resources_update() -> bool {
     if cached != -1 {
         return cached == 1;
     }
-    let flag = std::env::var("PLEX_PG_SKIP_STATS_RESOURCES_UPDATE")
-        .ok()
+    let flag = env_utils::env_string("PLEX_PG_SKIP_STATS_RESOURCES_UPDATE")
         .and_then(|v| v.chars().next())
         .map(|c| c != '0')
         .unwrap_or(false);

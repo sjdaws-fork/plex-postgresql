@@ -87,6 +87,9 @@ fn setup_exception_catcher_if_enabled() {
 }
 
 #[no_mangle]
+/// # Safety
+/// This is an ABI-level interposition hook for C++ exceptions.
+/// Callers must follow the platform C++ ABI for `__cxa_throw`.
 pub unsafe extern "C" fn __cxa_throw(
     thrown_exception: *mut c_void,
     tinfo: *mut c_void,
@@ -122,6 +125,9 @@ unsafe fn install_signal_handler(signum: c_int) {
 }
 
 #[no_mangle]
+/// # Safety
+/// This is an ABI-level interposition hook for `sigaction`. The caller must
+/// provide valid pointers (or NULL where allowed by the libc API).
 pub unsafe extern "C" fn sigaction(
     signum: c_int,
     act: *const libc::sigaction,
@@ -380,8 +386,7 @@ unsafe extern "C" fn shim_init() {
         },
         || {
             if !env_utils::env_truthy(b"PLEX_PG_NO_INIT_DELAY\0") {
-                let delay_ms = std::env::var("PLEX_PG_INIT_DELAY_MS")
-                    .ok()
+                let delay_ms = env_utils::env_string("PLEX_PG_INIT_DELAY_MS")
                     .and_then(|s| s.parse::<i32>().ok())
                     .unwrap_or(200);
                 if delay_ms > 0 {

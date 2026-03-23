@@ -32,3 +32,14 @@ pub fn env_truthy_str(name: &str) -> bool {
     };
     matches!(first, b'1' | b'y' | b'Y' | b't' | b'T')
 }
+
+pub fn env_string(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+pub fn env_string_or_else<F>(name: &str, fallback: F) -> String
+where
+    F: FnOnce() -> String,
+{
+    std::env::var(name).unwrap_or_else(|_| fallback())
+}

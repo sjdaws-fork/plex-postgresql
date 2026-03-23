@@ -1,5 +1,3 @@
-#![allow(clippy::missing_safety_doc, clippy::unnecessary_cast)]
-
 use std::mem::size_of;
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -270,7 +268,7 @@ unsafe fn perform_rebinding_with_section(
 ) {
     let indirect_symbol_indices = indirect_symtab.add((*section).reserved1 as usize);
     let indirect_symbol_bindings =
-        (slide as isize + (*section).addr as isize) as *mut *mut c_void;
+        (slide + (*section).addr as isize) as *mut *mut c_void;
 
     let count = (*section).size as usize / size_of::<*mut c_void>();
     for i in 0..count {
@@ -302,7 +300,7 @@ unsafe fn perform_rebinding_with_section(
                     let err = vm_protect(
                         mach_task_self(),
                         indirect_symbol_bindings as u64,
-                        (*section).size as u64,
+                        (*section).size,
                         0,
                         VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY,
                     );
@@ -361,7 +359,7 @@ unsafe fn rebind_symbols_for_image(
         return;
     }
 
-    let linkedit_base = (slide as isize + (*linkedit_segment).vmaddr as isize
+    let linkedit_base = (slide + (*linkedit_segment).vmaddr as isize
         - (*linkedit_segment).fileoff as isize) as usize;
     let symtab = (linkedit_base + (*symtab_cmd).symoff as usize) as *const Nlist;
     let strtab = (linkedit_base + (*symtab_cmd).stroff as usize) as *const c_char;
@@ -412,6 +410,10 @@ unsafe fn rebind_symbols_image(
     retval
 }
 
+/// # Safety
+/// `rebindings` must point to valid, writable rebinding entries for the
+/// duration of the call. The caller must ensure the supplied symbol names
+/// are null-terminated and remain valid until rebinding completes.
 pub unsafe fn rebind_symbols(rebindings: &mut [Rebinding]) -> c_int {
     let retval = prepend_rebindings(std::ptr::addr_of_mut!(REBINDINGS_HEAD), rebindings.as_ptr(), rebindings.len());
     if retval < 0 {
