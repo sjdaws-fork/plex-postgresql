@@ -1,0 +1,6 @@
+#ifndef PLEX_PG_COMPAT_WRAPPER_EXCEPTION_WHAT_H
+#define PLEX_PG_COMPAT_WRAPPER_EXCEPTION_WHAT_H
+
+#include "../include/legacy/exception_what.h"
+
+#endif /* PLEX_PG_COMPAT_WRAPPER_EXCEPTION_WHAT_H */

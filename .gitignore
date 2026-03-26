@@ -7,6 +7,7 @@ monitoring/
 *.dylib
 *.a
 *.so
+target/
 
 # macOS
 .DS_Store
@@ -119,3 +120,7 @@ schema/*_old.sql
 
 # Release builds (CI handles this)
 /release/
+
+# Local translator planning docs (kept out of git by request)
+/SUPPORTED_SQLITE_SUBSET.md
+/KNOWN_GAPS.md

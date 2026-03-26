@@ -1,0 +1,234 @@
+use super::*;
+
+unsafe fn prepare_shadow_stmt(
+    db: *mut sqlite3,
+    sql: *const c_char,
+    pp_stmt: *mut *mut sqlite3_stmt,
+    pz_tail: *mut *const c_char,
+) -> c_int {
+    let rc = if let Some(prepare) = shim_sqlite3_prepare_v2 {
+        prepare(db, sql, -1, pp_stmt, pz_tail)
+    } else {
+        if !pp_stmt.is_null() {
+            *pp_stmt = ptr::null_mut();
+        }
+        SQLITE_ERROR
+    };
+
+    if rc == SQLITE_OK && !pp_stmt.is_null() && !(*pp_stmt).is_null() {
+        pg_note_stmt_prepare(*pp_stmt, sql);
+    }
+
+    rc
+}
+
+pub(super) unsafe fn maybe_delegate_prepare_to_worker(
+    from_worker: c_int,
+    stack_remaining: isize,
+    db: *mut sqlite3,
+    z_sql: *const c_char,
+    n_byte: c_int,
+    pp_stmt: *mut *mut sqlite3_stmt,
+    pz_tail: *mut *const c_char,
+    depth_guard: &mut PrepareDepthGuard,
+) -> Option<c_int> {
+    let worker_active = std::ptr::read_volatile(std::ptr::addr_of!(worker_running)) != 0;
+    if from_worker == 0
+        && stack_remaining < WORKER_DELEGATION_THRESHOLD
+        && worker_active
+        && !should_bypass_worker_delegation(z_sql)
+    {
+        log_debug(&format!(
+            "WORKER DELEGATION: stack_remaining={} bytes < {}, delegating to 8MB worker",
+            stack_remaining, WORKER_DELEGATION_THRESHOLD
+        ));
+        depth_guard.decrement_now();
+        return Some(delegate_prepare_to_worker(
+            db, z_sql, n_byte, pp_stmt, pz_tail,
+        ));
+    }
+
+    None
+}
+
+pub(super) unsafe fn maybe_handle_ondeck_low_stack(
+    stack_remaining: isize,
+    db: *mut sqlite3,
+    z_sql: *const c_char,
+    pp_stmt: *mut *mut sqlite3_stmt,
+    pz_tail: *mut *const c_char,
+) -> Option<c_int> {
+    let is_ondeck_query = !z_sql.is_null()
+        && ((contains_icase_ptr(z_sql, "metadata_item_settings")
+            && contains_icase_ptr(z_sql, "metadata_items"))
+            || (contains_icase_ptr(z_sql, "metadata_item_views")
+                && contains_icase_ptr(z_sql, "grandparents"))
+            || contains_icase_ptr(z_sql, "grandparentsSettings"));
+
+    if !is_ondeck_query || stack_remaining >= 100_000 {
+        return None;
+    }
+
+    log_info(&format!(
+        "STACK LOW OnDeck: {} bytes remaining - using PG fast path",
+        stack_remaining
+    ));
+
+    let pg_conn = crate::pg_client::rust_pg_find_connection(db);
+    if !pg_conn.is_null()
+        && (*pg_conn).is_pg_active != 0
+        && !(*pg_conn).conn.is_null()
+        && crate::db_interpose_helpers::rust_is_library_db_path((*pg_conn).db_path.as_ptr()) != 0
+    {
+        let rc = prepare_shadow_stmt(db, c"SELECT 1".as_ptr(), pp_stmt, pz_tail);
+
+        if rc == SQLITE_OK && !pp_stmt.is_null() && !(*pp_stmt).is_null() {
+            let pg_stmt = pg_stmt_create(pg_conn, z_sql, *pp_stmt);
+            if !pg_stmt.is_null() {
+                (*pg_stmt).is_pg = 2;
+                let mut trans = sql_translate(z_sql);
+                if trans.success != 0 && !trans.sql.is_null() {
+                    let aliased =
+                        crate::db_interpose_prepare_helpers::alias_collection_sync_aggregates(
+                            &cstr_to_string_or(z_sql, ""),
+                            &cstr_to_string_or(trans.sql, ""),
+                        );
+                    let pg_sql_src = match aliased {
+                        Some(ref s) => CString::new(s.as_str()).ok(),
+                        None => None,
+                    };
+                    let pg_sql_ptr = if let Some(cs) = pg_sql_src.as_ref() {
+                        libc::strdup(cs.as_ptr())
+                    } else {
+                        libc::strdup(trans.sql)
+                    };
+                    (*pg_stmt).pg_sql = pg_sql_ptr;
+                    (*pg_stmt).param_count = trans.param_count;
+                    trace_prepare_pgsql_if_enabled(z_sql, (*pg_stmt).pg_sql);
+                    log_info(&format!(
+                        "STACK LOW OnDeck: routed to PG: {}",
+                        cstr_prefix(trans.sql, 100, "NULL")
+                    ));
+                }
+                sql_translation_free(&mut trans as *mut SqlTranslation);
+            }
+        }
+        return Some(rc);
+    }
+
+    log_error("STACK CRITICAL OnDeck: no PG connection, returning empty");
+    Some(prepare_shadow_stmt(
+        db,
+        c"SELECT 1 WHERE 0".as_ptr(),
+        pp_stmt,
+        pz_tail,
+    ))
+}
+
+pub(super) unsafe fn maybe_handle_low_stack_prepare_path(
+    from_worker: c_int,
+    stack_remaining: isize,
+    stack_used: isize,
+    stack_size: usize,
+    db: *mut sqlite3,
+    z_sql: *const c_char,
+    bytes: &[u8],
+    pp_stmt: *mut *mut sqlite3_stmt,
+    pz_tail: *mut *const c_char,
+) -> Option<c_int> {
+    let stack_threshold = if from_worker != 0 { 32_000 } else { 64_000 };
+    if stack_remaining >= stack_threshold {
+        return None;
+    }
+
+    let pg_conn_check = crate::pg_client::rust_pg_find_connection(db);
+    let is_pg_read = !pg_conn_check.is_null()
+        && (*pg_conn_check).is_pg_active != 0
+        && !(*pg_conn_check).conn.is_null()
+        && !z_sql.is_null()
+        && crate::pg_config::pg_config_is_read_operation(z_sql) != 0
+        && crate::db_interpose_helpers::rust_is_library_db_path((*pg_conn_check).db_path.as_ptr())
+            != 0;
+
+    if is_pg_read {
+        log_info(&format!(
+            "STACK LOW ({} bytes) but using PG path for: {}",
+            stack_remaining,
+            cstr_prefix(z_sql, 100, "NULL")
+        ));
+
+        let rc = prepare_shadow_stmt(db, c"SELECT 1".as_ptr(), pp_stmt, pz_tail);
+
+        if rc == SQLITE_OK && !pp_stmt.is_null() && !(*pp_stmt).is_null() {
+            let pg_stmt = pg_stmt_create(pg_conn_check, z_sql, *pp_stmt);
+            if !pg_stmt.is_null() {
+                (*pg_stmt).is_pg = 2;
+
+                let mut trans = sql_translate(z_sql);
+                if trans.success != 0 && !trans.sql.is_null() {
+                    let aliased =
+                        crate::db_interpose_prepare_helpers::alias_collection_sync_aggregates(
+                            &cstr_to_string_or(z_sql, ""),
+                            &cstr_to_string_or(trans.sql, ""),
+                        );
+                    let pg_sql_ptr = if let Some(s) = aliased {
+                        let cs = CString::new(s).ok();
+                        if let Some(cs) = cs.as_ref() {
+                            libc::strdup(cs.as_ptr())
+                        } else {
+                            libc::strdup(trans.sql)
+                        }
+                    } else {
+                        libc::strdup(trans.sql)
+                    };
+
+                    (*pg_stmt).pg_sql = pg_sql_ptr;
+                    (*pg_stmt).param_count = trans.param_count;
+                    trace_prepare_pgsql_if_enabled(z_sql, (*pg_stmt).pg_sql);
+
+                    copy_param_names(pg_stmt, &trans);
+                    apply_prepared_stmt_settings(pg_stmt);
+                }
+                sql_translation_free(&mut trans as *mut SqlTranslation);
+                pg_register_stmt(*pp_stmt, pg_stmt);
+            }
+        }
+        return Some(rc);
+    }
+
+    log_error(&format!(
+        "STACK PROTECTION TRIGGERED: stack_used={}/{} bytes, remaining={} bytes",
+        stack_used, stack_size, stack_remaining
+    ));
+    log_error(&format!(
+        "  Query rejected (not a PG read): {}",
+        cstr_prefix(z_sql, 200, "NULL")
+    ));
+
+    let pg_conn = crate::pg_client::rust_pg_find_connection(db);
+    if !pg_conn.is_null() {
+        (*pg_conn).last_error_code = SQLITE_NOMEM;
+        libc::snprintf(
+            (*pg_conn).last_error.as_mut_ptr(),
+            (*pg_conn).last_error.len(),
+            c"Stack protection: insufficient stack space (remaining=%ld).".as_ptr(),
+            stack_remaining as libc::c_long,
+        );
+    }
+
+    if !pp_stmt.is_null() {
+        *pp_stmt = ptr::null_mut();
+    }
+    if !pz_tail.is_null() {
+        *pz_tail = ptr::null();
+    }
+
+    if starts_with_ascii_icase(bytes, b"SELECT") {
+        log_debug(&format!(
+            "STACK PROTECTION select preview: {}",
+            cstr_prefix(z_sql, 160, "NULL")
+        ));
+    }
+
+    Some(SQLITE_NOMEM)
+}

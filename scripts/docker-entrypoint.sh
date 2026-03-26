@@ -88,6 +88,7 @@ wait_for_postgres() {
 init_schema() {
     local schema="${PLEX_PG_SCHEMA:-plex}"
     local schema_file="/usr/local/lib/plex-postgresql/plex_schema.sql"
+    local compat_file="/usr/local/lib/plex-postgresql/pg_compat_functions.sql"
 
     psql -c "CREATE SCHEMA IF NOT EXISTS $schema;" 2>/dev/null || true
 
@@ -131,6 +132,11 @@ init_schema() {
             echo "Loading sqlite_column_types metadata..."
             psql -f "$types_file" 2>/dev/null || true
         fi
+    fi
+
+    # Ensure PostgreSQL compatibility helper functions exist.
+    if [ -f "$compat_file" ]; then
+        psql -f "$compat_file" 2>/dev/null || true
     fi
 }
 
@@ -220,6 +226,97 @@ init_plex_directories() {
     echo "Plex directories initialized"
 }
 
+is_truthy() {
+    case "${1:-}" in
+        1|y|Y|t|T|true|TRUE|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+clear_flags_dat() {
+    local plex_dir="/config/Library/Application Support/Plex Media Server"
+    local cache_dir="$plex_dir/Cache"
+    local flags_file="$cache_dir/Flags.dat"
+
+    if [[ ! -f "$flags_file" ]]; then
+        return 0
+    fi
+
+    log_flags_dat_info "pre-clear"
+
+    local ts
+    ts=$(date +%Y%m%d_%H%M%S)
+    local backup="${flags_file}.bad.${ts}"
+    mv "$flags_file" "$backup"
+    chown abc:abc "$backup" 2>/dev/null || true
+    echo "WARNING: Flags.dat moved aside due to UUID parsing failure: $backup"
+}
+
+log_flags_dat_info() {
+    local tag="$1"
+    local plex_dir="/config/Library/Application Support/Plex Media Server"
+    local flags_file="$plex_dir/Cache/Flags.dat"
+
+    if [[ ! -f "$flags_file" ]]; then
+        return 0
+    fi
+
+    local size mtime hash=""
+    if size=$(stat -c %s "$flags_file" 2>/dev/null); then
+        mtime=$(stat -c %Y "$flags_file" 2>/dev/null || echo "?")
+    else
+        size=$(wc -c < "$flags_file" 2>/dev/null || echo "?")
+        mtime=$(date -r "$flags_file" +%s 2>/dev/null || echo "?")
+    fi
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        hash=$(sha256sum "$flags_file" 2>/dev/null | awk '{print $1}')
+    elif command -v md5sum >/dev/null 2>&1; then
+        hash=$(md5sum "$flags_file" 2>/dev/null | awk '{print $1}')
+    fi
+
+    if [[ -n "$hash" ]]; then
+        echo "Flags.dat info (${tag}): size=${size} mtime=${mtime} hash=${hash}"
+    else
+        echo "Flags.dat info (${tag}): size=${size} mtime=${mtime}"
+    fi
+}
+
+maybe_clear_flags_dat_on_uuid_error() {
+    local plex_dir="/config/Library/Application Support/Plex Media Server"
+    local log_file="${PLEX_PG_LOG_FILE:-/config/plex_redirect_pg.log}"
+    local pms_log="$plex_dir/Logs/Plex Media Server.log"
+
+    log_flags_dat_info "startup"
+
+    if is_truthy "${PLEX_PG_CLEAR_FLAGS_DAT:-}"; then
+        clear_flags_dat
+        return 0
+    fi
+
+    if ! is_truthy "${PLEX_PG_CLEAR_FLAGS_DAT_ON_UUID_ERROR:-1}"; then
+        return 0
+    fi
+
+    if [[ -f "$log_file" ]] && grep -q "Invalid uuid length" "$log_file"; then
+        clear_flags_dat
+        return 0
+    fi
+    if [[ -f "$pms_log" ]] && grep -q "Invalid uuid length" "$pms_log"; then
+        clear_flags_dat
+        return 0
+    fi
+}
+
+ensure_plex_temp_dir() {
+    local temp_dir="/run/plex-temp"
+
+    # Plex expects this path to exist and be a directory.
+    mkdir -p "$temp_dir"
+    chmod 1777 "$temp_dir" 2>/dev/null || true
+    chown abc:abc "$temp_dir" 2>/dev/null || true
+}
+
 # Locale setup removed — Plex's bundled musl+boost::locale handles locale internally.
 # Setting LANG/LC_ALL/CHARSET can interfere with exception handling on aarch64.
 
@@ -245,6 +342,30 @@ verify_plex_shim() {
         fi
     else
         echo "Warning: PostgreSQL shim library not found at $shim_path"
+    fi
+}
+
+verify_media_mount() {
+    local media_dir="/media"
+    if [ ! -d "$media_dir" ]; then
+        echo "WARNING: Media mount not found at $media_dir"
+        echo "         Set PLEX_MEDIA_PATH in docker-compose/.env to your real library path."
+        return 0
+    fi
+
+    if [ ! -r "$media_dir" ]; then
+        echo "WARNING: Media mount exists but is not readable: $media_dir"
+        echo "         Check host permissions and Docker file sharing settings."
+        return 0
+    fi
+
+    local sample_file
+    sample_file=$(find "$media_dir" -maxdepth 4 -type f 2>/dev/null | head -n 1 || true)
+    if [ -n "$sample_file" ]; then
+        echo "Media mount OK: found sample file: $sample_file"
+    else
+        echo "WARNING: Media mount is readable but no files found under $media_dir"
+        echo "         Plex can start, but libraries will be empty until media is mounted."
     fi
 }
 
@@ -297,9 +418,12 @@ if [ -n "$PLEX_PG_HOST" ]; then
         check_and_migrate || true
     fi
 
+    ensure_plex_temp_dir
     init_plex_directories
+    maybe_clear_flags_dat_on_uuid_error
     init_sqlite_schema
     verify_plex_shim
+    verify_media_mount
     
     # Final permission fix - ensure Plex can write to its directories
     # This must be done after all directories are created

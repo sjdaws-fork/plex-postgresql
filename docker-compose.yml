@@ -35,33 +35,44 @@ services:
       - VERSION=docker
       # REQUIRED for first run: Get your claim token at https://plex.tv/claim
       # Tokens expire after 4 minutes — generate one right before running 'docker compose up'
-      # - PLEX_CLAIM=claim-xxxxxxxxxxxxxxxxxxxx
-      # PostgreSQL configuration (Unix socket for ~7% better performance)
-      - PLEX_PG_HOST=/var/run/postgresql
-      # Fallback to TCP: uncomment these and comment out the socket line above
-      # - PLEX_PG_HOST=postgres
-      # - PLEX_PG_PORT=5432
-      - PLEX_PG_DATABASE=plex
+      - PLEX_CLAIM=${PLEX_CLAIM:-}
+      # PostgreSQL configuration (TCP default)
+      - PLEX_PG_HOST=postgres
+      - PLEX_PG_PORT=5432
+      # For Unix socket mode, set PLEX_PG_HOST=/var/run/postgresql
+      - PLEX_PG_DATABASE=${PLEX_PG_DATABASE:-plex}
       - PLEX_PG_USER=plex
       - PLEX_PG_PASSWORD=plex
       - PLEX_PG_SCHEMA=plex
       - PLEX_PG_POOL_SIZE=50
+      - PLEX_PG_POOL_MAX=100
       # - PLEX_PG_IDLE_TIMEOUT=300
+      # Translator output validation: off|sample|all (default off)
+      - PLEX_PG_VALIDATE_OUTPUT=${PLEX_PG_VALIDATE_OUTPUT:-off}
+      - PLEX_PG_VALIDATE_OUTPUT_SAMPLE_PCT=${PLEX_PG_VALIDATE_OUTPUT_SAMPLE_PCT:-5}
+      # Optional ARM override for OpenSSL CPU feature probing in some VMs/containers
+      # - PLEX_PG_OPENSSL_ARMCAP=0
       # Logging: 0=ERROR, 1=INFO, 2=DEBUG
       - PLEX_PG_LOG_LEVEL=ERROR
+      - PLEX_PG_LOG_FILE=/config/plex_redirect_pg.log
+      # Clear log file on startup to avoid stale errors
+      - PLEX_PG_LOG_TRUNCATE_ON_START=1
     volumes:
       - plex_config:/config
       - postgres_socket:/var/run/postgresql
+      # Media mount (default: local fixtures). Override in .env:
+      # PLEX_MEDIA_PATH=/absolute/path/to/your/real/media
+      - "${PLEX_MEDIA_PATH:-./fixtures/media}:/media:ro"
       # Source Plex database for migration (mount your existing Plex database here)
       # OPTIONAL: Uncomment and edit path to migrate from existing database
       # - "${HOME}/Library/Application Support/Plex Media Server/Plug-in Support/Databases:/source-db:ro"
-      # Uncomment and edit to mount your media
+      # Alternative custom media mount:
       # - /path/to/media:/media:ro
     ports:
-      - "8080:32400"
-      - "8080:32400/udp"
-      - "32470:32469"
-      - "32470:32469/udp"
+      - "${PLEX_HOST_PORT:-8080}:32400"
+      - "${PLEX_HOST_PORT:-8080}:32400/udp"
+      - "${PLEX_DLNA_PORT:-32470}:32469"
+      - "${PLEX_DLNA_PORT:-32470}:32469/udp"
       # Skip 1900/udp - conflicts with local Plex
     depends_on:
       postgres:

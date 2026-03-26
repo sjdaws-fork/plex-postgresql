@@ -1,0 +1,305 @@
+use std::cell::{Cell, RefCell};
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_void};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, Once};
+
+#[path = "db_interpose_column_badcast.rs"]
+mod badcast;
+mod binary_accessors;
+mod blob_cache;
+mod decltype_accessor;
+#[path = "db_interpose_column_decltype.rs"]
+mod decltype_cache;
+mod fake_value_slot;
+mod metadata_accessors;
+mod metadata_support;
+mod resolve_tables;
+mod scalar_accessors;
+mod support;
+mod text_accessor;
+mod type_accessor;
+mod value_accessor;
+
+use crate::db_interpose_common::{
+    fake_value_mutex, fake_value_next, fake_value_pool, tls_column_type_calls_ptr,
+    tls_in_resolve_tables_ptr, tls_last_query_ptr, PgFakeValue, MAX_FAKE_VALUES,
+    PG_FAKE_VALUE_MAGIC,
+};
+use crate::db_interpose_conn_utils::{
+    cstr_prefix, cstr_to_string_or, log_debug, log_error, log_info, PthreadMutexGuard,
+};
+use crate::db_interpose_helpers::PGresult as PgResultHelpers;
+use crate::db_interpose_trace_helpers::{list_any_token_in_haystack, list_contains_idx};
+use crate::db_interpose_value_helpers::{
+    pg_oid_to_sqlite_type_impl, pg_text_to_double_impl, pg_text_to_int64_impl, pg_text_to_int_impl,
+};
+use crate::env_utils;
+use crate::ffi_types::{sqlite3, sqlite3_stmt, sqlite3_value, PgConnection, PgStmt, MAX_PARAMS};
+use crate::libpq_helpers::PGresult as PgResultLibpq;
+use badcast::{trace_badcast_log_ctx, trace_badcast_should_log, trace_badcast_should_log_col};
+use binary_accessors::{column_blob_impl, column_bytes_impl};
+use blob_cache::pg_decode_bytea_cached_impl;
+pub use blob_cache::rust_pg_decode_bytea_cached;
+use decltype_accessor::column_decltype_impl;
+use decltype_cache::{lookup_decltype_direct, lookup_sqlite_decltype};
+use fake_value_slot::allocate_fake_sqlite_value;
+use metadata_accessors::{column_count_impl, column_name_impl, data_count_impl};
+use metadata_support::{
+    ensure_pg_result_for_metadata, mask_collection_metadata_type, set_metadata_result_state,
+};
+use resolve_tables::resolve_column_tables_impl;
+use scalar_accessors::{column_double_impl, column_int64_impl, column_int_impl};
+use support::{
+    helpers_result_ptr, next_text_buffer_index, sqlite_type_name, validate_type_consistency,
+};
+use text_accessor::column_text_impl;
+use type_accessor::column_type_impl;
+use value_accessor::column_value_impl;
+
+const SQLITE_INTEGER: c_int = 1;
+const SQLITE_FLOAT: c_int = 2;
+const SQLITE_TEXT: c_int = 3;
+const SQLITE_BLOB: c_int = 4;
+const SQLITE_NULL: c_int = 5;
+
+const PGRES_COMMAND_OK: c_int = 1;
+const PGRES_TUPLES_OK: c_int = 2;
+
+const DECLTYPE_MAX_KEY_LEN: usize = 128;
+const NUM_TEXT_BUFFERS: usize = 64;
+const TEXT_BUFFER_SIZE: usize = 8192;
+
+const INVALID_OID: u32 = 0;
+const PG_DECLTYPE_CASE_NULL: c_int = 1;
+const PG_DECLTYPE_CASE_DT_INTEGER_8: c_int = 2;
+
+const PMT_COLUMN_CACHED_BLOB_ALLOC: c_int = 3;
+const PMT_COLUMN_DECODED_BLOB_ALLOC: c_int = 4;
+
+static DECLTYPE_TEXT: &[u8] = b"TEXT\0";
+static DECLTYPE_DT_INTEGER_8: &[u8] = b"dt_integer(8)\0";
+static DECLTYPE_INTEGER: &[u8] = b"INTEGER\0";
+static DECLTYPE_BIGINT: &[u8] = b"BIGINT\0";
+static NEEDLE_TYPE: &[u8] = b"type\0";
+static NEEDLE_METADATA_TYPE: &[u8] = b"metadata_type\0";
+
+thread_local! {
+    static COLUMN_TEXT_BUFFERS: RefCell<Box<[[u8; TEXT_BUFFER_SIZE]; NUM_TEXT_BUFFERS]>> =
+        RefCell::new(Box::new([[0u8; TEXT_BUFFER_SIZE]; NUM_TEXT_BUFFERS]));
+    static COLUMN_TEXT_BUF_IDX: Cell<usize> = Cell::new(0);
+}
+
+extern "C" {
+    static mut orig_sqlite3_column_count: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
+    static mut orig_sqlite3_column_type:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>;
+    static mut orig_sqlite3_column_int:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>;
+    static mut orig_sqlite3_column_int64:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> i64>;
+    static mut orig_sqlite3_column_double:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> f64>;
+    static mut orig_sqlite3_column_text:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_uchar>;
+    static mut orig_sqlite3_column_blob:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_void>;
+    static mut orig_sqlite3_column_bytes:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>;
+    static mut orig_sqlite3_column_name:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char>;
+    static mut orig_sqlite3_column_decltype:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char>;
+    static mut orig_sqlite3_column_value:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *mut sqlite3_value>;
+    static mut orig_sqlite3_data_count: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
+    static mut orig_sqlite3_db_handle:
+        Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut sqlite3>;
+
+    static mut last_query_being_processed: *const c_char;
+    static mut last_column_being_accessed: *const c_char;
+    static mut global_column_type_calls: c_long;
+
+    fn pg_find_any_stmt(stmt: *mut sqlite3_stmt) -> *mut PgStmt;
+    fn pg_get_thread_connection(db_path: *const c_char) -> *mut PgConnection;
+    fn pg_get_thread_connection_excluding(
+        db_path: *const c_char,
+        exclude_conn: *const c_void,
+    ) -> *mut PgConnection;
+    fn pg_stmt_cache_lookup(
+        conn: *mut PgConnection,
+        sql_hash: u64,
+        stmt_name_out: *mut *const c_char,
+    ) -> c_int;
+    fn pg_stmt_cache_add(
+        conn: *mut PgConnection,
+        sql_hash: u64,
+        stmt_name: *const c_char,
+        param_count: c_int,
+    ) -> c_int;
+    fn pg_is_duplicate_prepared_stmt(res: *mut PgResultLibpq) -> c_int;
+
+    fn pg_exception_note_phase(
+        phase: *const c_char,
+        sql: *const c_char,
+        stmt: *mut sqlite3_stmt,
+        db: *mut sqlite3,
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn rust_resolve_column_tables(
+    pg_stmt: *mut PgStmt,
+    pg_conn: *mut PgConnection,
+) -> c_int {
+    resolve_column_tables_impl(pg_stmt, pg_conn)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_count(p_stmt: *mut sqlite3_stmt) -> c_int {
+    column_count_impl(p_stmt)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_type(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
+    column_type_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_int(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
+    column_int_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_int64(p_stmt: *mut sqlite3_stmt, idx: c_int) -> i64 {
+    column_int64_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_double(p_stmt: *mut sqlite3_stmt, idx: c_int) -> f64 {
+    column_double_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_text(
+    p_stmt: *mut sqlite3_stmt,
+    idx: c_int,
+) -> *const c_uchar {
+    column_text_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_blob(
+    p_stmt: *mut sqlite3_stmt,
+    idx: c_int,
+) -> *const c_void {
+    column_blob_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_bytes(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
+    column_bytes_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_name(
+    p_stmt: *mut sqlite3_stmt,
+    idx: c_int,
+) -> *const c_char {
+    column_name_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_decltype(
+    p_stmt: *mut sqlite3_stmt,
+    idx: c_int,
+) -> *const c_char {
+    column_decltype_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_column_value(
+    p_stmt: *mut sqlite3_stmt,
+    idx: c_int,
+) -> *mut sqlite3_value {
+    column_value_impl(p_stmt, idx)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_my_sqlite3_data_count(p_stmt: *mut sqlite3_stmt) -> c_int {
+    data_count_impl(p_stmt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        next_text_buffer_index, set_metadata_result_state, COLUMN_TEXT_BUF_IDX, NUM_TEXT_BUFFERS,
+    };
+    use crate::ffi_types::{PgConnection, PgStmt};
+    use crate::libpq_helpers::PGresult as PgResultLibpq;
+    use crate::pg_statement::{rust_stmt_create, rust_stmt_free};
+    use std::collections::HashSet;
+    use std::ffi::CString;
+
+    fn reset_text_buffer_idx() {
+        COLUMN_TEXT_BUF_IDX.with(|idx| idx.set(0));
+    }
+
+    fn make_stmt() -> *mut PgStmt {
+        let sql = CString::new("SELECT 1").unwrap();
+        let stmt = rust_stmt_create(std::ptr::null_mut(), sql.as_ptr(), std::ptr::null_mut());
+        assert!(!stmt.is_null());
+        stmt
+    }
+
+    #[test]
+    fn column_text_buffer_wraps_after_num_buffers() {
+        reset_text_buffer_idx();
+
+        let mut indices = Vec::with_capacity(NUM_TEXT_BUFFERS);
+        for _ in 0..NUM_TEXT_BUFFERS {
+            indices.push(next_text_buffer_index());
+        }
+
+        let unique: HashSet<usize> = indices.iter().copied().collect();
+        assert_eq!(unique.len(), NUM_TEXT_BUFFERS);
+
+        let wrapped = next_text_buffer_index();
+        assert_eq!(wrapped, 0);
+    }
+
+    #[test]
+    fn column_text_buffer_thread_local_indices_start_at_zero() {
+        reset_text_buffer_idx();
+        assert_eq!(next_text_buffer_index(), 0);
+
+        let child_first = std::thread::spawn(|| {
+            COLUMN_TEXT_BUF_IDX.with(|idx| idx.set(0));
+            next_text_buffer_index()
+        })
+        .join()
+        .expect("thread should join");
+
+        assert_eq!(child_first, 0);
+    }
+
+    #[test]
+    fn metadata_result_state_assigns_result_owner() {
+        let stmt = make_stmt();
+        let result = 0x1234usize as *mut PgResultLibpq;
+        let exec_conn = 0x5678usize as *mut PgConnection;
+
+        unsafe {
+            set_metadata_result_state(stmt, result, exec_conn, 0, 0);
+            assert_eq!((*stmt).result, result);
+            assert_eq!((*stmt).result_conn, exec_conn);
+            assert_eq!((*stmt).metadata_only_result, 1);
+
+            (*stmt).result = std::ptr::null_mut();
+            (*stmt).result_conn = std::ptr::null_mut();
+        }
+
+        rust_stmt_free(stmt);
+    }
+}

@@ -1,0 +1,188 @@
+use super::*;
+use crate::db_interpose_value::support::{
+    fake_value_has_result, helpers_result_ptr, load_fake_value_context,
+};
+
+pub(super) fn value_int_impl(p_val: *mut sqlite3_value) -> c_int {
+    unsafe {
+        pg_exception_note_phase(
+            b"value_int\0".as_ptr() as *const c_char,
+            ptr::null(),
+            p_val as *mut sqlite3_stmt,
+            ptr::null_mut(),
+        );
+    }
+
+    if p_val.is_null() {
+        return 0;
+    }
+
+    let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_INT") }) else {
+        return unsafe { orig_sqlite3_value_int.map(|f| f(p_val)).unwrap_or(0) };
+    };
+
+    let _call_num = VALUE_INT_CALLS.fetch_add(1, Ordering::Relaxed);
+    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    if unsafe { !fake_value_has_result(&ctx) } {
+        return 0;
+    }
+
+    let result_ptr = unsafe { (*ctx.pg_stmt).result };
+    let result = crate::db_interpose_helpers::rust_pg_result_int(
+        helpers_result_ptr(result_ptr),
+        ctx.row,
+        ctx.col,
+    );
+
+    let col_name = crate::db_interpose_helpers::rust_pg_result_col_name(
+        helpers_result_ptr(result_ptr),
+        ctx.col,
+    );
+    if !col_name.is_null() {
+        let needle = NEEDLE_TYPE.as_ptr() as *const c_char;
+        if unsafe { !libc::strstr(col_name, needle).is_null() } {
+            let mut raw_buf = [0 as c_char; 128];
+            let mut raw_val = "?".to_string();
+            let raw_len = crate::db_interpose_helpers::rust_pg_result_text_copy(
+                helpers_result_ptr(result_ptr),
+                ctx.row,
+                ctx.col,
+                raw_buf.as_mut_ptr(),
+                raw_buf.len(),
+            );
+            if raw_len >= 0 {
+                raw_val = cstr_to_string_or(raw_buf.as_ptr(), "?");
+            }
+            log_debug(&format!(
+                "TYPE_DEBUG_VALUE_INT: col='{}' idx={} row={} raw_val='{}' result={} sql={}",
+                cstr_to_string_or(col_name, "?"),
+                ctx.col,
+                ctx.row,
+                raw_val,
+                result,
+                cstr_prefix(unsafe { (*ctx.pg_stmt).pg_sql }, 200, "?")
+            ));
+        }
+    }
+
+    result
+}
+
+pub(super) fn value_int64_impl(p_val: *mut sqlite3_value) -> i64 {
+    unsafe {
+        pg_exception_note_phase(
+            b"value_int64\0".as_ptr() as *const c_char,
+            ptr::null(),
+            p_val as *mut sqlite3_stmt,
+            ptr::null_mut(),
+        );
+    }
+
+    if p_val.is_null() {
+        return 0;
+    }
+
+    let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_INT64") }) else {
+        return unsafe { orig_sqlite3_value_int64.map(|f| f(p_val)).unwrap_or(0) };
+    };
+
+    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    if unsafe { !fake_value_has_result(&ctx) } {
+        return 0;
+    }
+
+    unsafe {
+        crate::db_interpose_helpers::rust_pg_result_int64(
+            helpers_result_ptr((*ctx.pg_stmt).result),
+            ctx.row,
+            ctx.col,
+        ) as i64
+    }
+}
+
+pub(super) fn value_double_impl(p_val: *mut sqlite3_value) -> f64 {
+    if p_val.is_null() {
+        return 0.0;
+    }
+
+    let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_DOUBLE") }) else {
+        return unsafe { orig_sqlite3_value_double.map(|f| f(p_val)).unwrap_or(0.0) };
+    };
+
+    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    if unsafe { !fake_value_has_result(&ctx) } {
+        return 0.0;
+    }
+
+    unsafe {
+        crate::db_interpose_helpers::rust_pg_result_double(
+            helpers_result_ptr((*ctx.pg_stmt).result),
+            ctx.row,
+            ctx.col,
+        )
+    }
+}
+
+pub(super) fn value_bytes_impl(p_val: *mut sqlite3_value) -> c_int {
+    if p_val.is_null() {
+        return 0;
+    }
+
+    let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_BYTES") }) else {
+        return unsafe { orig_sqlite3_value_bytes.map(|f| f(p_val)).unwrap_or(0) };
+    };
+
+    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    if unsafe { !fake_value_has_result(&ctx) } {
+        return 0;
+    }
+
+    let len = unsafe {
+        crate::db_interpose_helpers::rust_pg_result_length(
+            helpers_result_ptr((*ctx.pg_stmt).result),
+            ctx.row,
+            ctx.col,
+        )
+    };
+    if len > 0 {
+        len
+    } else {
+        0
+    }
+}
+
+pub(super) fn value_blob_impl(p_val: *mut sqlite3_value) -> *const c_void {
+    if p_val.is_null() {
+        return ptr::null();
+    }
+
+    let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_BLOB") }) else {
+        return unsafe {
+            orig_sqlite3_value_blob
+                .map(|f| f(p_val))
+                .unwrap_or(ptr::null())
+        };
+    };
+
+    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    if unsafe { !fake_value_has_result(&ctx) } {
+        return ptr::null();
+    }
+
+    let buf = VALUE_BLOB_IDX.fetch_add(1, Ordering::Relaxed) & 0x3F;
+    let result_ptr = unsafe { (*ctx.pg_stmt).result };
+    let len = unsafe {
+        crate::db_interpose_helpers::rust_pg_result_blob_copy(
+            helpers_result_ptr(result_ptr),
+            ctx.row,
+            ctx.col,
+            VALUE_BLOB_BUFFERS[buf].as_mut_ptr(),
+            VALUE_BLOB_BUFFERS[buf].len() - 1,
+        )
+    };
+    if len <= 0 {
+        return ptr::null();
+    }
+
+    unsafe { VALUE_BLOB_BUFFERS[buf].as_ptr() as *const c_void }
+}

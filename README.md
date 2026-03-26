@@ -6,19 +6,20 @@
 
 A small shim library that catches Plex SQLite calls and sends them to PostgreSQL. You do not need to change Plex source code.
 
-## 🎉 Latest Release: v1.0.0
+## 🎉 Latest Release: v1.1.0
 
-**SQL translator and PG modules migrated to Rust** — the entire SQLite-to-PostgreSQL translation pipeline now runs on Rust's `sqlparser-rs` AST engine, and all 7 backend modules have been migrated to hybrid C/Rust.
+**100% Rust shim runtime** — the entire interpose layer is now pure Rust. All C runtime code has been eliminated. The shim compiles to a single static library linked into the dylib/so.
 
-- 🆕 **Rust SQL translator:** 525 Rust tests, full AST-based translation replacing the C string-manipulation translator
-- 🆕 **Rust PG modules:** pg_config, pg_logging, pg_mem_telemetry, shim_alloc, pg_query_cache, pg_statement, pg_client — all core logic in Rust
-- 🆕 **Log level cleanup:** informational pool messages demoted from ERROR to INFO
-- ✅ **1,075+ tests** (525 Rust + ~550 C across 25 suites)
+- 🆕 **Full Rust runtime:** all interpose, column access, step execution, and connection management in Rust
+- 🆕 **Module architecture:** monolithic files split into focused submodules for maintainability
+- 🔧 **Deadlock fixes:** recursive connection mutex, reduced lock hold times, lock-free logging fallback
+- 🔧 **Stack safety:** heap-allocated thread-local buffers for Plex's 544K worker thread stacks
+- ✅ **712 tests passing** across unit, integration, and compatibility suites
 
-[📥 Download v1.0.0](https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.0) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.0)
+[📥 Download v1.1.0](https://github.com/cgnl/plex-postgresql/releases/tag/v1.1.0) | [📋 Full Changelog](CHANGELOG.md)
 
 Linux and macOS release zips are built by GitHub Actions on tag push via `.github/workflows/release-linux-artifacts.yml` and `.github/workflows/release-macos-artifacts.yml`.
-Pull requests and `main` pushes run `.github/workflows/ci.yml` (script validation + Linux amd64 build check + **1,075+ tests**).
+Pull requests and `main`/`develop` pushes run `.github/workflows/ci.yml` (script validation + Linux amd64 build check + full test suite + FFI header verification).
 Docker images are published to GHCR on release tags via `.github/workflows/docker-publish.yml`:
 - `ghcr.io/cgnl/plex-postgresql-linuxserver`
 - `ghcr.io/cgnl/plex-postgresql-plexinc`
@@ -50,7 +51,7 @@ sudo mv /usr/local/lib/db_interpose_pg-linux-x86_64.so /usr/local/lib/db_interpo
 ```bash
 git clone https://github.com/cgnl/plex-postgresql.git
 cd plex-postgresql
-docker-compose up -d
+docker compose up -d
 ```
 
 See detailed installation instructions below for each platform.
@@ -125,17 +126,43 @@ git clone https://github.com/cgnl/plex-postgresql.git
 cd plex-postgresql
 
 # Start Plex + PostgreSQL
-docker-compose up -d
+docker compose up -d
 
 # Check logs
-docker-compose logs -f plex
+docker compose logs -f plex
 ```
 
 **Setup:**
-1. Open http://localhost:8080/web
-2. Claim your server with Plex account (or set `PLEX_CLAIM` in docker-compose.yml for headless claim)
+1. Open http://localhost:8080/web (or your `PLEX_HOST_PORT`)
+2. Claim your server with Plex account (or set `PLEX_CLAIM` in `docker-compose.yml` for headless claim)
 3. Add libraries via web interface
 4. Done. Your library data now lives in PostgreSQL.
+
+**Run on a different local port (recommended when local Plex is already running):**
+```bash
+PLEX_HOST_PORT=32410 PLEX_DLNA_PORT=32471 docker compose up -d
+```
+Then use `http://localhost:32410/web`.
+
+For local test media, the default Docker mount is `./fixtures/media:/media:ro`.
+For real libraries, set `PLEX_MEDIA_PATH` in `.env`:
+
+```bash
+# Example (macOS)
+PLEX_MEDIA_PATH=/Volumes/media
+
+# Example (Linux)
+PLEX_MEDIA_PATH=/srv/media
+```
+
+Then restart:
+```bash
+docker compose up -d
+docker compose logs -f plex | grep -E "Media mount|WARNING: Media mount"
+```
+
+Docker mode does **not** write `db_interpose_pg.dylib` into your local `Plex Media Server.app`.  
+Do **not** run `scripts/install_wrappers.sh` for this workflow.
 
 **What happens:**
 - ✅ PostgreSQL schema auto-created (empty)
@@ -164,12 +191,12 @@ If you already have a Plex library in SQLite, do this:
 
 3. **Start containers:**
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 4. **Monitor migration:**
    ```bash
-   docker-compose logs -f plex | grep -E "migration|Migration"
+   docker compose logs -f plex | grep -E "migration|Migration"
    ```
 
 **Migration includes:**
@@ -182,23 +209,29 @@ If you already have a Plex library in SQLite, do this:
 
 ### Configuration
 
-Default PostgreSQL connection (via Unix socket for best performance):
+Default PostgreSQL connection (TCP in the included compose files):
 ```yaml
 environment:
-  - PLEX_PG_HOST=/var/run/postgresql  # Unix socket (7% faster)
+  - PLEX_PG_HOST=postgres
+  - PLEX_PG_PORT=5432
   - PLEX_PG_DATABASE=plex
   - PLEX_PG_USER=plex
   - PLEX_PG_PASSWORD=plex
   - PLEX_PG_SCHEMA=plex
   - PLEX_PG_POOL_SIZE=50
+  - PLEX_PG_POOL_MAX=100
+  - PLEX_PG_OPENSSL_ARMCAP=0  # optional ARM fallback for container/VM SIGILL crashes
   - PLEX_PG_LOG_LEVEL=DEBUG  # 0=ERROR, 1=INFO, 2=DEBUG
+  - PLEX_PG_LOG_TRUNCATE_ON_START=1  # clear log file on startup
+  - PLEX_PG_SKIP_CLEAR_BINDINGS_FINALIZED=1  # default ON; set 0 to disable (debug only)
+  - PLEX_PG_VALIDATE_OUTPUT=off  # off|sample|all (default: off)
+  - PLEX_PG_VALIDATE_OUTPUT_SAMPLE_PCT=5  # only used when mode=sample
 ```
 
-To use TCP instead of Unix socket:
+To use a Unix socket instead of TCP:
 ```yaml
 environment:
-  - PLEX_PG_HOST=postgres  # TCP connection
-  - PLEX_PG_PORT=5432
+  - PLEX_PG_HOST=/var/run/postgresql
 ```
 
 Mount your media libraries:
@@ -291,10 +324,13 @@ Use this command to migrate an existing Plex library to PostgreSQL:
 | `PLEX_PG_USER` | plex | Database user |
 | `PLEX_PG_PASSWORD` | (empty) | Database password |
 | `PLEX_PG_SCHEMA` | plex | Schema name |
-| `PLEX_PG_POOL_SIZE` | 50 | Initial connection pool size (auto-grows up to 200) |
+| `PLEX_PG_POOL_SIZE` | 50 | Initial connection pool size |
+| `PLEX_PG_POOL_MAX` | (inherits `PLEX_PG_POOL_SIZE`) | Runtime pool cap; auto-aligned to PostgreSQL `max_connections` at startup |
 | `PLEX_PG_IDLE_TIMEOUT` | 300 | Seconds before idle connections are reaped |
+| `PLEX_PG_OPENSSL_ARMCAP` | 0 (Docker ARM only) | Override `OPENSSL_armcap` for Plex process to avoid ARM `SIGILL` on unsupported crypto instructions |
 | `PLEX_PG_LOG_LEVEL` | 1 | 0=ERROR, 1=INFO, 2=DEBUG |
 | `PLEX_PG_RETRY_DELAYS` | 500,1000,2000,3000,4000 | PG reconnect backoff in ms (comma-separated, max 10 values) |
+| `PLEX_PG_SKIP_CLEAR_BINDINGS_FINALIZED` | 1 | Skip `sqlite3_clear_bindings` for recently finalized statements to avoid UAF crashes (set 0 to disable) |
 
 ### Unix Socket vs TCP
 
@@ -324,14 +360,51 @@ Layer 1:   Rust SQL translator (sqlparser-rs)   — full AST-based SQLite → Po
 
 More technical details are in **[wiki/How It Works](https://github.com/cgnl/plex-postgresql/wiki/How-It-Works)**.
 
+Translator scope, coverage, and known gaps are tracked in `docs/translator/README.md`.
+
 ## Testing
 
 ```bash
 make unit-test       # All C unit tests (25 suites, ~550 tests)
 make ci-test         # CI-safe subset (no LD_PRELOAD)
-cargo test           # Rust tests (525 tests) — in rust/sql-translator/
+cargo test           # Rust tests (525 tests) — in rust/plex-pg-core/
+make ffi-header      # Regenerate include/plex_pg_core_ffi.h from rust/plex-pg-abi/
+make ffi-header-check  # Verify generated header is up to date
 make benchmark       # Shim micro-benchmarks
 ```
+
+`include/plex_pg_core_ffi.h` is generated from the small ABI contract crate in `rust/plex-pg-abi/`.  
+`include/sql_translator.h` is the thin translator compatibility wrapper used by the legacy C ABI surface.  
+Legacy shim headers now live under `include/legacy/`; the old `src/*.h` and `src/interpose/*.h` paths remain as compatibility wrappers only.
+
+### Exception Parity (macOS)
+
+Build the shim first, then run the harness against the built dylib:
+
+```bash
+make
+cargo build --release --bin exception_parity_test --manifest-path rust/plex-pg-core/Cargo.toml
+PLEX_PG_DISABLE_SHIM_INIT=1 ./rust/plex-pg-core/target/release/exception_parity_test
+```
+
+Optional terminate-path check (currently skipped; requires a real C++ exception object):
+
+```bash
+PLEX_PG_DISABLE_SHIM_INIT=1 ./rust/plex-pg-core/target/release/exception_parity_test --terminate
+```
+
+### Build Notes
+
+If `libpq` is not in the default search path, set:
+
+```bash
+export PLEX_PG_LIBPQ_DIR=/path/to/libpq
+```
+
+### Exception ABI Assumptions (macOS)
+
+Exception `what()` extraction assumes the Itanium C++ ABI layout for `std::exception` and the
+vtable slot used by `what()` (slot 2) as implemented by libc++ on macOS.
 
 ## Memory Tracking
 
@@ -340,19 +413,15 @@ The shim includes opt-in allocation tracking to monitor memory usage and detect 
 | Environment Variable | Effect |
 |---|---|
 | `PLEX_PG_ALLOC_TRACK=1` | Logs shim memory summary every 60s: live/peak bytes, alloc/free counts |
-| `PLEX_PG_ALLOC_TRACE=1` | Same as TRACK + logs top 15 unfreed allocation sites with file:line |
+| `PLEX_PG_ALLOC_TRACE=1` | Same as TRACK + logs aggregate live allocations/bytes from the Rust tracker |
 
 Example output with `PLEX_PG_ALLOC_TRACE=1`:
 ```
 SHIM_ALLOC: live=3424KB peak=3502KB allocs=19092 frees=22269 total_alloc=26800KB total_freed=23376KB
-SHIM_ALLOC_TRACE: 17 leak sites, top 15:
-  #1 pg_statement.c:351 — 1414096 bytes in 62 allocs
-  #2 pg_client.c:553    — 1048832 bytes in 34 allocs
-  #3 pg_client.c:1163   — 678656 bytes in 22 allocs
-  ...
+SHIM_ALLOC_TRACE: 17 live allocations, 1414096 bytes total (per-site file:line not available in Rust backend)
 ```
 
-If `live` keeps growing over hours, there's a leak — the trace shows exactly where.
+If `live` keeps growing over hours, there's a leak. The Rust backend currently reports totals, not per-site file:line breakdowns.
 
 ## Troubleshooting
 
@@ -360,7 +429,7 @@ If `live` keeps growing over hours, there's a leak — the trace shows exactly w
 pg_isready -h localhost -U plex          # Check PostgreSQL
 ./scripts/doctor.sh                       # Check and fix schema + data
 tail -50 /tmp/plex_redirect_pg.log       # Check logs (macOS)
-docker-compose logs -f plex              # Check logs (Docker)
+docker compose logs -f plex              # Check logs (Docker)
 ```
 
 More: **[wiki/Troubleshooting](https://github.com/cgnl/plex-postgresql/wiki/Troubleshooting)**

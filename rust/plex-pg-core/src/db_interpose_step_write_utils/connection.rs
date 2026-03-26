@@ -1,0 +1,229 @@
+use super::*;
+
+#[no_mangle]
+pub extern "C" fn rust_step_pick_thread_connection(
+    base_conn: *mut PgConnection,
+) -> *mut PgConnection {
+    unsafe {
+        if base_conn.is_null() {
+            return std::ptr::null_mut();
+        }
+        if crate::db_interpose_helpers::rust_is_library_or_blobs_db_path(
+            (*base_conn).db_path.as_ptr(),
+        ) == 0
+        {
+            return base_conn;
+        }
+
+        let thread_conn = crate::pg_client::rust_pool_get_connection((*base_conn).db_path.as_ptr())
+            as *mut PgConnection;
+        if !thread_conn.is_null()
+            && (*thread_conn).is_pg_active != 0
+            && !(*thread_conn).conn.is_null()
+        {
+            return thread_conn;
+        }
+        base_conn
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_step_write_prepare_connection(
+    pg_stmt: *mut PgStmt,
+    exec_conn_io: *mut *mut PgConnection,
+    pg_conn_error_out: *mut c_int,
+) -> c_int {
+    unsafe {
+        if !pg_conn_error_out.is_null() {
+            *pg_conn_error_out = 0;
+        }
+        if pg_stmt.is_null() || exec_conn_io.is_null() {
+            return STEP_RESULT_ERROR;
+        }
+        let mut stmt_guard = PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _);
+
+        let mut exec_conn = *exec_conn_io;
+        if exec_conn.is_null() || (*exec_conn).conn.is_null() {
+            log_error(&format!(
+                "STEP WRITE: NULL connection, retrying in 500ms (exec_conn={:p})",
+                exec_conn
+            ));
+            stmt_guard.unlock();
+            libc::usleep(500_000);
+            stmt_guard = PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _);
+
+            let retry_db = sqlite3_db_handle((*pg_stmt).shadow_stmt);
+            let retry_handle = crate::pg_client::rust_pg_find_connection(retry_db);
+            if !retry_handle.is_null() && (*retry_handle).db_path[0] != 0 {
+                exec_conn =
+                    crate::pg_client::rust_pool_get_connection((*retry_handle).db_path.as_ptr())
+                        as *mut PgConnection;
+            }
+            if exec_conn.is_null() || (*exec_conn).conn.is_null() {
+                log_error("STEP WRITE: NULL connection after retry - giving up");
+                (*pg_stmt).write_executed = 1;
+                stmt_guard.unlock();
+                if !pg_conn_error_out.is_null() {
+                    *pg_conn_error_out = 1;
+                }
+                return STEP_RESULT_ERROR;
+            }
+            log_error(&format!(
+                "STEP WRITE: reconnect retry succeeded (exec_conn={:p})",
+                exec_conn
+            ));
+        }
+
+        crate::pg_client::rust_pool_touch_connection(exec_conn as *const c_void);
+        let mut conn_guard = PthreadMutexGuard::lock(&mut (*exec_conn).mutex as *mut _);
+
+        if (*exec_conn).conn.is_null() {
+            log_error("STEP WRITE: conn became NULL after lock (TOCTOU race)");
+            conn_guard.unlock();
+            (*pg_stmt).write_executed = 1;
+            stmt_guard.unlock();
+            if !pg_conn_error_out.is_null() {
+                *pg_conn_error_out = 1;
+            }
+            return STEP_RESULT_ERROR;
+        }
+
+        if (*exec_conn).streaming_active.load(Ordering::SeqCst) != 0 {
+            let alt_db_path = owned_db_path(exec_conn);
+            log_info(&format!(
+                "STEP WRITE: conn {:p} became streaming_active after lock, getting new connection",
+                exec_conn
+            ));
+            conn_guard.unlock();
+            let Some(alt_db_path) = alt_db_path else {
+                log_error("STEP WRITE: live db_path unavailable for alternate connection");
+                (*pg_stmt).write_executed = 1;
+                stmt_guard.unlock();
+                if !pg_conn_error_out.is_null() {
+                    *pg_conn_error_out = 1;
+                }
+                return STEP_RESULT_ERROR;
+            };
+            let alt_conn = crate::pg_client::rust_pool_get_connection_excluding(
+                alt_db_path.as_ptr(),
+                exec_conn as *const c_void,
+            ) as *mut PgConnection;
+            if !alt_conn.is_null()
+                && !(*alt_conn).conn.is_null()
+                && alt_conn != exec_conn
+                && (*alt_conn).streaming_active.load(Ordering::SeqCst) == 0
+            {
+                exec_conn = alt_conn;
+                crate::pg_client::rust_pool_touch_connection(exec_conn as *const c_void);
+                conn_guard = PthreadMutexGuard::lock(&mut (*exec_conn).mutex as *mut _);
+                if (*exec_conn).conn.is_null()
+                    || (*exec_conn).streaming_active.load(Ordering::SeqCst) != 0
+                {
+                    log_error("STEP WRITE: alt conn also unavailable");
+                    conn_guard.unlock();
+                    (*pg_stmt).write_executed = 1;
+                    stmt_guard.unlock();
+                    if !pg_conn_error_out.is_null() {
+                        *pg_conn_error_out = 1;
+                    }
+                    return STEP_RESULT_ERROR;
+                }
+            } else {
+                log_error(&format!(
+                    "STEP WRITE: no non-streaming connection available (db_path={} exec_conn={:p} alt_conn={:p})",
+                    alt_db_path.to_string_lossy(),
+                    exec_conn,
+                    alt_conn,
+                ));
+                (*pg_stmt).write_executed = 1;
+                stmt_guard.unlock();
+                if !pg_conn_error_out.is_null() {
+                    *pg_conn_error_out = 1;
+                }
+                return STEP_RESULT_ERROR;
+            }
+        }
+
+        (*pg_stmt).conn = exec_conn;
+
+        let write_conn_status = crate::libpq_helpers::rust_pq_status((*exec_conn).conn);
+        if write_conn_status != CONNECTION_OK {
+            let pg_err = crate::libpq_helpers::rust_pq_error_message((*exec_conn).conn);
+            log_error("=== CONNECTION_BAD DIAGNOSTIC (WRITE) ===");
+            log_error(&format!(
+                "  Status: {}, Thread: {:p}",
+                write_conn_status,
+                libc::pthread_self() as *mut c_void
+            ));
+            log_error(&format!(
+                "  Connection: {:p}, PGconn: {:p}",
+                exec_conn,
+                (*exec_conn).conn
+            ));
+            log_error(&format!(
+                "  PG Error: {}",
+                cstr_to_string_or(pg_err, "(null)")
+            ));
+            log_error(&format!(
+                "  SQL: {}",
+                cstr_prefix((*pg_stmt).sql, 100, "(null)")
+            ));
+            platform_print_backtrace(
+                b"CONNECTION_BAD in STEP WRITE\0".as_ptr() as *const c_char,
+                1,
+            );
+            log_error("=== END DIAGNOSTIC ===");
+            log_error("STEP WRITE: Attempting PQreset...");
+            crate::libpq_helpers::rust_pq_reset((*exec_conn).conn);
+            if crate::libpq_helpers::rust_pq_status((*exec_conn).conn) != CONNECTION_OK {
+                log_error("STEP WRITE: PQreset failed, trying fresh PQconnectdb...");
+                crate::pg_client::rust_stmt_cache_clear(exec_conn as *mut c_void);
+                crate::libpq_helpers::rust_pq_finish((*exec_conn).conn);
+                (*exec_conn).conn = std::ptr::null_mut();
+
+                let cfg = pg_config_get();
+                if cfg.is_null() {
+                    log_error("STEP WRITE: pg_config_get returned NULL");
+                    (*exec_conn).is_pg_active = 0;
+                    conn_guard.unlock();
+                    (*pg_stmt).write_executed = 1;
+                    stmt_guard.unlock();
+                    if !pg_conn_error_out.is_null() {
+                        *pg_conn_error_out = 1;
+                    }
+                    return STEP_RESULT_ERROR;
+                }
+
+                let new_write_conn = connect_new(&*cfg);
+                if crate::libpq_helpers::rust_pq_status(new_write_conn) == CONNECTION_OK {
+                    (*exec_conn).conn = new_write_conn;
+                    (*exec_conn).is_pg_active = 1;
+                    log_info("STEP WRITE: fresh connection succeeded (reconnected)");
+                    apply_pg_session_settings((*exec_conn).conn, &*cfg);
+                } else {
+                    let reset_err = crate::libpq_helpers::rust_pq_error_message(new_write_conn);
+                    log_error(&format!(
+                        "STEP WRITE: fresh connection also failed: {}",
+                        cstr_to_string_or(reset_err, "(null)")
+                    ));
+                    crate::libpq_helpers::rust_pq_finish(new_write_conn);
+                    (*exec_conn).is_pg_active = 0;
+                    conn_guard.unlock();
+                    (*pg_stmt).write_executed = 1;
+                    stmt_guard.unlock();
+                    if !pg_conn_error_out.is_null() {
+                        *pg_conn_error_out = 1;
+                    }
+                    return STEP_RESULT_ERROR;
+                }
+            } else {
+                log_error("STEP WRITE: PQreset succeeded, connection recovered");
+            }
+        }
+
+        let scope = CString::new("STEP WRITE").unwrap();
+        crate::db_interpose_conn_utils::rust_step_conn_cancel_and_drain(exec_conn, scope.as_ptr());
+        *exec_conn_io = exec_conn;
+        STEP_RESULT_DONE
+    }
+}
