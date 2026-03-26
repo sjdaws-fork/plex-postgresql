@@ -1,6 +1,0 @@
-#ifndef PLEX_PG_COMPAT_WRAPPER_DB_INTERPOSE_COMMON_H
-#define PLEX_PG_COMPAT_WRAPPER_DB_INTERPOSE_COMMON_H
-
-#include "../include/legacy/db_interpose_common.h"
-
-#endif /* PLEX_PG_COMPAT_WRAPPER_DB_INTERPOSE_COMMON_H */

@@ -13,7 +13,7 @@ ifeq ($(UNAME_S),Darwin)
     PG_INCLUDE = /opt/homebrew/opt/postgresql@15/include
     PG_LIB = /opt/homebrew/opt/postgresql@15/lib
     # Legacy C headers remain available as compatibility wrappers/documentation only.
-    CFLAGS = -Wall -Wextra -O2 -Iinclude -I$(LEGACY_INCLUDE) -Isrc -I$(PG_INCLUDE) -fvisibility=hidden
+    CFLAGS = -Wall -Wextra -O2 -Iinclude -I$(LEGACY_INCLUDE) -I$(PG_INCLUDE) -fvisibility=hidden
     LDFLAGS = -L$(PG_LIB) -lpq -lc++ -lc++abi
     TARGET = db_interpose_pg.dylib
     SHARED_FLAGS = -dynamiclib -undefined dynamic_lookup
@@ -23,7 +23,7 @@ else
     CC = gcc
     PG_INCLUDE = /usr/include/postgresql
     PG_LIB = /usr/lib
-    CFLAGS = -Wall -Wextra -O2 -fPIC -Iinclude -I$(LEGACY_INCLUDE) -Isrc -I$(PG_INCLUDE)
+    CFLAGS = -Wall -Wextra -O2 -fPIC -Iinclude -I$(LEGACY_INCLUDE) -I$(PG_INCLUDE)
     LDFLAGS = -lpq -lsqlite3 -ldl -lpthread
     TARGET = db_interpose_pg.so
     SHARED_FLAGS = -shared
@@ -81,13 +81,13 @@ $(TARGET): $(RUST_TRANSLATOR_LIB)
 # Explicit macOS build - always clean first to avoid corrupt object files
 macos: clean $(RUST_TRANSLATOR_LIB)
 	clang -dynamiclib -undefined dynamic_lookup -o db_interpose_pg.dylib $(OBJECTS) $(WHOLE_ARCHIVE) \
-		-I/opt/homebrew/opt/postgresql@15/include -Iinclude -Isrc \
+		-I/opt/homebrew/opt/postgresql@15/include -Iinclude \
 		-L/opt/homebrew/opt/postgresql@15/lib -lpq -lc++ -lc++abi
 
 # Explicit Linux build (modular - same structure as Mac)
 linux: $(RUST_TRANSLATOR_LIB)
 	gcc -shared -fPIC -o db_interpose_pg.so $(LINUX_OBJECTS) $(WHOLE_ARCHIVE) \
-		-I/usr/include/postgresql -Iinclude -Isrc \
+		-I/usr/include/postgresql -Iinclude \
 		-lpq -lsqlite3 -ldl -lpthread
 
 # Object rules (none)
