@@ -181,6 +181,10 @@ pub extern "C" fn rust_stmt_free(stmt_ptr: *mut PgStmt) {
             crate::libpq_helpers::rust_pq_clear(stmt.result);
             stmt.result = std::ptr::null_mut();
         }
+        if !stmt.cached_result.is_null() {
+            crate::pg_query_cache::rust_query_cache_release(stmt.cached_result);
+            stmt.cached_result = std::ptr::null_mut();
+        }
 
         let safe_param_count = safe_param_count(stmt);
 

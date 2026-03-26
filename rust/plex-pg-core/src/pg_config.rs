@@ -70,6 +70,13 @@ pub(crate) fn should_skip_sql_str(sql: &str) -> bool {
         "analyze sqlite_",
         "attach database",
         "detach database",
+        // Transaction control — skip PG routing, let SQLite handle (matches C shim)
+        "begin",
+        "end",
+        "commit",
+        "rollback",
+        "savepoint",
+        "release ",
     ];
 
     for prefix in PREFIX_PATTERNS {
@@ -133,9 +140,6 @@ pub(crate) fn is_write_operation_str(sql: &str) -> bool {
         || lower.starts_with("update")
         || lower.starts_with("delete")
         || lower.starts_with("replace")
-        // Treat transaction control statements as write-like so they are routed
-        // through the PostgreSQL execution path instead of shadow SQLite only.
-        || is_transaction_control_sql(&lower)
 }
 
 /// Returns true if the SQL is a read operation (SELECT).
@@ -560,52 +564,52 @@ mod tests {
 
     #[test]
     fn skip_begin() {
-        assert!(!should_skip_sql_str("BEGIN"));
+        assert!(should_skip_sql_str("BEGIN"));
     }
 
     #[test]
     fn skip_begin_immediate() {
-        assert!(!should_skip_sql_str("BEGIN IMMEDIATE"));
+        assert!(should_skip_sql_str("BEGIN IMMEDIATE"));
     }
 
     #[test]
     fn skip_commit() {
-        assert!(!should_skip_sql_str("COMMIT"));
+        assert!(should_skip_sql_str("COMMIT"));
     }
 
     #[test]
     fn skip_rollback() {
-        assert!(!should_skip_sql_str("ROLLBACK"));
+        assert!(should_skip_sql_str("ROLLBACK"));
     }
 
     #[test]
     fn skip_savepoint() {
-        assert!(!should_skip_sql_str("SAVEPOINT sp1"));
+        assert!(should_skip_sql_str("SAVEPOINT sp1"));
     }
 
     #[test]
     fn skip_release_savepoint() {
-        assert!(!should_skip_sql_str("RELEASE SAVEPOINT sp1"));
+        assert!(should_skip_sql_str("RELEASE SAVEPOINT sp1"));
     }
 
     #[test]
     fn skip_transaction_keywords_with_semicolon_and_case() {
-        assert!(!should_skip_sql_str("  begin immediate ;"));
-        assert!(!should_skip_sql_str("\tCoMmIt;"));
-        assert!(!should_skip_sql_str("Rollback ;"));
-        assert!(!should_skip_sql_str("end;"));
-        assert!(!should_skip_sql_str(" savepoint a ;"));
-        assert!(!should_skip_sql_str(" release a ;"));
-        assert!(!should_skip_sql_str("ReLeAsE savepoint a;"));
+        assert!(should_skip_sql_str("  begin immediate ;"));
+        assert!(should_skip_sql_str("\tCoMmIt;"));
+        assert!(should_skip_sql_str("Rollback ;"));
+        assert!(should_skip_sql_str("end;"));
+        assert!(should_skip_sql_str(" savepoint a ;"));
+        assert!(should_skip_sql_str(" release a ;"));
+        assert!(should_skip_sql_str("ReLeAsE savepoint a;"));
     }
 
     #[test]
     fn skip_transaction_keywords_with_leading_comments() {
-        assert!(!should_skip_sql_str("/*tx*/BEGIN"));
-        assert!(!should_skip_sql_str("-- tx\nCOMMIT"));
-        assert!(!should_skip_sql_str("/* tx */ ROLLBACK"));
-        assert!(!should_skip_sql_str("/* tx */ SAVEPOINT s1"));
-        assert!(!should_skip_sql_str("/* tx */ RELEASE s1"));
+        assert!(should_skip_sql_str("/*tx*/BEGIN"));
+        assert!(should_skip_sql_str("-- tx\nCOMMIT"));
+        assert!(should_skip_sql_str("/* tx */ ROLLBACK"));
+        assert!(should_skip_sql_str("/* tx */ SAVEPOINT s1"));
+        assert!(should_skip_sql_str("/* tx */ RELEASE s1"));
     }
 
     #[test]
@@ -760,51 +764,13 @@ mod tests {
     }
 
     #[test]
-    fn write_begin_is_write_like() {
-        assert!(is_write_operation_str("BEGIN"));
-    }
-
-    #[test]
-    fn write_begin_immediate_is_write_like() {
-        assert!(is_write_operation_str("BEGIN IMMEDIATE"));
-    }
-
-    #[test]
-    fn write_commit_is_write_like() {
-        assert!(is_write_operation_str("COMMIT"));
-    }
-
-    #[test]
-    fn write_rollback_is_write_like() {
-        assert!(is_write_operation_str("ROLLBACK"));
-    }
-
-    #[test]
-    fn write_savepoint_is_write_like() {
-        assert!(is_write_operation_str("SAVEPOINT sp1"));
-    }
-
-    #[test]
-    fn write_release_savepoint_is_write_like() {
-        assert!(is_write_operation_str("RELEASE SAVEPOINT sp1"));
-    }
-
-    #[test]
-    fn write_transaction_keywords_with_semicolon_and_case() {
-        assert!(is_write_operation_str("begin immediate;"));
-        assert!(is_write_operation_str(" COMMIT ;"));
-        assert!(is_write_operation_str("\trollback;"));
-        assert!(is_write_operation_str(" end ;"));
-        assert!(is_write_operation_str("SAVEPOINT s1;"));
-        assert!(is_write_operation_str("release s1 ;"));
-        assert!(is_write_operation_str("release savepoint s1 ;"));
-    }
-
-    #[test]
-    fn write_transaction_keywords_with_leading_comments() {
-        assert!(is_write_operation_str("/*tx*/BEGIN"));
-        assert!(is_write_operation_str("-- tx\nCOMMIT"));
-        assert!(is_write_operation_str("/* tx */ ROLLBACK"));
+    fn write_transaction_control_not_write() {
+        // Transaction control is skip-SQL (matches C shim), not write-like
+        assert!(!is_write_operation_str("BEGIN"));
+        assert!(!is_write_operation_str("COMMIT"));
+        assert!(!is_write_operation_str("ROLLBACK"));
+        assert!(!is_write_operation_str("SAVEPOINT sp1"));
+        assert!(!is_write_operation_str("RELEASE SAVEPOINT sp1"));
     }
 
     #[test]

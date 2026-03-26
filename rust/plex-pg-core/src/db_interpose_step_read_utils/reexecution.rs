@@ -82,8 +82,8 @@ pub extern "C" fn rust_step_read_prepare_reexecution_state(
             ));
         }
 
-        if !(*stmt).result.is_null() && (*stmt).metadata_only_result == 2 {
-            log_debug("STEP: Clearing metadata-only result for re-execution with bound params");
+        if !(*stmt).result.is_null() && (*stmt).metadata_only_result != 0 {
+            log_debug("STEP: Clearing metadata-only result for re-execution");
             crate::libpq_helpers::rust_pq_clear((*stmt).result);
             (*stmt).result = std::ptr::null_mut();
             (*stmt).metadata_only_result = 0;
