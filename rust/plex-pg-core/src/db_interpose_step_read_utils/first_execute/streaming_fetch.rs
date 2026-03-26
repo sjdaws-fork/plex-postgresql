@@ -45,6 +45,10 @@ pub(super) unsafe fn streaming_fetch_result(
 
     let first_status = crate::libpq_helpers::rust_pq_result_status(first_res);
     if first_status == PGRES_SINGLE_TUPLE {
+        // Clear any pre-existing result (e.g. from metadata-only fetch) to prevent leak
+        if !(*pg_stmt).result.is_null() {
+            crate::libpq_helpers::rust_pq_clear((*pg_stmt).result);
+        }
         (*pg_stmt).result = first_res;
         (*pg_stmt).current_row = 0;
         (*pg_stmt).num_rows = 1;

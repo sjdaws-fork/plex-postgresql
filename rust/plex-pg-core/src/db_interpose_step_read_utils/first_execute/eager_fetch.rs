@@ -7,6 +7,10 @@ pub(super) unsafe fn eager_fetch_result(
     stmt_guard: &mut PthreadMutexGuard,
     conn_guard: &mut PthreadMutexGuard,
 ) -> c_int {
+    // Clear any pre-existing result (e.g. from metadata-only fetch) to prevent leak
+    if !(*pg_stmt).result.is_null() {
+        crate::libpq_helpers::rust_pq_clear((*pg_stmt).result);
+    }
     (*pg_stmt).result = crate::libpq_helpers::rust_pq_get_result((*exec_conn).conn);
     let mut trail = crate::libpq_helpers::rust_pq_get_result((*exec_conn).conn);
     while !trail.is_null() {
