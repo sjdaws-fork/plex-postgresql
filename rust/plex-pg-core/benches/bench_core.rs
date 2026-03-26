@@ -39,15 +39,15 @@ fn bench_core(c: &mut Criterion) {
         })
     });
 
-    let replace_sql = "SELECT IFNULL(a, 0), IFNULL(b, 1), IFNULL(c, 2) FROM table WHERE IFNULL(d, 3) > 0";
+    let replace_sql =
+        "SELECT IFNULL(a, 0), IFNULL(b, 1), IFNULL(c, 2) FROM table WHERE IFNULL(d, 3) > 0";
     let old = CString::new("IFNULL").unwrap();
     let new_str = CString::new("COALESCE").unwrap();
     c.bench_function("core_string_replace", |b| {
         b.iter(|| {
             let input = CString::new(replace_sql).unwrap();
-            let ptr = unsafe {
-                rust_simple_str_replace(input.as_ptr(), old.as_ptr(), new_str.as_ptr())
-            };
+            let ptr =
+                unsafe { rust_simple_str_replace(input.as_ptr(), old.as_ptr(), new_str.as_ptr()) };
             if !ptr.is_null() {
                 unsafe { libc::free(ptr as *mut libc::c_void) };
             }

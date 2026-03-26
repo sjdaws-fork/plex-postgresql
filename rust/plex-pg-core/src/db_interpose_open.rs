@@ -11,7 +11,8 @@ const SQLITE_ERROR: c_int = 1;
 static NEEDLE_LIBRARY_DB: &[u8] = b"com.plexapp.plugins.library.db";
 
 extern "C" {
-    static mut orig_sqlite3_open: Option<unsafe extern "C" fn(*const c_char, *mut *mut sqlite3) -> c_int>;
+    static mut orig_sqlite3_open:
+        Option<unsafe extern "C" fn(*const c_char, *mut *mut sqlite3) -> c_int>;
     static mut orig_sqlite3_open_v2: Option<
         unsafe extern "C" fn(*const c_char, *mut *mut sqlite3, c_int, *const c_char) -> c_int,
     >;
@@ -53,10 +54,20 @@ pub extern "C" fn rust_my_sqlite3_open(filename: *const c_char, pp_db: *mut *mut
         redirect as i32
     ));
 
-    let rc = unsafe { orig_sqlite3_open.map(|f| f(filename, pp_db)).unwrap_or(SQLITE_ERROR) };
+    let rc = unsafe {
+        orig_sqlite3_open
+            .map(|f| f(filename, pp_db))
+            .unwrap_or(SQLITE_ERROR)
+    };
 
     if rc == SQLITE_OK && redirect {
-        let db = unsafe { if pp_db.is_null() { ptr::null_mut() } else { *pp_db } };
+        let db = unsafe {
+            if pp_db.is_null() {
+                ptr::null_mut()
+            } else {
+                *pp_db
+            }
+        };
         if !db.is_null() {
             let pg_conn = crate::pg_client::rust_pg_connect(filename, db);
             if !pg_conn.is_null() {
@@ -87,11 +98,20 @@ pub extern "C" fn rust_my_sqlite3_open_v2(
         redirect as i32
     ));
 
-    let rc =
-        unsafe { orig_sqlite3_open_v2.map(|f| f(filename, pp_db, flags, z_vfs)).unwrap_or(SQLITE_ERROR) };
+    let rc = unsafe {
+        orig_sqlite3_open_v2
+            .map(|f| f(filename, pp_db, flags, z_vfs))
+            .unwrap_or(SQLITE_ERROR)
+    };
 
     if rc == SQLITE_OK && redirect {
-        let db = unsafe { if pp_db.is_null() { ptr::null_mut() } else { *pp_db } };
+        let db = unsafe {
+            if pp_db.is_null() {
+                ptr::null_mut()
+            } else {
+                *pp_db
+            }
+        };
         if !db.is_null() {
             let pg_conn = crate::pg_client::rust_pg_connect(filename, db);
             if !pg_conn.is_null() {
@@ -111,10 +131,9 @@ pub extern "C" fn rust_my_sqlite3_open_v2(
 pub extern "C" fn rust_my_sqlite3_close(db: *mut sqlite3) -> c_int {
     let handle_conn = crate::pg_client::rust_pg_find_handle_connection(db);
     if !handle_conn.is_null() {
-        log_info(&format!(
-            "CLOSE: PostgreSQL connection for {}",
-            unsafe { cstr_to_string_or((*handle_conn).db_path.as_ptr(), "(null)") }
-        ));
+        log_info(&format!("CLOSE: PostgreSQL connection for {}", unsafe {
+            cstr_to_string_or((*handle_conn).db_path.as_ptr(), "(null)")
+        }));
 
         unsafe {
             if handle_conn_path_contains(handle_conn, NEEDLE_LIBRARY_DB) {

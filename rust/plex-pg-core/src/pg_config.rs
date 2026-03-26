@@ -340,7 +340,11 @@ fn init_config_once() {
         let schema = unsafe { cstr_to_str_or_empty((*cfg_ptr).schema.as_ptr() as *const c_char) };
         let msg = format!(
             "PostgreSQL config: {}@{}:{}/{} (schema: {})",
-            user, host, unsafe { (*cfg_ptr).port }, db, schema
+            user,
+            host,
+            unsafe { (*cfg_ptr).port },
+            db,
+            schema
         );
         if let Ok(cs) = CString::new(msg) {
             crate::pg_logging::rust_logging_write(1, cs.as_ptr());
@@ -544,7 +548,9 @@ mod tests {
 
     #[test]
     fn skip_icu_load_collation() {
-        assert!(should_skip_sql_str("icu_load_collation('en_US', 'icu_root')"));
+        assert!(should_skip_sql_str(
+            "icu_load_collation('en_US', 'icu_root')"
+        ));
     }
 
     #[test]

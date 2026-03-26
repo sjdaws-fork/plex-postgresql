@@ -1,13 +1,6 @@
-#ifndef DB_INTERPOSE_STEP_RESULT_H
-#define DB_INTERPOSE_STEP_RESULT_H
+#ifndef PLEX_PG_COMPAT_WRAPPER_INTERPOSE_DB_INTERPOSE_STEP_RESULT_H
+#define PLEX_PG_COMPAT_WRAPPER_INTERPOSE_DB_INTERPOSE_STEP_RESULT_H
 
-#include <sqlite3.h>
+#include "../../include/legacy/interpose/db_interpose_step_result.h"
 
-typedef enum {
-    STEP_RESULT_FALLBACK = -1,
-    STEP_RESULT_DONE = SQLITE_DONE,
-    STEP_RESULT_ROW = SQLITE_ROW,
-    STEP_RESULT_ERROR = SQLITE_ERROR
-} step_result_t;
-
-#endif
+#endif /* PLEX_PG_COMPAT_WRAPPER_INTERPOSE_DB_INTERPOSE_STEP_RESULT_H */

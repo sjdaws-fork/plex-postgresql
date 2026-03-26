@@ -144,18 +144,10 @@ unsafe fn resolve_symbols(frames: &[*mut c_void], out: &mut [ResolvedSymbol]) {
                         libc::strncpy(sym.func.as_mut_ptr(), demangled, sym.func.len() - 1);
                         libc::free(demangled as *mut c_void);
                     } else {
-                        libc::strncpy(
-                            sym.func.as_mut_ptr(),
-                            symbol_ptr,
-                            sym.func.len() - 1,
-                        );
+                        libc::strncpy(sym.func.as_mut_ptr(), symbol_ptr, sym.func.len() - 1);
                     }
                 } else {
-                    libc::strncpy(
-                        sym.func.as_mut_ptr(),
-                        symbol_ptr,
-                        sym.func.len() - 1,
-                    );
+                    libc::strncpy(sym.func.as_mut_ptr(), symbol_ptr, sym.func.len() - 1);
                 }
             }
         }
@@ -205,10 +197,18 @@ fn load_memory_map() -> Vec<MapEntry> {
         }
 
         let mut parts = line.split_whitespace();
-        let Some(range) = parts.next() else { continue; };
-        let Some((start_str, end_str)) = range.split_once('-') else { continue; };
-        let Ok(start) = usize::from_str_radix(start_str, 16) else { continue; };
-        let Ok(end) = usize::from_str_radix(end_str, 16) else { continue; };
+        let Some(range) = parts.next() else {
+            continue;
+        };
+        let Some((start_str, end_str)) = range.split_once('-') else {
+            continue;
+        };
+        let Ok(start) = usize::from_str_radix(start_str, 16) else {
+            continue;
+        };
+        let Ok(end) = usize::from_str_radix(end_str, 16) else {
+            continue;
+        };
 
         let path = parts.last().unwrap_or("[anonymous]");
         let mut entry = MapEntry::default();
@@ -235,7 +235,11 @@ fn find_lib_for_addr(entries: &[MapEntry], addr: usize) -> *const c_char {
         if addr >= entry.start && addr < entry.end {
             let path_ptr = entry.path.as_ptr();
             let base = unsafe { libc::strrchr(path_ptr, b'/' as c_int) };
-            return if base.is_null() { path_ptr } else { unsafe { base.add(1) } };
+            return if base.is_null() {
+                path_ptr
+            } else {
+                unsafe { base.add(1) }
+            };
         }
     }
     b"[unknown]\0".as_ptr() as *const c_char
@@ -259,7 +263,11 @@ unsafe fn resolve_symbols(frames: &[*mut c_void], out: &mut [ResolvedSymbol]) {
         if libc::dladdr(frames[i], &mut info) != 0 {
             if !info.dli_fname.is_null() {
                 let base = libc::strrchr(info.dli_fname, b'/' as c_int);
-                let lib_name = if base.is_null() { info.dli_fname } else { base.add(1) };
+                let lib_name = if base.is_null() {
+                    info.dli_fname
+                } else {
+                    base.add(1)
+                };
                 libc::strncpy(sym.lib.as_mut_ptr(), lib_name, sym.lib.len() - 1);
             }
 
@@ -267,7 +275,12 @@ unsafe fn resolve_symbols(frames: &[*mut c_void], out: &mut [ResolvedSymbol]) {
                 let demangle_opt = unsafe { cxa_demangle_fn };
                 if let Some(demangle) = demangle_opt {
                     let mut status: c_int = 0;
-                    let demangled = demangle(info.dli_sname, ptr::null_mut(), ptr::null_mut(), &mut status);
+                    let demangled = demangle(
+                        info.dli_sname,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        &mut status,
+                    );
                     if !demangled.is_null() && status == 0 {
                         libc::strncpy(sym.func.as_mut_ptr(), demangled, sym.func.len() - 1);
                         libc::free(demangled as *mut c_void);
@@ -307,7 +320,11 @@ unsafe fn resolve_symbols(frames: &[*mut c_void], out: &mut [ResolvedSymbol]) {
 
 fn write_stderr(msg: &str) {
     unsafe {
-        let _ = libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const c_void, msg.len());
+        let _ = libc::write(
+            libc::STDERR_FILENO,
+            msg.as_ptr() as *const c_void,
+            msg.len(),
+        );
     }
 }
 
@@ -336,9 +353,13 @@ pub extern "C" fn platform_print_backtrace(reason: *const c_char, skip_frames: c
     };
 
     write_stderr("\n");
-    write_stderr("╔══════════════════════════════════════════════════════════════════════════════╗\n");
+    write_stderr(
+        "╔══════════════════════════════════════════════════════════════════════════════╗\n",
+    );
     write_stderr(&format!("║ BACKTRACE: {:<67} ║\n", reason_str));
-    write_stderr("╠══════════════════════════════════════════════════════════════════════════════╣\n");
+    write_stderr(
+        "╠══════════════════════════════════════════════════════════════════════════════╣\n",
+    );
     log_error(&format!("=== BACKTRACE ({}) ===", reason_str));
 
     let mut symbols = vec![ResolvedSymbol::default(); depth];
@@ -395,5 +416,7 @@ pub extern "C" fn platform_print_backtrace(reason: *const c_char, skip_frames: c
             depth - start - MAX_DISPLAY
         ));
     }
-    write_stderr("╚══════════════════════════════════════════════════════════════════════════════╝\n");
+    write_stderr(
+        "╚══════════════════════════════════════════════════════════════════════════════╝\n",
+    );
 }

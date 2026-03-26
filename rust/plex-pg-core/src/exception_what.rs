@@ -1,6 +1,8 @@
 use std::os::raw::{c_char, c_int, c_void};
 
-use crate::db_interpose_common::{pg_exception_get_last_column, pg_exception_get_last_query, stderr_ptr};
+use crate::db_interpose_common::{
+    pg_exception_get_last_column, pg_exception_get_last_query, stderr_ptr,
+};
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod impl_unix {
@@ -9,8 +11,12 @@ mod impl_unix {
     use std::ptr;
 
     type TerminateHandler = extern "C" fn();
-    type CxaDemangleFn =
-        unsafe extern "C" fn(*const c_char, *mut c_char, *mut libc::size_t, *mut c_int) -> *mut c_char;
+    type CxaDemangleFn = unsafe extern "C" fn(
+        *const c_char,
+        *mut c_char,
+        *mut libc::size_t,
+        *mut c_int,
+    ) -> *mut c_char;
     type CxaSetTerminateFn = unsafe extern "C" fn(TerminateHandler) -> TerminateHandler;
     type CxaGetExceptionPtrFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
     type CxaCurrentExceptionTypeFn = unsafe extern "C" fn() -> *mut c_void;
@@ -39,12 +45,16 @@ mod impl_unix {
         if current.is_none() {
             let sym = load_sym_raw(b"__cxa_demangle\0");
             if !sym.is_null() {
-                *ptr::addr_of_mut!(crate::db_interpose_common::cxa_demangle_fn) = Some(
-                    std::mem::transmute::<
+                *ptr::addr_of_mut!(crate::db_interpose_common::cxa_demangle_fn) =
+                    Some(std::mem::transmute::<
                         *mut c_void,
-                        unsafe extern "C" fn(*const c_char, *mut c_char, *mut libc::size_t, *mut c_int) -> *mut c_char,
-                    >(sym),
-                );
+                        unsafe extern "C" fn(
+                            *const c_char,
+                            *mut c_char,
+                            *mut libc::size_t,
+                            *mut c_int,
+                        ) -> *mut c_char,
+                    >(sym));
             }
             current = read_option(slot);
         }
@@ -71,7 +81,10 @@ mod impl_unix {
         }
 
         for lib in ABI_LIBS.iter() {
-            let handle = libc::dlopen(lib.as_ptr() as *const c_char, libc::RTLD_NOW | libc::RTLD_LOCAL);
+            let handle = libc::dlopen(
+                lib.as_ptr() as *const c_char,
+                libc::RTLD_NOW | libc::RTLD_LOCAL,
+            );
             if handle.is_null() {
                 continue;
             }
@@ -108,7 +121,9 @@ mod impl_unix {
             if !sym.is_null() {
                 ptr::write(
                     slot,
-                    Some(std::mem::transmute::<*mut c_void, CxaGetExceptionPtrFn>(sym)),
+                    Some(std::mem::transmute::<*mut c_void, CxaGetExceptionPtrFn>(
+                        sym,
+                    )),
                 );
                 current = ptr::read(slot);
             }
@@ -140,7 +155,10 @@ mod impl_unix {
             if !sym.is_null() {
                 ptr::write(
                     slot,
-                    Some(std::mem::transmute::<*mut c_void, CxaCurrentPrimaryExceptionFn>(sym)),
+                    Some(std::mem::transmute::<
+                        *mut c_void,
+                        CxaCurrentPrimaryExceptionFn,
+                    >(sym)),
                 );
                 current = ptr::read(slot);
             }
@@ -156,7 +174,10 @@ mod impl_unix {
             if !sym.is_null() {
                 ptr::write(
                     slot,
-                    Some(std::mem::transmute::<*mut c_void, CxaDecrementExceptionRefcountFn>(sym)),
+                    Some(std::mem::transmute::<
+                        *mut c_void,
+                        CxaDecrementExceptionRefcountFn,
+                    >(sym)),
                 );
                 current = ptr::read(slot);
             }
@@ -170,7 +191,10 @@ mod impl_unix {
         if current.is_none() {
             let sym = load_sym_raw(b"__dynamic_cast\0");
             if !sym.is_null() {
-                ptr::write(slot, Some(std::mem::transmute::<*mut c_void, DynamicCastFn>(sym)));
+                ptr::write(
+                    slot,
+                    Some(std::mem::transmute::<*mut c_void, DynamicCastFn>(sym)),
+                );
                 current = ptr::read(slot);
             }
         }
@@ -235,7 +259,11 @@ mod impl_unix {
                 demangled = demangle(type_name, ptr::null_mut(), ptr::null_mut(), &mut status);
             }
         }
-        let readable = if !demangled.is_null() { demangled } else { type_name };
+        let readable = if !demangled.is_null() {
+            demangled
+        } else {
+            type_name
+        };
         (readable, demangled)
     }
 
@@ -245,7 +273,9 @@ mod impl_unix {
             let mut what_buf: [c_char; 257] = [0; 257];
             let mut demangled: *mut c_char = ptr::null_mut();
 
-            let tinfo = cxa_current_exception_type().map(|f| f()).unwrap_or(ptr::null_mut());
+            let tinfo = cxa_current_exception_type()
+                .map(|f| f())
+                .unwrap_or(ptr::null_mut());
             if !tinfo.is_null() {
                 let name = typeinfo_name(tinfo);
                 if !name.is_null() {
@@ -259,7 +289,12 @@ mod impl_unix {
             if let Some(get_primary) = cxa_current_primary_exception() {
                 let primary = get_primary();
                 if !primary.is_null() && !tinfo.is_null() {
-                    let _ = pg_exception_extract_what(primary, tinfo, what_buf.as_mut_ptr(), what_buf.len());
+                    let _ = pg_exception_extract_what(
+                        primary,
+                        tinfo,
+                        what_buf.as_mut_ptr(),
+                        what_buf.len(),
+                    );
                     if let Some(dec) = cxa_decrement_exception_refcount() {
                         dec(primary);
                     }
@@ -399,15 +434,21 @@ mod impl_unix {
                 return 0;
             }
 
-            let what_fn: extern "C" fn(*const c_void) -> *const c_char =
-                std::mem::transmute::<*const c_void, extern "C" fn(*const c_void) -> *const c_char>(what_ptr);
+            let what_fn: extern "C" fn(*const c_void) -> *const c_char = std::mem::transmute::<
+                *const c_void,
+                extern "C" fn(*const c_void) -> *const c_char,
+            >(what_ptr);
             let msg = what_fn(as_std as *const c_void);
             if msg.is_null() || *msg == 0 {
                 return 0;
             }
 
             let _ = libc::snprintf(out_buf, out_buf_len, b"%s\0".as_ptr() as *const c_char, msg);
-            if *out_buf != 0 { 1 } else { 0 }
+            if *out_buf != 0 {
+                1
+            } else {
+                0
+            }
         }
     }
 }

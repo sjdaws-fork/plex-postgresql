@@ -40,7 +40,8 @@ fn logging_concurrency_completes() {
 
 #[test]
 fn column_type_verbose_is_not_log_info() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/db_interpose_column.rs");
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/db_interpose_column.rs");
     if !path.exists() {
         return;
     }
@@ -63,7 +64,8 @@ fn column_type_verbose_is_not_log_info() {
 
 #[test]
 fn log_error_used_for_real_errors() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/db_interpose_column.rs");
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/db_interpose_column.rs");
     if !path.exists() {
         return;
     }

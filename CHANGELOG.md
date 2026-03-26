@@ -5,6 +5,20 @@ All notable changes to plex-postgresql will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-26
+
+### Changed
+- **Full Rust shim runtime** — all interpose/runtime C code eliminated. The shim is now 100% Rust (compiled to a single `.dylib`/`.so` via static linking). No C object files remain.
+- **Module split** — large monolithic Rust files split into focused submodules: `db_interpose_column/`, `db_interpose_common/`, `db_interpose_step/`, `db_interpose_prepare/`, `pg_client/`, `pg_statement/`, and 15+ other module directories.
+- **Thread-local text buffers heap-allocated** — fixes stack overflow on Plex worker threads (544K stacks) by using `Box::new()` for the 512KB column text buffer pool.
+
+### Fixed
+- **Connection mutex self-deadlock** — `PgConnection.mutex` changed from `PTHREAD_MUTEX_DEFAULT` to `PTHREAD_MUTEX_RECURSIVE`, matching `PgStmt.mutex`. Fixes self-deadlock when `ensure_pg_result_for_metadata` calls `resolve_column_tables_impl` on the same connection.
+- **Connection mutex convoy** — `ensure_pg_result_for_metadata` now releases the connection mutex before calling `resolve_column_tables`, reducing lock hold time and preventing thread convoy effects under concurrent metadata access.
+- **ABBA deadlock (stmt mutex / LOGGER mutex)** — logging calls removed from inside stmt/conn mutex scopes across all column accessor modules. Logger uses `try_lock` with stderr fallback when contended.
+- **Double-lock on stmt mutex** — `validate_type_consistency` moved outside the stmt mutex scope in scalar accessors. `ensure_pg_result_for_metadata` and `allocate_fake_sqlite_value` moved outside stmt mutex in metadata/value accessors.
+- **rusqlite 0.32 compatibility** — test files updated to use FFI `sqlite3_prepare_v2` instead of removed `Statement::as_raw()` method.
+
 ## [1.0.0] - 2026-02-22
 
 ### Changed

@@ -11,9 +11,7 @@ use crate::db_interpose_common;
 use crate::db_interpose_common::stderr_ptr;
 use crate::exception_what::pg_exception_install_terminate_logger;
 use crate::fishhook::{self, Rebinding};
-use crate::runtime_common::{
-    handle_exception_with_tls, log_shim_unloading, shim_init_common,
-};
+use crate::runtime_common::{handle_exception_with_tls, log_shim_unloading, shim_init_common};
 
 type CxaThrowFn =
     unsafe extern "C" fn(*mut c_void, *mut c_void, Option<unsafe extern "C" fn(*mut c_void)>) -> !;
@@ -53,85 +51,416 @@ fn setup_fishhook_rebindings() {
     unsafe {
         let mut rebindings = [
             // Open/Close
-            Rebinding { name: b"sqlite3_open\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_open as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_open)) },
-            Rebinding { name: b"sqlite3_open_v2\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_open_v2 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_open_v2)) },
-            Rebinding { name: b"sqlite3_close\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_close as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_close)) },
-            Rebinding { name: b"sqlite3_close_v2\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_close_v2 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_close_v2)) },
-
+            Rebinding {
+                name: b"sqlite3_open\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_open as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_open)),
+            },
+            Rebinding {
+                name: b"sqlite3_open_v2\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_open_v2 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_open_v2)),
+            },
+            Rebinding {
+                name: b"sqlite3_close\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_close as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_close)),
+            },
+            Rebinding {
+                name: b"sqlite3_close_v2\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_close_v2 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_close_v2
+                )),
+            },
             // Exec
-            Rebinding { name: b"sqlite3_exec\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_exec as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_exec)) },
-            Rebinding { name: b"sqlite3_get_table\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_get_table as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_get_table)) },
-
+            Rebinding {
+                name: b"sqlite3_exec\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_exec as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_exec)),
+            },
+            Rebinding {
+                name: b"sqlite3_get_table\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_get_table as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_get_table
+                )),
+            },
             // Metadata
-            Rebinding { name: b"sqlite3_changes\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_changes as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_changes)) },
-            Rebinding { name: b"sqlite3_changes64\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_changes64 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_changes64)) },
-            Rebinding { name: b"sqlite3_last_insert_rowid\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_last_insert_rowid as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_last_insert_rowid)) },
-            Rebinding { name: b"sqlite3_errmsg\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_errmsg as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_errmsg)) },
-            Rebinding { name: b"sqlite3_errcode\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_errcode as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_errcode)) },
-            Rebinding { name: b"sqlite3_extended_errcode\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_extended_errcode as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_extended_errcode)) },
-
+            Rebinding {
+                name: b"sqlite3_changes\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_changes as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_changes)),
+            },
+            Rebinding {
+                name: b"sqlite3_changes64\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_changes64 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_changes64
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_last_insert_rowid\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_last_insert_rowid as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_last_insert_rowid
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_errmsg\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_errmsg as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_errmsg)),
+            },
+            Rebinding {
+                name: b"sqlite3_errcode\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_errcode as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_errcode)),
+            },
+            Rebinding {
+                name: b"sqlite3_extended_errcode\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_extended_errcode as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_extended_errcode
+                )),
+            },
             // Prepare
-            Rebinding { name: b"sqlite3_prepare\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_prepare as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_prepare)) },
-            Rebinding { name: b"sqlite3_prepare_v2\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_prepare_v2 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_prepare_v2)) },
-            Rebinding { name: b"sqlite3_prepare_v3\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_prepare_v3 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_prepare_v3)) },
-            Rebinding { name: b"sqlite3_prepare16_v2\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_prepare16_v2 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_prepare16_v2)) },
-
+            Rebinding {
+                name: b"sqlite3_prepare\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_prepare as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_prepare)),
+            },
+            Rebinding {
+                name: b"sqlite3_prepare_v2\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_prepare_v2 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_prepare_v2
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_prepare_v3\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_prepare_v3 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_prepare_v3
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_prepare16_v2\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_prepare16_v2 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_prepare16_v2
+                )),
+            },
             // Bind
-            Rebinding { name: b"sqlite3_bind_int\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_int as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_int)) },
-            Rebinding { name: b"sqlite3_bind_int64\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_int64 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_int64)) },
-            Rebinding { name: b"sqlite3_bind_double\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_double as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_double)) },
-            Rebinding { name: b"sqlite3_bind_text\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_text as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_text)) },
-            Rebinding { name: b"sqlite3_bind_text64\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_text64 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_text64)) },
-            Rebinding { name: b"sqlite3_bind_blob\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_blob as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_blob)) },
-            Rebinding { name: b"sqlite3_bind_blob64\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_blob64 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_blob64)) },
-            Rebinding { name: b"sqlite3_bind_value\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_value as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_value)) },
-            Rebinding { name: b"sqlite3_bind_null\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_null as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_null)) },
-
+            Rebinding {
+                name: b"sqlite3_bind_int\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_int as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_int
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_int64\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_int64 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_int64
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_double\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_double as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_double
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_text\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_text as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_text
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_text64\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_text64 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_text64
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_blob\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_blob as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_blob
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_blob64\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_blob64 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_blob64
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_value\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_value as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_value
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_null\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_null as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_null
+                )),
+            },
             // Step/Reset/Finalize
-            Rebinding { name: b"sqlite3_step\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_step as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_step)) },
-            Rebinding { name: b"sqlite3_reset\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_reset as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_reset)) },
-            Rebinding { name: b"sqlite3_finalize\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_finalize as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_finalize)) },
-            Rebinding { name: b"sqlite3_clear_bindings\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_clear_bindings as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_clear_bindings)) },
-
+            Rebinding {
+                name: b"sqlite3_step\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_step as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_step)),
+            },
+            Rebinding {
+                name: b"sqlite3_reset\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_reset as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_reset)),
+            },
+            Rebinding {
+                name: b"sqlite3_finalize\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_finalize as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_finalize
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_clear_bindings\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_clear_bindings as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_clear_bindings
+                )),
+            },
             // Column access
-            Rebinding { name: b"sqlite3_column_count\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_count as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_count)) },
-            Rebinding { name: b"sqlite3_column_type\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_type as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_type)) },
-            Rebinding { name: b"sqlite3_column_int\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_int as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_int)) },
-            Rebinding { name: b"sqlite3_column_int64\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_int64 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_int64)) },
-            Rebinding { name: b"sqlite3_column_double\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_double as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_double)) },
-            Rebinding { name: b"sqlite3_column_text\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_text as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_text)) },
-            Rebinding { name: b"sqlite3_column_blob\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_blob as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_blob)) },
-            Rebinding { name: b"sqlite3_column_bytes\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_bytes as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_bytes)) },
-            Rebinding { name: b"sqlite3_column_name\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_name as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_name)) },
-            Rebinding { name: b"sqlite3_column_decltype\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_decltype as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_decltype)) },
-            Rebinding { name: b"sqlite3_column_value\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_column_value as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_column_value)) },
-            Rebinding { name: b"sqlite3_data_count\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_data_count as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_data_count)) },
-
+            Rebinding {
+                name: b"sqlite3_column_count\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_count as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_count
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_type\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_type as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_type
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_int\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_int as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_int
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_int64\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_int64 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_int64
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_double\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_double as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_double
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_text\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_text as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_text
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_blob\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_blob as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_blob
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_bytes\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_bytes as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_bytes
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_name\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_name as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_name
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_decltype\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_decltype as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_decltype
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_column_value\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_column_value as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_column_value
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_data_count\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_data_count as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_data_count
+                )),
+            },
             // Value access
-            Rebinding { name: b"sqlite3_value_type\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_value_type as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_value_type)) },
-            Rebinding { name: b"sqlite3_value_text\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_value_text as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_value_text)) },
-            Rebinding { name: b"sqlite3_value_int\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_value_int as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_value_int)) },
-            Rebinding { name: b"sqlite3_value_int64\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_value_int64 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_value_int64)) },
-            Rebinding { name: b"sqlite3_value_double\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_value_double as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_value_double)) },
-            Rebinding { name: b"sqlite3_value_bytes\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_value_bytes as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_value_bytes)) },
-            Rebinding { name: b"sqlite3_value_blob\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_value_blob as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_value_blob)) },
-
+            Rebinding {
+                name: b"sqlite3_value_type\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_value_type as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_value_type
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_value_text\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_value_text as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_value_text
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_value_int\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_value_int as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_value_int
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_value_int64\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_value_int64 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_value_int64
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_value_double\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_value_double as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_value_double
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_value_bytes\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_value_bytes as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_value_bytes
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_value_blob\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_value_blob as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_value_blob
+                )),
+            },
             // Collation
-            Rebinding { name: b"sqlite3_create_collation\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_create_collation as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_create_collation)) },
-            Rebinding { name: b"sqlite3_create_collation_v2\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_create_collation_v2 as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_create_collation_v2)) },
-
+            Rebinding {
+                name: b"sqlite3_create_collation\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_create_collation as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_create_collation
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_create_collation_v2\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_create_collation_v2 as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_create_collation_v2
+                )),
+            },
             // Memory and statement info
-            Rebinding { name: b"sqlite3_free\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_free as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_free)) },
-            Rebinding { name: b"sqlite3_malloc\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_malloc as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_malloc)) },
-            Rebinding { name: b"sqlite3_db_handle\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_db_handle as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_db_handle)) },
-            Rebinding { name: b"sqlite3_sql\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_sql as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_sql)) },
-            Rebinding { name: b"sqlite3_expanded_sql\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_expanded_sql as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_expanded_sql)) },
-            Rebinding { name: b"sqlite3_bind_parameter_count\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_parameter_count as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_parameter_count)) },
-            Rebinding { name: b"sqlite3_bind_parameter_index\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_parameter_index as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_parameter_index)) },
-            Rebinding { name: b"sqlite3_stmt_readonly\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_stmt_readonly as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_stmt_readonly)) },
-            Rebinding { name: b"sqlite3_stmt_busy\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_stmt_busy as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_stmt_busy)) },
-            Rebinding { name: b"sqlite3_stmt_status\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_stmt_status as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_stmt_status)) },
-            Rebinding { name: b"sqlite3_bind_parameter_name\0".as_ptr() as *const c_char, replacement: c_abi::my_sqlite3_bind_parameter_name as *const c_void, replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_bind_parameter_name)) },
+            Rebinding {
+                name: b"sqlite3_free\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_free as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_free)),
+            },
+            Rebinding {
+                name: b"sqlite3_malloc\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_malloc as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_malloc)),
+            },
+            Rebinding {
+                name: b"sqlite3_db_handle\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_db_handle as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_db_handle
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_sql\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_sql as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(db_interpose_common::orig_sqlite3_sql)),
+            },
+            Rebinding {
+                name: b"sqlite3_expanded_sql\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_expanded_sql as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_expanded_sql
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_parameter_count\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_parameter_count as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_parameter_count
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_parameter_index\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_parameter_index as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_parameter_index
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_stmt_readonly\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_stmt_readonly as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_stmt_readonly
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_stmt_busy\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_stmt_busy as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_stmt_busy
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_stmt_status\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_stmt_status as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_stmt_status
+                )),
+            },
+            Rebinding {
+                name: b"sqlite3_bind_parameter_name\0".as_ptr() as *const c_char,
+                replacement: c_abi::my_sqlite3_bind_parameter_name as *const c_void,
+                replaced: opt_slot(ptr::addr_of_mut!(
+                    db_interpose_common::orig_sqlite3_bind_parameter_name
+                )),
+            },
         ];
 
         let result = fishhook::rebind_symbols(&mut rebindings);
@@ -176,8 +505,7 @@ fn setup_exception_rebinding_if_enabled() {
             pg_exception_install_terminate_logger();
             let _ = libc::fprintf(
                 stderr_ptr(),
-                b"[SHIM_INIT] Exception terminate logger enabled\n\0".as_ptr()
-                    as *const c_char,
+                b"[SHIM_INIT] Exception terminate logger enabled\n\0".as_ptr() as *const c_char,
             );
         } else {
             let _ = libc::fprintf(
@@ -202,7 +530,10 @@ unsafe fn load_sqlite_fallback() {
         if !db_interpose_common::sqlite_handle.is_null() {
             break;
         }
-        let handle = libc::dlopen(path.as_ptr() as *const c_char, libc::RTLD_LAZY | libc::RTLD_LOCAL);
+        let handle = libc::dlopen(
+            path.as_ptr() as *const c_char,
+            libc::RTLD_LAZY | libc::RTLD_LOCAL,
+        );
         if !handle.is_null() {
             db_interpose_common::sqlite_handle = handle;
             let _ = libc::fprintf(
@@ -214,8 +545,14 @@ unsafe fn load_sqlite_fallback() {
     }
 
     if !db_interpose_common::sqlite_handle.is_null()
-        && (read_option(std::ptr::addr_of!(db_interpose_common::shim_sqlite3_prepare_v2)).is_none()
-            || read_option(std::ptr::addr_of!(db_interpose_common::orig_sqlite3_prepare_v2)).is_none())
+        && (read_option(std::ptr::addr_of!(
+            db_interpose_common::shim_sqlite3_prepare_v2
+        ))
+        .is_none()
+            || read_option(std::ptr::addr_of!(
+                db_interpose_common::orig_sqlite3_prepare_v2
+            ))
+            .is_none())
     {
         let _ = libc::fprintf(
             stderr_ptr(),
@@ -228,22 +565,29 @@ unsafe fn load_sqlite_fallback() {
 #[no_mangle]
 pub extern "C" fn ensure_real_sqlite_loaded() {
     unsafe {
-        if read_option(std::ptr::addr_of!(db_interpose_common::shim_sqlite3_prepare_v2)).is_some() {
+        if read_option(std::ptr::addr_of!(
+            db_interpose_common::shim_sqlite3_prepare_v2
+        ))
+        .is_some()
+        {
             return;
         }
         if db_interpose_common::sqlite_handle.is_null() {
             load_sqlite_fallback();
         }
         if !db_interpose_common::sqlite_handle.is_null() {
-            db_interpose_common::shim_sqlite3_prepare_v2 = Some(std::mem::transmute(
-                libc::dlsym(db_interpose_common::sqlite_handle, b"sqlite3_prepare_v2\0".as_ptr() as *const c_char),
-            ));
-            db_interpose_common::shim_sqlite3_errmsg = Some(std::mem::transmute(
-                libc::dlsym(db_interpose_common::sqlite_handle, b"sqlite3_errmsg\0".as_ptr() as *const c_char),
-            ));
-            db_interpose_common::shim_sqlite3_errcode = Some(std::mem::transmute(
-                libc::dlsym(db_interpose_common::sqlite_handle, b"sqlite3_errcode\0".as_ptr() as *const c_char),
-            ));
+            db_interpose_common::shim_sqlite3_prepare_v2 = Some(std::mem::transmute(libc::dlsym(
+                db_interpose_common::sqlite_handle,
+                b"sqlite3_prepare_v2\0".as_ptr() as *const c_char,
+            )));
+            db_interpose_common::shim_sqlite3_errmsg = Some(std::mem::transmute(libc::dlsym(
+                db_interpose_common::sqlite_handle,
+                b"sqlite3_errmsg\0".as_ptr() as *const c_char,
+            )));
+            db_interpose_common::shim_sqlite3_errcode = Some(std::mem::transmute(libc::dlsym(
+                db_interpose_common::sqlite_handle,
+                b"sqlite3_errcode\0".as_ptr() as *const c_char,
+            )));
         }
     }
 }

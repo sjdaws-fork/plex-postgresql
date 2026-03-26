@@ -26,10 +26,9 @@ fn count_sql_params(sql: Option<&str>) -> i32 {
             continue;
         }
         if b == b':' {
-            let prev_ok = i == 0
-                || matches!(bytes[i - 1], b' ' | b',' | b'(' | b'=');
-            let next_ok = i + 1 < bytes.len()
-                && (bytes[i + 1] == b'_' || bytes[i + 1].is_ascii_alphabetic());
+            let prev_ok = i == 0 || matches!(bytes[i - 1], b' ' | b',' | b'(' | b'=');
+            let next_ok =
+                i + 1 < bytes.len() && (bytes[i + 1] == b'_' || bytes[i + 1].is_ascii_alphabetic());
             if prev_ok && next_ok {
                 count += 1;
                 i += 1;
@@ -74,32 +73,63 @@ fn count_zero_params() {
 #[test]
 fn count_question_mark_params() {
     assert_eq!(count_sql_params(Some("SELECT * FROM foo WHERE id = ?")), 1);
-    assert_eq!(count_sql_params(Some("SELECT * FROM foo WHERE a = ? AND b = ?")), 2);
-    assert_eq!(count_sql_params(Some("INSERT INTO t VALUES (?, ?, ?, ?)")), 4);
+    assert_eq!(
+        count_sql_params(Some("SELECT * FROM foo WHERE a = ? AND b = ?")),
+        2
+    );
+    assert_eq!(
+        count_sql_params(Some("INSERT INTO t VALUES (?, ?, ?, ?)")),
+        4
+    );
 }
 
 #[test]
 fn count_named_params() {
-    assert_eq!(count_sql_params(Some("SELECT * FROM foo WHERE id = :C1")), 1);
-    assert_eq!(count_sql_params(Some("SELECT * FROM foo WHERE a = :C1 AND b = :C2")), 2);
+    assert_eq!(
+        count_sql_params(Some("SELECT * FROM foo WHERE id = :C1")),
+        1
+    );
+    assert_eq!(
+        count_sql_params(Some("SELECT * FROM foo WHERE a = :C1 AND b = :C2")),
+        2
+    );
 }
 
 #[test]
 fn count_mixed_params() {
-    assert_eq!(count_sql_params(Some("SELECT * FROM foo WHERE a = ? AND b = :C1")), 2);
-    assert_eq!(count_sql_params(Some("SELECT * FROM foo WHERE a = :C1 AND b = ? AND c = :C2")), 3);
+    assert_eq!(
+        count_sql_params(Some("SELECT * FROM foo WHERE a = ? AND b = :C1")),
+        2
+    );
+    assert_eq!(
+        count_sql_params(Some(
+            "SELECT * FROM foo WHERE a = :C1 AND b = ? AND c = :C2"
+        )),
+        3
+    );
 }
 
 #[test]
 fn count_params_in_quotes_ignored() {
     assert_eq!(count_sql_params(Some("SELECT * FROM foo WHERE a = '?'")), 0);
-    assert_eq!(count_sql_params(Some("UPDATE t SET guid=REPLACE(guid,'?lang=en','?lang=xn')")), 0);
-    assert_eq!(count_sql_params(Some("SELECT * FROM foo WHERE a = '?' AND b = ?")), 1);
+    assert_eq!(
+        count_sql_params(Some(
+            "UPDATE t SET guid=REPLACE(guid,'?lang=en','?lang=xn')"
+        )),
+        0
+    );
+    assert_eq!(
+        count_sql_params(Some("SELECT * FROM foo WHERE a = '?' AND b = ?")),
+        1
+    );
 }
 
 #[test]
 fn count_colon_not_param() {
-    assert_eq!(count_sql_params(Some("SELECT 'http://example.com' FROM foo")), 0);
+    assert_eq!(
+        count_sql_params(Some("SELECT 'http://example.com' FROM foo")),
+        0
+    );
     assert_eq!(count_sql_params(Some("SELECT '12:30:00' FROM foo")), 0);
     assert_eq!(count_sql_params(Some("SELECT id::text FROM foo")), 0);
 }

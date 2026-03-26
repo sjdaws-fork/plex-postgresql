@@ -31,7 +31,12 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
             "DECLTYPE_CACHE: Connection {:p} is streaming_active, getting alternate",
             pg_conn
         ));
-        let alt = unsafe { pg_get_thread_connection((*pg_conn).db_path.as_ptr()) };
+        let alt = unsafe {
+            crate::pg_client::pg_get_thread_connection_excluding(
+                (*pg_conn).db_path.as_ptr(),
+                pg_conn as *const c_void,
+            )
+        };
         if !alt.is_null()
             && unsafe { !(*alt).conn.is_null() }
             && alt != pg_conn

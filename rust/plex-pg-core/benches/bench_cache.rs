@@ -1,5 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use std::sync::{atomic::{AtomicU64, AtomicUsize, Ordering}, Mutex, RwLock};
+use std::sync::{
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    Mutex, RwLock,
+};
 
 const CACHE_SIZE: usize = 512;
 const CACHE_MASK: usize = CACHE_SIZE - 1;
@@ -38,7 +41,10 @@ impl MutexCache {
             for i in 0..8 {
                 let slot = (start + i) & CACHE_MASK;
                 if entries[slot].is_none() {
-                    entries[slot] = Some(Entry { hash: *h, idx: *idx });
+                    entries[slot] = Some(Entry {
+                        hash: *h,
+                        idx: *idx,
+                    });
                     break;
                 }
             }
@@ -79,7 +85,10 @@ impl RwCache {
             for i in 0..8 {
                 let slot = (start + i) & CACHE_MASK;
                 if entries[slot].is_none() {
-                    entries[slot] = Some(Entry { hash: *h, idx: *idx });
+                    entries[slot] = Some(Entry {
+                        hash: *h,
+                        idx: *idx,
+                    });
                     break;
                 }
             }
@@ -114,7 +123,10 @@ fn tls_populate(hashes: &[(u64, usize)]) {
             for i in 0..8 {
                 let slot = (start + i) & CACHE_MASK;
                 if entries[slot].is_none() {
-                    entries[slot] = Some(Entry { hash: *h, idx: *idx });
+                    entries[slot] = Some(Entry {
+                        hash: *h,
+                        idx: *idx,
+                    });
                     break;
                 }
             }

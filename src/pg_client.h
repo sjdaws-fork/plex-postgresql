@@ -1,65 +1,6 @@
-/*
- * PostgreSQL Shim - Client/Connection Module
- * Connection management and registry
- */
+#ifndef PLEX_PG_COMPAT_WRAPPER_PG_CLIENT_H
+#define PLEX_PG_COMPAT_WRAPPER_PG_CLIENT_H
 
-#ifndef PG_CLIENT_H
-#define PG_CLIENT_H
+#include "../include/legacy/pg_client.h"
 
-#include "pg_types.h"
-
-// Initialize/cleanup client module
-void pg_client_init(void);
-void pg_client_cleanup(void);
-
-// Connection lifecycle
-pg_connection_t* pg_connect(const char *db_path, sqlite3 *shadow_db);
-void pg_close(pg_connection_t *conn);
-int pg_ensure_connection(pg_connection_t *conn);
-
-// Connection registry (maps sqlite3* -> pg_connection_t*)
-void pg_register_connection(pg_connection_t *conn);
-void pg_unregister_connection(pg_connection_t *conn);
-pg_connection_t* pg_find_connection(sqlite3 *db);          // Returns pool conn for library.db
-pg_connection_t* pg_find_handle_connection(sqlite3 *db);   // Returns registered handle (never pool)
-pg_connection_t* pg_find_any_library_connection(void);
-
-// Thread-local connection (one PG connection per thread for library.db)
-pg_connection_t* pg_get_thread_connection(const char *db_path);
-
-// v0.9.4.4: Validate that a connection pointer is still in the pool
-// Returns 1 if valid, 0 if not found (connection was freed/reallocated)
-int pg_pool_validate_connection(pg_connection_t *conn);
-
-// Update last_used timestamp to prevent pool slot from being released
-// CRITICAL: Call during long-running operations to keep connection alive
-void pg_pool_touch_connection(pg_connection_t *conn);
-
-// Check connection health after query error, reset if corrupted
-// Call this after any query that returns an unexpected error
-// Returns 1 if connection was reset, 0 if still healthy
-int pg_pool_check_connection_health(pg_connection_t *conn);
-
-// Close pool connection for a database handle (called on sqlite3_close)
-void pg_close_pool_for_db(sqlite3 *db);
-
-// Global state
-sqlite3_int64 pg_get_global_metadata_id(void);
-void pg_set_global_metadata_id(sqlite3_int64 id);
-sqlite3_int64 pg_get_global_last_insert_rowid(void);
-void pg_set_global_last_insert_rowid(sqlite3_int64 id);
-
-// Prepared statement cache management
-uint64_t pg_hash_sql(const char *sql);
-int pg_stmt_cache_lookup(pg_connection_t *conn, uint64_t sql_hash, const char **stmt_name);
-int pg_stmt_cache_add(pg_connection_t *conn, uint64_t sql_hash, const char *stmt_name, int param_count);
-void pg_stmt_cache_clear(pg_connection_t *conn);
-void pg_stmt_cache_clear_local(pg_connection_t *conn);  // Clear local cache only (no DEALLOCATE)
-int pg_is_stale_prepared_stmt(PGresult *res);            // Check SQLSTATE 26000
-int pg_is_duplicate_prepared_stmt(PGresult *res);        // Check SQLSTATE 42P05
-
-// Fork safety - clean up connection pool in child process after fork()
-// Called by pthread_atfork handler to prevent child from using parent's connections
-void pg_pool_cleanup_after_fork(void);
-
-#endif // PG_CLIENT_H
+#endif /* PLEX_PG_COMPAT_WRAPPER_PG_CLIENT_H */

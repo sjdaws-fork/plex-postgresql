@@ -31,7 +31,8 @@ fn gap_virtual_table_fts5_should_be_rewritten_to_pg_fts_schema() {
 
 #[test]
 fn gap_virtual_table_rtree_should_be_rewritten() {
-    let out = translate_sql("CREATE VIRTUAL TABLE spatial_idx USING rtree(id, minX, maxX, minY, maxY)");
+    let out =
+        translate_sql("CREATE VIRTUAL TABLE spatial_idx USING rtree(id, minX, maxX, minY, maxY)");
     assert!(
         !out.to_lowercase().contains("using rtree"),
         "expected RTREE rewrite, got: {}",
@@ -45,7 +46,9 @@ fn gap_json_tree_should_map_to_pg_json_set_returning_function() {
     let out = translate_sql("SELECT * FROM json_tree('{\"a\":1,\"b\":2}')");
     let low = out.to_lowercase();
     assert!(
-        low.contains("jsonb_path_query") || low.contains("jsonb_each") || low.contains("jsonb_each_text"),
+        low.contains("jsonb_path_query")
+            || low.contains("jsonb_each")
+            || low.contains("jsonb_each_text"),
         "expected json_tree rewrite to PostgreSQL jsonb function, got: {}",
         out
     );

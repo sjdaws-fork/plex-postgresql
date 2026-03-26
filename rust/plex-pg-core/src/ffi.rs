@@ -9,8 +9,8 @@
 ///   sql_translator_translation_free()— free sql + param_names inside a SqlTranslation
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_void};
 use std::mem::size_of;
+use std::os::raw::{c_char, c_void};
 use std::ptr;
 
 // ─── Thread-local error storage ───────────────────────────────────────────────
@@ -170,11 +170,11 @@ pub extern "C" fn sql_translator_free(ptr: *mut c_char) {
 pub extern "C" fn sql_translator_last_error() -> *const c_char {
     LAST_ERROR
         .try_with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .map(|cs| cs.as_ptr())
-            .unwrap_or(std::ptr::null())
-    })
+            cell.borrow()
+                .as_ref()
+                .map(|cs| cs.as_ptr())
+                .unwrap_or(std::ptr::null())
+        })
         .unwrap_or(std::ptr::null())
 }
 
@@ -356,7 +356,10 @@ pub extern "C" fn sql_translate(sqlite_sql: *const c_char) -> SqlTranslation {
     let mut trans = sql_translator_translate_full(sqlite_sql);
     if trans.success == 0 {
         let err_bytes = &trans.error;
-        let len = err_bytes.iter().position(|&b| b == 0).unwrap_or(err_bytes.len());
+        let len = err_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(err_bytes.len());
         let msg = String::from_utf8_lossy(&err_bytes[..len]).to_string();
         write_error(&mut result.error, &msg);
         sql_translator_translation_free(&mut trans as *mut SqlTranslation);

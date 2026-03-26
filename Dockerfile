@@ -26,9 +26,9 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV RUSTUP_TOOLCHAIN=stable
 ENV CARGO_TARGET_DIR=/build/target
 ENV PATH="/usr/local/cargo/bin:${PATH}"
-RUN --mount=type=cache,target=/usr/local/rustup \
-    --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/rustup,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal && \
     /usr/local/cargo/bin/rustup default stable
 
@@ -39,10 +39,11 @@ COPY rust/ rust/
 COPY scripts/docker-build-shim.sh scripts/docker-build-shim.sh
 
 # Build PostgreSQL/libpq, Rust core, shim, and collect runtime libs in /libs
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    --mount=type=cache,target=/build/.cache \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/build/target,sharing=locked \
+    --mount=type=cache,target=/build/.cache,sharing=locked \
+    rm -rf /usr/local/cargo/registry/src/index.crates.io-* && \
     sh scripts/docker-build-shim.sh
 
 # Runtime stage
@@ -106,7 +107,7 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-plex-postgresql && \
 # The base image's init-plex-claim starts Plex without our shim, which crashes
 # because the SQLite shadow DB has no schema. We patch it to use the shim.
 RUN if [ -f /etc/s6-overlay/s6-rc.d/init-plex-claim/run ]; then \
-        sed -i 's|LD_LIBRARY_PATH=/usr/lib/plexmediaserver:/usr/lib/plexmediaserver/lib|LD_PRELOAD=/usr/local/lib/plex-postgresql/db_interpose_pg.so LD_LIBRARY_PATH=/usr/local/lib/plex-postgresql:/usr/lib/plexmediaserver:/usr/lib/plexmediaserver/lib|' \
+        sed -i 's|LD_LIBRARY_PATH=/usr/lib/plexmediaserver:/usr/lib/plexmediaserver/lib|LD_PRELOAD=/usr/local/lib/plex-postgresql/db_interpose_pg.so LD_LIBRARY_PATH=/usr/lib/plexmediaserver:/usr/lib/plexmediaserver/lib|' \
             /etc/s6-overlay/s6-rc.d/init-plex-claim/run && \
         mkdir -p /etc/s6-overlay/s6-rc.d/init-plex-claim/dependencies.d && \
         touch /etc/s6-overlay/s6-rc.d/init-plex-claim/dependencies.d/init-plex-postgresql && \
@@ -116,22 +117,14 @@ RUN if [ -f /etc/s6-overlay/s6-rc.d/init-plex-claim/run ]; then \
 # Keep upstream CrashUploader binary.
 # With SIGCHLD forced to SIG_IGN, child exits should no longer destabilize Plex.
 
-# Inject shim env only for the actual Plex binary, not wrapper/helper processes.
-# This avoids preloading into s6-notifyoncheck and short-lived helper binaries.
-RUN printf '%s\n' \
-      '#!/usr/bin/env bash' \
-      'mkdir -p /run/plex-temp' \
-      'chmod 1777 /run/plex-temp 2>/dev/null || true' \
-      'export LD_LIBRARY_PATH="/usr/local/lib/plex-postgresql:/usr/lib/plexmediaserver/lib:$LD_LIBRARY_PATH"' \
-      'export LD_PRELOAD="/usr/local/lib/plex-postgresql/db_interpose_pg.so"' \
-      'if [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then' \
-      '  export OPENSSL_armcap="${PLEX_PG_OPENSSL_ARMCAP:-0}"' \
-      'fi' \
-      'exec "/usr/lib/plexmediaserver/Plex Media Server" "$@"' \
-      > /usr/local/lib/plex-postgresql/plex-with-shim.sh && \
-    chmod +x /usr/local/lib/plex-postgresql/plex-with-shim.sh && \
-    sed -i 's|s6-setuidgid abc "/usr/lib/plexmediaserver/Plex Media Server"|s6-setuidgid abc /usr/local/lib/plex-postgresql/plex-with-shim.sh|' \
-      /etc/s6-overlay/s6-rc.d/svc-plex/run && \
-    sed -i 's|"/usr/lib/plexmediaserver/Plex Media Server"|/usr/local/lib/plex-postgresql/plex-with-shim.sh|' \
-      /etc/s6-overlay/s6-rc.d/svc-plex/run && \
+# Inject shim env directly into the upstream svc-plex run script so s6 still
+# supervises the real PMS process instead of a wrapper layer.
+RUN sed -i '/export PLEX_MEDIA_SERVER_INFO_PLATFORM_VERSION/a\
+arch="$(uname -m)"\
+\nif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then\
+\n    export OPENSSL_armcap="${PLEX_PG_OPENSSL_ARMCAP:-0}"\
+\nfi\
+\nexport LD_LIBRARY_PATH="/usr/lib/plexmediaserver/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\
+\nexport LD_PRELOAD="/usr/local/lib/plex-postgresql/db_interpose_pg.so"\
+' /etc/s6-overlay/s6-rc.d/svc-plex/run && \
     cat /etc/s6-overlay/s6-rc.d/svc-plex/run

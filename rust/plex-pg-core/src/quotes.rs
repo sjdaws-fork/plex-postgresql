@@ -464,8 +464,8 @@ mod tests {
 
     #[test]
     fn subset_ddl_lite__quotes_create_index_backticks_are_converted() {
-        let r = translate("CREATE INDEX `idx_mixed_title` ON `mixedCaseTable`(`itemTitle`)")
-            .unwrap();
+        let r =
+            translate("CREATE INDEX `idx_mixed_title` ON `mixedCaseTable`(`itemTitle`)").unwrap();
         assert!(
             !r.sql.contains('`'),
             "backticks in CREATE INDEX should be converted, got: {}",

@@ -13,7 +13,8 @@ use crate::exception_what::pg_exception_install_terminate_logger;
 use crate::ffi_types::{sqlite3, sqlite3_stmt, sqlite3_value};
 use crate::runtime_common::{handle_exception_with_tls, log_shim_unloading, shim_init_common};
 
-type SigactionFn = unsafe extern "C" fn(c_int, *const libc::sigaction, *mut libc::sigaction) -> c_int;
+type SigactionFn =
+    unsafe extern "C" fn(c_int, *const libc::sigaction, *mut libc::sigaction) -> c_int;
 type CxaThrowFn =
     unsafe extern "C" fn(*mut c_void, *mut c_void, Option<unsafe extern "C" fn(*mut c_void)>) -> !;
 
@@ -24,6 +25,11 @@ static FORCE_IGNORE_SIGCHLD: AtomicI32 = AtomicI32::new(1);
 static INTERCEPT_SIGACTION: AtomicI32 = AtomicI32::new(1);
 static SIGNAL_LOG_ENABLED_CACHED: AtomicI32 = AtomicI32::new(-1);
 static EXCEPTION_CATCHER_ENABLED_CACHED: AtomicI32 = AtomicI32::new(-1);
+
+pub(crate) fn disable_postfork_signal_overrides_fast() {
+    FORCE_IGNORE_SIGCHLD.store(0, Ordering::Relaxed);
+    INTERCEPT_SIGACTION.store(0, Ordering::Relaxed);
+}
 
 fn signal_log_enabled() -> bool {
     let cached = SIGNAL_LOG_ENABLED_CACHED.load(Ordering::Acquire);
@@ -78,8 +84,7 @@ fn setup_exception_catcher_if_enabled() {
         } else {
             let _ = libc::fprintf(
                 stderr_ptr(),
-                b"[SHIM_INIT] WARNING: failed to resolve __cxa_throw\n\0".as_ptr()
-                    as *const c_char,
+                b"[SHIM_INIT] WARNING: failed to resolve __cxa_throw\n\0".as_ptr() as *const c_char,
             );
         }
         let _ = libc::fflush(stderr_ptr());
@@ -150,7 +155,10 @@ pub unsafe extern "C" fn sigaction(
         return orig(signum, act, oldact);
     }
 
-    if FORCE_IGNORE_SIGCHLD.load(Ordering::Relaxed) != 0 && signum == libc::SIGCHLD && !act.is_null() {
+    if FORCE_IGNORE_SIGCHLD.load(Ordering::Relaxed) != 0
+        && signum == libc::SIGCHLD
+        && !act.is_null()
+    {
         if !oldact.is_null() {
             orig(libc::SIGCHLD, ptr::null(), oldact);
         }
@@ -182,7 +190,8 @@ pub unsafe extern "C" fn sigaction(
             orig(signum, ptr::null(), oldact);
         }
         let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = std::mem::transmute(db_interpose_common::common_signal_handler as extern "C" fn(c_int));
+        sa.sa_sigaction =
+            std::mem::transmute(db_interpose_common::common_signal_handler as extern "C" fn(c_int));
         libc::sigemptyset(&mut sa.sa_mask);
         sa.sa_flags = 0;
         return orig(signum, &sa, ptr::null_mut());
@@ -202,7 +211,10 @@ unsafe fn load_original_functions() {
 
     let mut handle: *mut c_void = ptr::null_mut();
     for path in sqlite_paths.iter() {
-        handle = libc::dlopen(path.as_ptr() as *const c_char, libc::RTLD_NOW | libc::RTLD_LOCAL);
+        handle = libc::dlopen(
+            path.as_ptr() as *const c_char,
+            libc::RTLD_NOW | libc::RTLD_LOCAL,
+        );
         if !handle.is_null() {
             let _ = libc::fprintf(
                 stderr_ptr(),
@@ -256,7 +268,12 @@ unsafe extern "C" fn shim_init() {
                     base = &base[..pos];
                 }
                 let base_str = std::str::from_utf8(base).unwrap_or_default();
-                if !base_str.contains("Plex Media Server") && !base_str.contains("Plex Media Scanner") {
+                if !base_str.contains("Plex Media Server")
+                    && !base_str.contains("Plex Media Scanner")
+                {
+                    crate::pms_child_env::maybe_reexec_current_process_without_shim(
+                        base_str, &cmdline,
+                    );
                     FORCE_IGNORE_SIGCHLD.store(0, Ordering::Relaxed);
                     INTERCEPT_SIGACTION.store(0, Ordering::Relaxed);
                     db_interpose_common::shim_passthrough_only = 1;
@@ -289,8 +306,8 @@ unsafe extern "C" fn shim_init() {
 
             let _ = libc::fprintf(
                 stderr_ptr(),
-                b"[SHIM_INIT] Fork safety: using PID-based detection (no pthread_atfork)\n\0".as_ptr()
-                    as *const c_char,
+                b"[SHIM_INIT] Fork safety: using PID-based detection (no pthread_atfork)\n\0"
+                    .as_ptr() as *const c_char,
             );
             let _ = libc::fflush(stderr_ptr());
 
@@ -313,6 +330,10 @@ unsafe extern "C" fn shim_init() {
         || {},
         || {
             setup_exception_catcher_if_enabled();
+            crate::pms_child_env::configure_from_env();
+            crate::pms_child_env::scrub_current_process_preload();
+            crate::pms_process_compat::configure_from_env();
+            crate::pms_net_compat::configure_from_env();
 
             if env_utils::env_truthy(b"PLEX_PG_ENABLE_SIGNAL_LOG\0") {
                 install_signal_handler(libc::SIGSEGV);
@@ -491,7 +512,11 @@ wrap_stmt_ret!(sqlite3_finalize, c_int, my_sqlite3_finalize);
 wrap_stmt_ret!(sqlite3_clear_bindings, c_int, my_sqlite3_clear_bindings);
 wrap_stmt_ret!(sqlite3_column_count, c_int, my_sqlite3_column_count);
 wrap_stmt_ret!(sqlite3_data_count, c_int, my_sqlite3_data_count);
-wrap_stmt_ret!(sqlite3_bind_parameter_count, c_int, my_sqlite3_bind_parameter_count);
+wrap_stmt_ret!(
+    sqlite3_bind_parameter_count,
+    c_int,
+    my_sqlite3_bind_parameter_count
+);
 wrap_stmt_ret!(sqlite3_stmt_readonly, c_int, my_sqlite3_stmt_readonly);
 wrap_stmt_ret!(sqlite3_stmt_busy, c_int, my_sqlite3_stmt_busy);
 wrap_stmt_ret!(sqlite3_db_handle, *mut sqlite3, my_sqlite3_db_handle);
@@ -506,8 +531,16 @@ wrap_stmt_idx!(sqlite3_column_text, *const u8, my_sqlite3_column_text);
 wrap_stmt_idx!(sqlite3_column_blob, *const c_void, my_sqlite3_column_blob);
 wrap_stmt_idx!(sqlite3_column_bytes, c_int, my_sqlite3_column_bytes);
 wrap_stmt_idx!(sqlite3_column_name, *const c_char, my_sqlite3_column_name);
-wrap_stmt_idx!(sqlite3_column_value, *mut sqlite3_value, my_sqlite3_column_value);
-wrap_stmt_idx!(sqlite3_bind_parameter_name, *const c_char, my_sqlite3_bind_parameter_name);
+wrap_stmt_idx!(
+    sqlite3_column_value,
+    *mut sqlite3_value,
+    my_sqlite3_column_value
+);
+wrap_stmt_idx!(
+    sqlite3_bind_parameter_name,
+    *const c_char,
+    my_sqlite3_bind_parameter_name
+);
 
 wrap_val_ret!(sqlite3_value_type, c_int, my_sqlite3_value_type);
 wrap_val_ret!(sqlite3_value_text, *const u8, my_sqlite3_value_text);
@@ -546,7 +579,9 @@ pub extern "C" fn sqlite3_close_v2(db: *mut sqlite3) -> c_int {
 pub extern "C" fn sqlite3_exec(
     db: *mut sqlite3,
     sql: *const c_char,
-    cb: Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>,
+    cb: Option<
+        unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int,
+    >,
     arg: *mut c_void,
     errmsg: *mut *mut c_char,
 ) -> c_int {
@@ -685,7 +720,10 @@ pub extern "C" fn sqlite3_bind_value(
 }
 
 #[no_mangle]
-pub extern "C" fn sqlite3_bind_parameter_index(stmt: *mut sqlite3_stmt, name: *const c_char) -> c_int {
+pub extern "C" fn sqlite3_bind_parameter_index(
+    stmt: *mut sqlite3_stmt,
+    name: *const c_char,
+) -> c_int {
     c_abi::my_sqlite3_bind_parameter_index(stmt, name)
 }
 
@@ -710,7 +748,9 @@ pub extern "C" fn sqlite3_create_collation(
     name: *const c_char,
     enc: c_int,
     arg: *mut c_void,
-    cmp: Option<unsafe extern "C" fn(*mut c_void, c_int, *const c_void, c_int, *const c_void) -> c_int>,
+    cmp: Option<
+        unsafe extern "C" fn(*mut c_void, c_int, *const c_void, c_int, *const c_void) -> c_int,
+    >,
 ) -> c_int {
     c_abi::my_sqlite3_create_collation(db, name, enc, arg, cmp)
 }
@@ -721,7 +761,9 @@ pub extern "C" fn sqlite3_create_collation_v2(
     name: *const c_char,
     enc: c_int,
     arg: *mut c_void,
-    cmp: Option<unsafe extern "C" fn(*mut c_void, c_int, *const c_void, c_int, *const c_void) -> c_int>,
+    cmp: Option<
+        unsafe extern "C" fn(*mut c_void, c_int, *const c_void, c_int, *const c_void) -> c_int,
+    >,
     destroy: Option<unsafe extern "C" fn(*mut c_void)>,
 ) -> c_int {
     c_abi::my_sqlite3_create_collation_v2(db, name, enc, arg, cmp, destroy)

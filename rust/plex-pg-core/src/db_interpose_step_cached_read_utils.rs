@@ -2,8 +2,8 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 
 use crate::db_interpose_conn_utils::{log_debug, log_error, PthreadMutexGuard};
-use crate::ffi_types::{PgConnection, PgStmt, sqlite3_stmt};
-use crate::libpq_helpers::{PGresult};
+use crate::ffi_types::{sqlite3_stmt, PgConnection, PgStmt};
+use crate::libpq_helpers::PGresult;
 
 const STEP_RESULT_FALLBACK: c_int = -1;
 const SQLITE_DONE: c_int = 101;
@@ -187,7 +187,8 @@ pub extern "C" fn rust_step_cached_read_execute(
                 0,
             );
         } else {
-            let c_read_stmt_name = CString::new(read_stmt_name).unwrap_or_else(|_| CString::new("cr").unwrap());
+            let c_read_stmt_name =
+                CString::new(read_stmt_name).unwrap_or_else(|_| CString::new("cr").unwrap());
             let prep_res = crate::libpq_helpers::rust_pq_prepare(
                 (*conn).conn,
                 c_read_stmt_name.as_ptr(),
@@ -236,10 +237,12 @@ pub extern "C" fn rust_step_cached_read_execute(
                 );
             } else {
                 let err = cstr_to_str(crate::libpq_helpers::rust_pq_error_message((*conn).conn));
-                log_debug(&format!("CACHED READ prepare failed, using PQexec: {}", err));
+                log_debug(&format!(
+                    "CACHED READ prepare failed, using PQexec: {}",
+                    err
+                ));
                 crate::libpq_helpers::rust_pq_clear(prep_res);
-                (*stmt).result =
-                    crate::libpq_helpers::rust_pq_exec((*conn).conn, translated_sql);
+                (*stmt).result = crate::libpq_helpers::rust_pq_exec((*conn).conn, translated_sql);
             }
         }
         if crate::libpq_helpers::rust_pq_result_status((*stmt).result) == PGRES_TUPLES_OK {

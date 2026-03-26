@@ -320,7 +320,10 @@ fn jsonpath_from_segments(path_segments: &[String]) -> String {
 fn make_jsonb_path_exists(doc: Expr, path_segments: &[String]) -> Expr {
     make_function_call(
         "jsonb_path_exists",
-        vec![doc, make_string_literal(&jsonpath_from_segments(path_segments))],
+        vec![
+            doc,
+            make_string_literal(&jsonpath_from_segments(path_segments)),
+        ],
     )
 }
 
@@ -609,7 +612,11 @@ fn rewrite_json_set_like_call(args: Vec<Expr>, mode: JsonSetMode) -> Option<Expr
         }
         i += 2;
     }
-    if rewrote_any { Some(current) } else { None }
+    if rewrote_any {
+        Some(current)
+    } else {
+        None
+    }
 }
 
 fn rewrite_json_remove_call(args: Vec<Expr>) -> Option<Expr> {
@@ -633,7 +640,11 @@ fn rewrite_json_remove_call(args: Vec<Expr>) -> Option<Expr> {
             rewrote_any = true;
         }
     }
-    if rewrote_any { Some(current) } else { None }
+    if rewrote_any {
+        Some(current)
+    } else {
+        None
+    }
 }
 
 fn rewrite_json_patch_call(args: Vec<Expr>) -> Option<Expr> {
@@ -876,15 +887,13 @@ fn transform_expr(expr: &mut Expr) {
                 }
                 "json_insert" => {
                     let args = extract_unnamed_args(func);
-                    if let Some(new_expr) = rewrite_json_set_like_call(args, JsonSetMode::Insert)
-                    {
+                    if let Some(new_expr) = rewrite_json_set_like_call(args, JsonSetMode::Insert) {
                         *expr = new_expr;
                     }
                 }
                 "json_replace" => {
                     let args = extract_unnamed_args(func);
-                    if let Some(new_expr) = rewrite_json_set_like_call(args, JsonSetMode::Replace)
-                    {
+                    if let Some(new_expr) = rewrite_json_set_like_call(args, JsonSetMode::Replace) {
                         *expr = new_expr;
                     }
                 }
@@ -938,7 +947,10 @@ fn transform_expr(expr: &mut Expr) {
                 "json_quote" => {
                     let args = extract_unnamed_args(func);
                     if let Some(first) = args.into_iter().next() {
-                        *expr = wrap_double_colon_cast(make_function_call("to_json", vec![first]), DataType::Text);
+                        *expr = wrap_double_colon_cast(
+                            make_function_call("to_json", vec![first]),
+                            DataType::Text,
+                        );
                     }
                 }
 

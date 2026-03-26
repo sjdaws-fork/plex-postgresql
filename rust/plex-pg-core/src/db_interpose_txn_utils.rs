@@ -77,7 +77,11 @@ pub extern "C" fn rust_is_txn_terminator_sql(sql: *const c_char) -> c_int {
     let is_term = starts_with_icase_bytes(bytes, b"commit")
         || starts_with_icase_bytes(bytes, b"rollback")
         || starts_with_icase_bytes(bytes, b"end");
-    if is_term { 1 } else { 0 }
+    if is_term {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]

@@ -1,8 +1,6 @@
-#ifndef DB_INTERPOSE_CONN_UTILS_H
-#define DB_INTERPOSE_CONN_UTILS_H
+#ifndef PLEX_PG_COMPAT_WRAPPER_INTERPOSE_DB_INTERPOSE_CONN_UTILS_H
+#define PLEX_PG_COMPAT_WRAPPER_INTERPOSE_DB_INTERPOSE_CONN_UTILS_H
 
-#include "db_interpose.h"
+#include "../../include/legacy/interpose/db_interpose_conn_utils.h"
 
-void step_conn_cancel_and_drain(pg_connection_t *conn, const char *scope_tag);
-
-#endif
+#endif /* PLEX_PG_COMPAT_WRAPPER_INTERPOSE_DB_INTERPOSE_CONN_UTILS_H */

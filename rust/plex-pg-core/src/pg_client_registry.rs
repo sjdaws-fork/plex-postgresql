@@ -26,6 +26,10 @@ impl ConnectionRegistry {
         mutex_lock(&self.map).get(&db_handle).copied()
     }
 
+    pub(crate) fn contains_conn(&self, conn_ptr: usize) -> bool {
+        mutex_lock(&self.map).values().any(|&conn| conn == conn_ptr)
+    }
+
     pub(crate) fn find_any_library(&self, is_library: impl Fn(usize) -> bool) -> Option<usize> {
         mutex_lock(&self.map)
             .values()

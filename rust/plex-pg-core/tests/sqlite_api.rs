@@ -1,6 +1,17 @@
-use rusqlite::{Connection, Result};
 use rusqlite::ffi;
+use rusqlite::{Connection, Result};
 use std::ffi::{CStr, CString};
+use std::ptr;
+
+/// Helper: prepare via FFI and return raw stmt pointer (caller must finalize).
+unsafe fn prepare_raw(conn: &Connection, sql: &str) -> *mut ffi::sqlite3_stmt {
+    let c_sql = CString::new(sql).unwrap();
+    let mut raw: *mut ffi::sqlite3_stmt = ptr::null_mut();
+    let mut tail: *const std::os::raw::c_char = ptr::null();
+    let rc = ffi::sqlite3_prepare_v2(conn.handle(), c_sql.as_ptr(), -1, &mut raw, &mut tail);
+    assert_eq!(rc, ffi::SQLITE_OK);
+    raw
+}
 
 #[test]
 fn sqlite3_free_null_is_ok() {
@@ -21,11 +32,10 @@ fn sqlite3_free_allocated_is_ok() {
 #[test]
 fn sqlite3_db_handle_returns_parent_db() -> Result<()> {
     let conn = Connection::open_in_memory()?;
-    let mut stmt = conn.prepare("SELECT 1")?;
-    let raw_stmt = stmt.as_raw();
-
+    let raw_stmt = unsafe { prepare_raw(&conn, "SELECT 1") };
     let db_handle = unsafe { ffi::sqlite3_db_handle(raw_stmt) };
-    assert_eq!(db_handle, conn.handle());
+    assert_eq!(db_handle, unsafe { conn.handle() });
+    unsafe { ffi::sqlite3_finalize(raw_stmt) };
     Ok(())
 }
 
@@ -38,13 +48,12 @@ fn sqlite3_db_handle_null_is_null() {
 #[test]
 fn sqlite3_sql_returns_statement_sql() -> Result<()> {
     let conn = Connection::open_in_memory()?;
-    let mut stmt = conn.prepare("SELECT * FROM sqlite_master")?;
-    let raw_stmt = stmt.as_raw();
-
+    let raw_stmt = unsafe { prepare_raw(&conn, "SELECT * FROM sqlite_master") };
     let sql_ptr = unsafe { ffi::sqlite3_sql(raw_stmt) };
     assert!(!sql_ptr.is_null());
     let sql = unsafe { CStr::from_ptr(sql_ptr) }.to_string_lossy();
     assert!(sql.to_ascii_lowercase().contains("select"));
+    unsafe { ffi::sqlite3_finalize(raw_stmt) };
     Ok(())
 }
 
@@ -57,20 +66,20 @@ fn sqlite3_sql_null_is_null() {
 #[test]
 fn sqlite3_bind_parameter_count_none() -> Result<()> {
     let conn = Connection::open_in_memory()?;
-    let mut stmt = conn.prepare("SELECT 1")?;
-    let raw_stmt = stmt.as_raw();
+    let raw_stmt = unsafe { prepare_raw(&conn, "SELECT 1") };
     let count = unsafe { ffi::sqlite3_bind_parameter_count(raw_stmt) };
     assert_eq!(count, 0);
+    unsafe { ffi::sqlite3_finalize(raw_stmt) };
     Ok(())
 }
 
 #[test]
 fn sqlite3_bind_parameter_count_multiple() -> Result<()> {
     let conn = Connection::open_in_memory()?;
-    let mut stmt = conn.prepare("SELECT ? + ? + ?")?;
-    let raw_stmt = stmt.as_raw();
+    let raw_stmt = unsafe { prepare_raw(&conn, "SELECT ? + ? + ?") };
     let count = unsafe { ffi::sqlite3_bind_parameter_count(raw_stmt) };
     assert_eq!(count, 3);
+    unsafe { ffi::sqlite3_finalize(raw_stmt) };
     Ok(())
 }
 
@@ -83,10 +92,10 @@ fn sqlite3_bind_parameter_count_null_stmt_is_zero() {
 #[test]
 fn sqlite3_stmt_readonly_select_is_true() -> Result<()> {
     let conn = Connection::open_in_memory()?;
-    let mut stmt = conn.prepare("SELECT 1")?;
-    let raw_stmt = stmt.as_raw();
+    let raw_stmt = unsafe { prepare_raw(&conn, "SELECT 1") };
     let readonly = unsafe { ffi::sqlite3_stmt_readonly(raw_stmt) };
     assert_ne!(readonly, 0);
+    unsafe { ffi::sqlite3_finalize(raw_stmt) };
     Ok(())
 }
 
@@ -94,10 +103,10 @@ fn sqlite3_stmt_readonly_select_is_true() -> Result<()> {
 fn sqlite3_stmt_readonly_insert_is_false() -> Result<()> {
     let conn = Connection::open_in_memory()?;
     conn.execute("CREATE TABLE t(id INTEGER)", [])?;
-    let mut stmt = conn.prepare("INSERT INTO t VALUES (1)")?;
-    let raw_stmt = stmt.as_raw();
+    let raw_stmt = unsafe { prepare_raw(&conn, "INSERT INTO t VALUES (1)") };
     let readonly = unsafe { ffi::sqlite3_stmt_readonly(raw_stmt) };
     assert_eq!(readonly, 0);
+    unsafe { ffi::sqlite3_finalize(raw_stmt) };
     Ok(())
 }
 

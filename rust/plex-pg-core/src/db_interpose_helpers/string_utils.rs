@@ -122,7 +122,12 @@ pub(super) fn write_i32_to_buf(out: *mut c_char, out_len: usize, val: i32) -> bo
     }
     let fmt = b"%d\0";
     unsafe {
-        libc::snprintf(out, out_len, fmt.as_ptr() as *const c_char, val as libc::c_int);
+        libc::snprintf(
+            out,
+            out_len,
+            fmt.as_ptr() as *const c_char,
+            val as libc::c_int,
+        );
     }
     true
 }

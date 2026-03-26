@@ -99,8 +99,8 @@ mod self_join_tests {
 }
 mod tests {
     use super::super::{preprocess, Ordering, TEST_STRICT_PRAGMA_OVERRIDE};
-    use crate::translate;
     use crate::test_utils::env_lock;
+    use crate::translate;
 
     #[test]
     fn subset_txn__keyword_begin_immediate() {
@@ -356,7 +356,10 @@ mod tests {
         TEST_STRICT_PRAGMA_OVERRIDE.store(1, Ordering::Relaxed);
         let result = translate("PRAGMA totally_unknown_pragma");
         TEST_STRICT_PRAGMA_OVERRIDE.store(-1, Ordering::Relaxed);
-        assert!(result.is_err(), "strict pragma mode should fail unknown PRAGMA");
+        assert!(
+            result.is_err(),
+            "strict pragma mode should fail unknown PRAGMA"
+        );
     }
 
     #[test]
@@ -571,5 +574,4 @@ mod tests {
             out
         );
     }
-
 }

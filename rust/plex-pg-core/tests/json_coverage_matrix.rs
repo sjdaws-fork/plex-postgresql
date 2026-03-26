@@ -27,7 +27,11 @@ fn json_extract_nested_path_with_index() {
     let out = t("SELECT json_extract(extra_data, '$.a[0].b') FROM t");
     let low = out.to_lowercase();
     assert!(low.contains("jsonb_extract_path_text"), "{}", out);
-    assert!(low.contains("'a'") && low.contains("'0'") && low.contains("'b'"), "{}", out);
+    assert!(
+        low.contains("'a'") && low.contains("'0'") && low.contains("'b'"),
+        "{}",
+        out
+    );
     assert_pg(&out);
 }
 

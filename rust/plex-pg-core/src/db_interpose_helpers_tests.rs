@@ -43,15 +43,16 @@ fn validate_utf8_accepts_valid_input() {
 #[test]
 fn validate_utf8_rejects_invalid_input() {
     let invalid = [0xffu8, 0xfeu8];
-    assert_eq!(rust_validate_utf8(invalid.as_ptr() as *const c_char, invalid.len()), 0);
+    assert_eq!(
+        rust_validate_utf8(invalid.as_ptr() as *const c_char, invalid.len()),
+        0
+    );
 }
 
 #[test]
 fn rewrite_server_uri_rewrites_expected_prefix() {
-    let input = CString::new(
-        "server://machine/com.plexapp.plugins.library/library/metadata/123",
-    )
-    .expect("valid c string");
+    let input = CString::new("server://machine/com.plexapp.plugins.library/library/metadata/123")
+        .expect("valid c string");
     let mut out = [0 as c_char; 256];
 
     assert_eq!(
@@ -87,11 +88,7 @@ fn rewrite_server_uri_handles_multiple_matches() {
 fn rewrite_with_buf(input: &str, out_len: usize) -> (i32, String) {
     let input = CString::new(input).expect("valid c string");
     let mut out = vec![0 as c_char; out_len];
-    let ok = rust_rewrite_server_library_uri(
-        input.as_ptr(),
-        out.as_mut_ptr(),
-        out.len(),
-    );
+    let ok = rust_rewrite_server_library_uri(input.as_ptr(), out.as_mut_ptr(), out.len());
     let rewritten = unsafe { CStr::from_ptr(out.as_ptr()) }
         .to_str()
         .unwrap_or("")
@@ -152,7 +149,10 @@ fn rewrite_server_uri_null_input() {
 
 #[test]
 fn rewrite_server_uri_plain_text() {
-    let (ok, out) = rewrite_with_buf("{\"at:childCount\":\"5\",\"pv:thumbBlurHash\":\"abc123\"}", 256);
+    let (ok, out) = rewrite_with_buf(
+        "{\"at:childCount\":\"5\",\"pv:thumbBlurHash\":\"abc123\"}",
+        256,
+    );
     assert_eq!(ok, 0);
     assert!(out.is_empty());
 }
@@ -220,7 +220,8 @@ fn rewrite_server_uri_real_plex_blob() {
 #[test]
 fn normalize_sql_literals_extracts_two_params() {
     let sql = "SELECT * FROM t WHERE id = 123 AND score >= -4.5";
-    let (normalized, params) = normalize_sql_literals_impl(sql).expect("expected normalized result");
+    let (normalized, params) =
+        normalize_sql_literals_impl(sql).expect("expected normalized result");
     assert_eq!(normalized, "SELECT * FROM t WHERE id = $1 AND score >= $2");
     assert_eq!(params, vec!["123".to_string(), "-4.5".to_string()]);
 }
@@ -239,8 +240,10 @@ fn prepare_simple_hash_is_deterministic() {
 
 #[test]
 fn compat_aliases__alias_collection_sync_aggregates_rewrites_select_list() {
-    let sqlite = "select count(*), min(year), max(year) from tags join taggings on 1=1 group by tags.id";
-    let pg = "SELECT count(*), min(year), max(year) FROM tags JOIN taggings ON true GROUP BY tags.id";
+    let sqlite =
+        "select count(*), min(year), max(year) from tags join taggings on 1=1 group by tags.id";
+    let pg =
+        "SELECT count(*), min(year), max(year) FROM tags JOIN taggings ON true GROUP BY tags.id";
     let out = alias_collection_sync_aggregates(sqlite, pg).expect("should rewrite");
     assert!(out.contains("count(*) AS \"count(*)\""));
     assert!(out.contains("min(year) AS \"min(year)\""));
@@ -301,7 +304,10 @@ fn trace_list_contains_idx_matches_values() {
 
 #[test]
 fn trace_list_any_token_in_haystack_matches_token() {
-    assert!(list_any_token_in_haystack("tags,collections", "from tags join x"));
+    assert!(list_any_token_in_haystack(
+        "tags,collections",
+        "from tags join x"
+    ));
     assert!(!list_any_token_in_haystack("abc,def", "from tags join x"));
 }
 
@@ -309,7 +315,9 @@ fn trace_list_any_token_in_haystack_matches_token() {
 fn subset_fts__simplify_fts_for_sqlite_rewrites_match_and_join() {
     let sql = "SELECT * FROM a JOIN fts4_metadata_titles t ON t.rowid=a.id WHERE fts4_metadata_titles.title MATCH 'foo''bar'";
     let out = simplify_fts_for_sqlite(sql).expect("should simplify");
-    assert!(!out.to_ascii_lowercase().contains("join fts4_metadata_titles"));
+    assert!(!out
+        .to_ascii_lowercase()
+        .contains("join fts4_metadata_titles"));
     assert!(out.contains("1=0"));
 }
 
@@ -376,18 +384,27 @@ fn find_insert_column_index_handles_quoted_columns() {
 
 #[test]
 fn pg_oid_to_sqlite_type_mapping_matches_expectations() {
-    assert_eq!(pg_oid_to_sqlite_type_impl(20), crate::db_interpose_value_helpers::SQLITE_INTEGER_CONST);
-    assert_eq!(pg_oid_to_sqlite_type_impl(701), crate::db_interpose_value_helpers::SQLITE_FLOAT_CONST);
-    assert_eq!(pg_oid_to_sqlite_type_impl(17), crate::db_interpose_value_helpers::SQLITE_BLOB_CONST);
-    assert_eq!(pg_oid_to_sqlite_type_impl(25), crate::db_interpose_value_helpers::SQLITE_TEXT_CONST);
+    assert_eq!(
+        pg_oid_to_sqlite_type_impl(20),
+        crate::db_interpose_value_helpers::SQLITE_INTEGER_CONST
+    );
+    assert_eq!(
+        pg_oid_to_sqlite_type_impl(701),
+        crate::db_interpose_value_helpers::SQLITE_FLOAT_CONST
+    );
+    assert_eq!(
+        pg_oid_to_sqlite_type_impl(17),
+        crate::db_interpose_value_helpers::SQLITE_BLOB_CONST
+    );
+    assert_eq!(
+        pg_oid_to_sqlite_type_impl(25),
+        crate::db_interpose_value_helpers::SQLITE_TEXT_CONST
+    );
 }
 
 #[test]
 fn trim_first_line_trims_ws_and_newline() {
-    assert_eq!(
-        trim_first_line("  abc \r\n").as_deref(),
-        Some("abc")
-    );
+    assert_eq!(trim_first_line("  abc \r\n").as_deref(), Some("abc"));
     assert_eq!(trim_first_line("   \n"), None);
 }
 
@@ -410,14 +427,18 @@ fn common_helpers_is_library_db_path_matches_known_paths() {
         "/data/Databases/com.plexapp.plugins.library.blobs.db"
     ));
     assert!(is_library_db_path_impl("com.plexapp.plugins.library.db"));
-    assert!(is_library_db_path_impl("com.plexapp.plugins.library.blobs.db"));
+    assert!(is_library_db_path_impl(
+        "com.plexapp.plugins.library.blobs.db"
+    ));
     assert!(is_library_db_path_impl("/Users/plex/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"));
     assert!(is_library_db_path_impl("/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.blobs.db"));
 }
 
 #[test]
 fn common_helpers_is_library_db_path_rejects_non_library_paths() {
-    assert!(!is_library_db_path_impl("com.plexapp.plugins.preferences.db"));
+    assert!(!is_library_db_path_impl(
+        "com.plexapp.plugins.preferences.db"
+    ));
     assert!(!is_library_db_path_impl("/tmp/test.db"));
     assert!(!is_library_db_path_impl("library.db"));
 }
@@ -564,7 +585,10 @@ fn type_normalization_decltype_hash_null_matches_empty() {
 fn type_normalization_decltype_hash_differs_for_different_strings() {
     let a = c("INTEGER");
     let b = c("TEXT");
-    assert_ne!(rust_decltype_hash(a.as_ptr()), rust_decltype_hash(b.as_ptr()));
+    assert_ne!(
+        rust_decltype_hash(a.as_ptr()),
+        rust_decltype_hash(b.as_ptr())
+    );
 }
 
 #[test]

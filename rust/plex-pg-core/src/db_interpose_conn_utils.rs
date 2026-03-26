@@ -168,7 +168,11 @@ pub extern "C" fn rust_step_conn_cancel_and_drain(
         if (*conn).conn.is_null() {
             return;
         }
-        if (*conn).streaming_active.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        if (*conn)
+            .streaming_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != 0
+        {
             return;
         }
 

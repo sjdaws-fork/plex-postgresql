@@ -5,7 +5,9 @@ pub fn contains_ascii_icase(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
     }
-    haystack.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
+    haystack
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
 pub fn starts_with_ascii_icase(haystack: &[u8], needle: &[u8]) -> bool {

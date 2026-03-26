@@ -24,7 +24,12 @@ fn backtick_identifier_matrix() {
     ];
     for sql in cases {
         let out = tr(sql);
-        assert!(!out.contains('`'), "backtick remained for `{}` => {}", sql, out);
+        assert!(
+            !out.contains('`'),
+            "backtick remained for `{}` => {}",
+            sql,
+            out
+        );
         assert_pg(&out);
     }
 }

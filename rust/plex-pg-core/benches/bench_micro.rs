@@ -14,7 +14,13 @@ unsafe fn open_db() -> *mut ffi::sqlite3 {
 
     let ddl = b"CREATE TABLE IF NOT EXISTS metadata_items (id INTEGER PRIMARY KEY, title TEXT);\0";
     let mut err: *mut i8 = ptr::null_mut();
-    let rc = ffi::sqlite3_exec(db, ddl.as_ptr() as *const i8, None, ptr::null_mut(), &mut err);
+    let rc = ffi::sqlite3_exec(
+        db,
+        ddl.as_ptr() as *const i8,
+        None,
+        ptr::null_mut(),
+        &mut err,
+    );
     if rc != ffi::SQLITE_OK {
         if !err.is_null() {
             ffi::sqlite3_free(err as *mut _);
@@ -31,7 +37,10 @@ unsafe fn open_db() -> *mut ffi::sqlite3 {
             &mut err,
         );
         for i in 1..=1000 {
-            let sql = format!("INSERT INTO metadata_items (id, title) VALUES ({}, 't{}');", i, i);
+            let sql = format!(
+                "INSERT INTO metadata_items (id, title) VALUES ({}, 't{}');",
+                i, i
+            );
             let csql = CString::new(sql).unwrap();
             let _ = ffi::sqlite3_exec(db, csql.as_ptr(), None, ptr::null_mut(), &mut err);
         }

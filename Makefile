@@ -2,6 +2,7 @@
 # Supports both macOS (DYLD_INTERPOSE) and Linux (LD_PRELOAD)
 
 UNAME_S := $(shell uname -s)
+LEGACY_INCLUDE := include/legacy
 
 PLEX_BIN ?= /Applications/Plex Media Server.app/Contents/MacOS/Plex Media Server
 
@@ -11,12 +12,10 @@ ifeq ($(UNAME_S),Darwin)
     CC = clang
     PG_INCLUDE = /opt/homebrew/opt/postgresql@15/include
     PG_LIB = /opt/homebrew/opt/postgresql@15/lib
-    # Added -Isrc to find new headers
-    # -fvisibility=hidden: hide internal symbols, only export sqlite3 interception functions
-    CFLAGS = -Wall -Wextra -O2 -Iinclude -Isrc -I$(PG_INCLUDE) -fvisibility=hidden
+    # Legacy C headers remain available as compatibility wrappers/documentation only.
+    CFLAGS = -Wall -Wextra -O2 -Iinclude -I$(LEGACY_INCLUDE) -Isrc -I$(PG_INCLUDE) -fvisibility=hidden
     LDFLAGS = -L$(PG_LIB) -lpq -lc++ -lc++abi
     TARGET = db_interpose_pg.dylib
-    SOURCE = src/db_interpose_pg.c
     SHARED_FLAGS = -dynamiclib -undefined dynamic_lookup
     CXX = clang++
 else
@@ -24,10 +23,9 @@ else
     CC = gcc
     PG_INCLUDE = /usr/include/postgresql
     PG_LIB = /usr/lib
-    CFLAGS = -Wall -Wextra -O2 -fPIC -Iinclude -Isrc -I$(PG_INCLUDE)
+    CFLAGS = -Wall -Wextra -O2 -fPIC -Iinclude -I$(LEGACY_INCLUDE) -Isrc -I$(PG_INCLUDE)
     LDFLAGS = -lpq -lsqlite3 -ldl -lpthread
     TARGET = db_interpose_pg.so
-    SOURCE = src/db_interpose_pg_linux.c
     SHARED_FLAGS = -shared
 endif
 
@@ -55,9 +53,9 @@ endif
 
 all: $(TARGET)
 
-# Fast compile-only check for interpose C modules (useful in CI/refactors).
-interpose-build-check: $(INTERPOSE_ONLY_OBJS)
-	@echo "Interpose modules compile check passed"
+# The shim runtime is Rust-only now; keep the target so older workflows still succeed.
+interpose-build-check:
+	@echo "No hand-written C interpose modules remain; Rust is the shim source of truth"
 
 ffi-header:
 	./scripts/generate-ffi-header.sh

@@ -586,7 +586,11 @@ unsafe fn shim_guard_realloc(old_ptr: *mut libc::c_void, new_size: usize) -> *mu
     if hdr.is_null() {
         return libc::realloc(old_ptr, new_size);
     }
-    let copy_size = if (*hdr).size < new_size { (*hdr).size } else { new_size };
+    let copy_size = if (*hdr).size < new_size {
+        (*hdr).size
+    } else {
+        new_size
+    };
     let new_ptr = shim_guard_malloc(new_size);
     if new_ptr.is_null() {
         return ptr::null_mut();
@@ -599,7 +603,11 @@ unsafe fn shim_guard_realloc(old_ptr: *mut libc::c_void, new_size: usize) -> *mu
 // ─── C ABI wrappers (shim_alloc.c replacement) ───────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn shim_malloc_tracked(size: usize, file: *const c_char, line: c_int) -> *mut libc::c_void {
+pub extern "C" fn shim_malloc_tracked(
+    size: usize,
+    file: *const c_char,
+    line: c_int,
+) -> *mut libc::c_void {
     let ptr_out = unsafe {
         if shim_guard_alloc_enabled() {
             shim_guard_malloc(size)
@@ -708,7 +716,11 @@ pub extern "C" fn shim_free_tracked(ptr_in: *mut libc::c_void, _file: *const c_c
 }
 
 #[no_mangle]
-pub extern "C" fn shim_strdup_tracked(s: *const c_char, file: *const c_char, line: c_int) -> *mut c_char {
+pub extern "C" fn shim_strdup_tracked(
+    s: *const c_char,
+    file: *const c_char,
+    line: c_int,
+) -> *mut c_char {
     if s.is_null() {
         return ptr::null_mut();
     }
@@ -729,10 +741,18 @@ pub extern "C" fn shim_strdup_tracked(s: *const c_char, file: *const c_char, lin
 mod tests {
     use super::*;
     use crate::test_utils::env_lock;
+    use std::sync::{LazyLock, Mutex, MutexGuard};
 
-    /// Ensure each test starts from a clean state.
-    fn reset() {
+    fn stats_lock() -> &'static Mutex<()> {
+        static LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+        &LOCK
+    }
+
+    /// Ensure each test starts from a clean state while holding the shim stats lock.
+    fn reset() -> MutexGuard<'static, ()> {
+        let guard = stats_lock().lock().unwrap();
         rust_shim_alloc_reset();
+        guard
     }
 
     // ── ptr_hash ─────────────────────────────────────────────────────────────
@@ -761,7 +781,7 @@ mod tests {
 
     #[test]
     fn table_put_and_remove_basic() {
-        reset();
+        let _guard = reset();
         assert!(alloc_table_put(0x1000, 64));
         let sz = alloc_table_remove(0x1000);
         assert_eq!(sz, 64);
@@ -769,25 +789,25 @@ mod tests {
 
     #[test]
     fn table_remove_unknown_ptr_returns_zero() {
-        reset();
+        let _guard = reset();
         assert_eq!(alloc_table_remove(0xDEAD), 0);
     }
 
     #[test]
     fn table_remove_null_ptr_returns_zero() {
-        reset();
+        let _guard = reset();
         assert_eq!(alloc_table_remove(0), 0);
     }
 
     #[test]
     fn table_put_null_ptr_returns_false() {
-        reset();
+        let _guard = reset();
         assert!(!alloc_table_put(0, 100));
     }
 
     #[test]
     fn table_double_remove_returns_zero_second_time() {
-        reset();
+        let _guard = reset();
         alloc_table_put(0x2000, 128);
         assert_eq!(alloc_table_remove(0x2000), 128);
         assert_eq!(alloc_table_remove(0x2000), 0); // already gone
@@ -795,7 +815,7 @@ mod tests {
 
     #[test]
     fn table_update_existing_ptr_on_realloc() {
-        reset();
+        let _guard = reset();
         // Simulate realloc: same pointer, new size.
         alloc_table_put(0x3000, 32);
         alloc_table_put(0x3000, 96); // update
@@ -804,7 +824,7 @@ mod tests {
 
     #[test]
     fn table_multiple_ptrs_independent() {
-        reset();
+        let _guard = reset();
         alloc_table_put(0xA000, 10);
         alloc_table_put(0xB000, 20);
         alloc_table_put(0xC000, 30);
@@ -820,6 +840,7 @@ mod tests {
 
     #[test]
     fn peak_tracks_maximum() {
+        let _guard = stats_lock().lock().unwrap();
         // Verify peak never decreases: record the current peak, do a large
         // allocation, then confirm peak is at least as large as before.
         // We do NOT call reset() here to avoid disrupting parallel tests.
@@ -843,6 +864,7 @@ mod tests {
 
     #[test]
     fn peak_never_decreases() {
+        let _guard = stats_lock().lock().unwrap();
         let before_peak = get_stats().peak_live;
         rust_shim_alloc_record_alloc(1_000_000); // big alloc to dominate
         let mid_peak = get_stats().peak_live;
@@ -871,6 +893,7 @@ mod tests {
 
     #[test]
     fn record_alloc_increments_counters() {
+        let _guard = stats_lock().lock().unwrap();
         let b = get_stats();
         rust_shim_alloc_record_alloc(256);
         let a = get_stats();
@@ -881,6 +904,7 @@ mod tests {
 
     #[test]
     fn record_free_increments_counters() {
+        let _guard = stats_lock().lock().unwrap();
         let b = get_stats();
         rust_shim_alloc_record_alloc(256);
         rust_shim_alloc_record_free(256);
@@ -892,6 +916,7 @@ mod tests {
 
     #[test]
     fn record_realloc_updates_counters() {
+        let _guard = stats_lock().lock().unwrap();
         let b = get_stats();
         rust_shim_alloc_record_alloc(100);
         rust_shim_alloc_record_realloc(100, 300);
@@ -905,6 +930,7 @@ mod tests {
 
     #[test]
     fn multiple_allocs_accumulate() {
+        let _guard = stats_lock().lock().unwrap();
         let b = get_stats();
         rust_shim_alloc_record_alloc(100);
         rust_shim_alloc_record_alloc(200);
@@ -919,10 +945,10 @@ mod tests {
 
     #[test]
     fn get_stats_zero_after_reset() {
+        let _guard = reset();
         // Run sequentially with test-thread count = 1 would be ideal, but we
         // cannot control that here.  Instead, reset and immediately verify —
         // other tests are very unlikely to call reset() concurrently.
-        reset();
         // Small window: the counters should all be zero right after reset.
         // We sample only the counters (not bytes_live which could go negative
         // from a concurrent free); checking the non-live ones is sufficient.
@@ -946,6 +972,7 @@ mod tests {
 
     #[test]
     fn get_stats_ffi_writes_correct_values() {
+        let _guard = stats_lock().lock().unwrap();
         let b = get_stats();
         rust_shim_alloc_record_alloc(512);
         let mut out = ShimAllocStats {
@@ -1032,14 +1059,14 @@ mod tests {
 
     #[test]
     fn ffi_remove_returns_size() {
-        reset();
+        let _guard = reset();
         alloc_table_put(0xF000, 77);
         assert_eq!(rust_shim_alloc_remove(0xF000), 77);
     }
 
     #[test]
     fn ffi_remove_unknown_returns_zero() {
-        reset();
+        let _guard = reset();
         assert_eq!(rust_shim_alloc_remove(0xBEEF), 0);
     }
 
@@ -1047,11 +1074,11 @@ mod tests {
 
     #[test]
     fn bytes_live_is_signed_i64() {
+        let _guard = reset();
         // The key property: bytes_live is a signed i64 that can go negative
         // without panicking or wrapping.  We verify this by resetting to a
         // known-zero state and doing a net-negative sequence.
         // Use reset() so we have a clean baseline for this specific invariant.
-        reset();
         rust_shim_alloc_record_alloc(50);
         rust_shim_alloc_record_free(150); // free more than allocated
         let s = get_stats();
@@ -1072,7 +1099,7 @@ mod tests {
 
     #[test]
     fn dump_leaks_does_not_panic_with_live_entries() {
-        reset();
+        let _guard = reset();
         alloc_table_put(0xD001, 128);
         alloc_table_put(0xD002, 256);
         // Should not panic; output goes to the logging system.
@@ -1081,7 +1108,7 @@ mod tests {
 
     #[test]
     fn dump_leaks_does_not_panic_when_empty() {
-        reset();
+        let _guard = reset();
         rust_shim_alloc_dump_leaks();
     }
 

@@ -66,5 +66,8 @@ fn pool_exhaustion_times_out_under_pressure() {
     }
 
     let total_timeouts = timeouts.load(Ordering::Relaxed);
-    assert!(total_timeouts >= 1, "expected at least one timeout under exhaustion");
+    assert!(
+        total_timeouts >= 1,
+        "expected at least one timeout under exhaustion"
+    );
 }

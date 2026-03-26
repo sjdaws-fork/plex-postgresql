@@ -1,3 +1,4 @@
+use sqlparser::ast::helpers::attached_token::AttachedToken;
 /// Module: query
 ///
 /// Miscellaneous query fixups for SQLite → PostgreSQL translation:
@@ -15,7 +16,6 @@
 ///  12. Int/text mismatch   — cast integer to ::text for known text columns
 ///                            and cast string literal to integer for known int columns
 use sqlparser::ast::*;
-use sqlparser::ast::helpers::attached_token::AttachedToken;
 use sqlparser::tokenizer::Span;
 
 use crate::rewriter::ast_utils::{take_boxed_expr, take_expr, wrap_double_colon_cast};
@@ -678,14 +678,10 @@ fn transform_expr(expr: &mut Expr) {
 fn is_json_valid_call(expr: &Expr) -> bool {
     match expr {
         Expr::Function(f) => {
-            let name = f
-                .name
-                .0
-                .first()
-                .and_then(|p| match p {
-                    ObjectNamePart::Identifier(i) => Some(i.value.to_lowercase()),
-                    _ => None,
-                });
+            let name = f.name.0.first().and_then(|p| match p {
+                ObjectNamePart::Identifier(i) => Some(i.value.to_lowercase()),
+                _ => None,
+            });
             name.as_deref() == Some("json_valid")
         }
         _ => false,
@@ -1563,8 +1559,10 @@ mod tests {
 
     #[test]
     fn subset_json__query_json_op_uses_safe_jsonb_cast() {
-        let r = translate("SELECT * FROM media_streams st WHERE st.extra_data ->> '$.pv:version' < '1'")
-            .unwrap();
+        let r = translate(
+            "SELECT * FROM media_streams st WHERE st.extra_data ->> '$.pv:version' < '1'",
+        )
+        .unwrap();
         let sql = r.sql.to_lowercase();
         assert!(
             sql.contains("json_valid")

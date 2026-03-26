@@ -1,4 +1,3 @@
-
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,9 +8,9 @@ use postgres::{Client, NoTls, SimpleQueryMessage};
 use regex::Regex;
 use rusqlite::{types::ValueRef, Connection};
 
-use plex_pg_core::translate;
 use plex_pg_core::env_utils;
 use plex_pg_core::pg_config::PgEnvConfig;
+use plex_pg_core::translate;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SortMode {
@@ -28,12 +27,8 @@ enum StatementExpectation {
 
 #[derive(Debug)]
 enum CaseKind {
-    Statement {
-        expectation: StatementExpectation,
-    },
-    Query {
-        sort_mode: SortMode,
-    },
+    Statement { expectation: StatementExpectation },
+    Query { sort_mode: SortMode },
 }
 
 #[derive(Debug)]
@@ -133,7 +128,8 @@ fn collect_suite_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
             continue;
         }
         if p.is_dir() {
-            let entries = fs::read_dir(p).map_err(|e| format!("read_dir {}: {}", p.display(), e))?;
+            let entries =
+                fs::read_dir(p).map_err(|e| format!("read_dir {}: {}", p.display(), e))?;
             for e in entries {
                 let e = e.map_err(|err| format!("read_dir entry error: {}", err))?;
                 let ep = e.path();

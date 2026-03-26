@@ -16,9 +16,11 @@ pub(crate) fn contains_icase_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
     }
-    haystack
-        .windows(needle.len())
-        .any(|w| w.iter().zip(needle.iter()).all(|(a, b)| ascii_lower(*a) == ascii_lower(*b)))
+    haystack.windows(needle.len()).any(|w| {
+        w.iter()
+            .zip(needle.iter())
+            .all(|(a, b)| ascii_lower(*a) == ascii_lower(*b))
+    })
 }
 
 pub(crate) fn starts_with_icase_bytes(haystack: &[u8], prefix: &[u8]) -> bool {

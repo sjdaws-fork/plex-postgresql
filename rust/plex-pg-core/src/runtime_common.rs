@@ -56,8 +56,7 @@ pub(crate) fn shim_init_common<F, G, H, K>(
     before_modules: G,
     after_modules: H,
     after_ready: K,
-)
-where
+) where
     F: FnOnce() -> bool,
     G: FnOnce(),
     H: FnOnce(),
@@ -92,7 +91,11 @@ where
 fn log_stderr_line(msg: &str) {
     if let Ok(cs) = CString::new(msg) {
         unsafe {
-            libc::fprintf(stderr_ptr(), b"%s\n\0".as_ptr() as *const c_char, cs.as_ptr());
+            libc::fprintf(
+                stderr_ptr(),
+                b"%s\n\0".as_ptr() as *const c_char,
+                cs.as_ptr(),
+            );
             libc::fflush(stderr_ptr());
         }
     }

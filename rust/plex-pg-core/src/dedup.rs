@@ -52,8 +52,9 @@ mod tests {
 
     #[test]
     fn subset_core__update_duplicate_set_column_keeps_last_and_renumbers_placeholders() {
-        let r = translate("UPDATE directories SET `updated_at`=:U1,`updated_at`=:U2 WHERE `id`=:C1")
-            .unwrap();
+        let r =
+            translate("UPDATE directories SET `updated_at`=:U1,`updated_at`=:U2 WHERE `id`=:C1")
+                .unwrap();
         let sql = r.sql.to_lowercase();
 
         assert!(
@@ -66,7 +67,11 @@ mod tests {
             "Expected WHERE placeholder to be renumbered to $2, got: {}",
             r.sql
         );
-        assert!(!sql.contains("$3"), "Unexpected placeholder gap, got: {}", r.sql);
+        assert!(
+            !sql.contains("$3"),
+            "Unexpected placeholder gap, got: {}",
+            r.sql
+        );
         assert_eq!(
             r.param_names,
             vec![Some("U2".to_string()), Some("C1".to_string())]

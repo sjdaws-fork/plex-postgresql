@@ -267,8 +267,7 @@ unsafe fn perform_rebinding_with_section(
     indirect_symtab: *const u32,
 ) {
     let indirect_symbol_indices = indirect_symtab.add((*section).reserved1 as usize);
-    let indirect_symbol_bindings =
-        (slide + (*section).addr as isize) as *mut *mut c_void;
+    let indirect_symbol_bindings = (slide + (*section).addr as isize) as *mut *mut c_void;
 
     let count = (*section).size as usize / size_of::<*mut c_void>();
     for i in 0..count {
@@ -363,8 +362,7 @@ unsafe fn rebind_symbols_for_image(
         - (*linkedit_segment).fileoff as isize) as usize;
     let symtab = (linkedit_base + (*symtab_cmd).symoff as usize) as *const Nlist;
     let strtab = (linkedit_base + (*symtab_cmd).stroff as usize) as *const c_char;
-    let indirect_symtab =
-        (linkedit_base + (*dysymtab_cmd).indirectsymoff as usize) as *const u32;
+    let indirect_symtab = (linkedit_base + (*dysymtab_cmd).indirectsymoff as usize) as *const u32;
 
     cur = (header as *const u8).add(size_of::<MachHeader>());
     for _ in 0..(*header).ncmds {
@@ -379,8 +377,17 @@ unsafe fn rebind_symbols_for_image(
             for i in 0..seg.nsects {
                 let sect = sect_base.add(i as usize);
                 let section_type = (*sect).flags & SECTION_TYPE;
-                if section_type == S_LAZY_SYMBOL_POINTERS || section_type == S_NON_LAZY_SYMBOL_POINTERS {
-                    perform_rebinding_with_section(rebindings, sect, slide, symtab, strtab, indirect_symtab);
+                if section_type == S_LAZY_SYMBOL_POINTERS
+                    || section_type == S_NON_LAZY_SYMBOL_POINTERS
+                {
+                    perform_rebinding_with_section(
+                        rebindings,
+                        sect,
+                        slide,
+                        symtab,
+                        strtab,
+                        indirect_symtab,
+                    );
                 }
             }
         }
@@ -415,7 +422,11 @@ unsafe fn rebind_symbols_image(
 /// duration of the call. The caller must ensure the supplied symbol names
 /// are null-terminated and remain valid until rebinding completes.
 pub unsafe fn rebind_symbols(rebindings: &mut [Rebinding]) -> c_int {
-    let retval = prepend_rebindings(std::ptr::addr_of_mut!(REBINDINGS_HEAD), rebindings.as_ptr(), rebindings.len());
+    let retval = prepend_rebindings(
+        std::ptr::addr_of_mut!(REBINDINGS_HEAD),
+        rebindings.as_ptr(),
+        rebindings.len(),
+    );
     if retval < 0 {
         return retval;
     }

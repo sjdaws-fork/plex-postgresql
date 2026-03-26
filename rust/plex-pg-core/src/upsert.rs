@@ -280,11 +280,9 @@ mod tests {
 
     #[test]
     fn subset_core__upsert_statistics_bandwidth_conflict_and_set_exclusions() {
-        let out = sql(
-            "INSERT OR REPLACE INTO statistics_bandwidth \
+        let out = sql("INSERT OR REPLACE INTO statistics_bandwidth \
              (id, account_id, device_id, timespan, at, lan, bytes) \
-             VALUES (1, 2, 3, 4, 5, 1, 1024)",
-        );
+             VALUES (1, 2, 3, 4, 5, 1, 1024)");
         let low = out.to_lowercase();
         assert!(
             low.contains("on conflict (account_id, device_id, timespan, at, lan)")
@@ -304,11 +302,9 @@ mod tests {
 
     #[test]
     fn subset_core__upsert_metadata_item_settings_conflict_and_returning() {
-        let out = sql(
-            "INSERT OR REPLACE INTO metadata_item_settings \
+        let out = sql("INSERT OR REPLACE INTO metadata_item_settings \
              (id, account_id, guid, rating, view_count) \
-             VALUES (1, 1, 'plex://movie/abc', 8.0, 5)",
-        );
+             VALUES (1, 1, 'plex://movie/abc', 8.0, 5)");
         let low = out.to_lowercase();
         assert!(
             low.contains("on conflict (account_id, guid)")
@@ -326,11 +322,9 @@ mod tests {
 
     #[test]
     fn subset_core__upsert_locatables_conflict_target() {
-        let out = sql(
-            "INSERT OR REPLACE INTO locatables \
+        let out = sql("INSERT OR REPLACE INTO locatables \
              (id, location_id, locatable_id, locatable_type, created_at) \
-             VALUES (1, 10, 20, 'MediaItem', 12345)",
-        );
+             VALUES (1, 10, 20, 'MediaItem', 12345)");
         let low = out.to_lowercase();
         assert!(
             low.contains("on conflict (location_id, locatable_id, locatable_type)")
@@ -360,11 +354,9 @@ mod tests {
 
     #[test]
     fn subset_core__upsert_media_stream_settings_conflict_target() {
-        let out = sql(
-            "INSERT OR REPLACE INTO media_stream_settings \
+        let out = sql("INSERT OR REPLACE INTO media_stream_settings \
              (id, media_stream_id, account_id, selected) \
-             VALUES (1, 100, 1, 1)",
-        );
+             VALUES (1, 100, 1, 1)");
         let low = out.to_lowercase();
         assert!(
             low.contains("on conflict (media_stream_id, account_id)")
@@ -378,7 +370,8 @@ mod tests {
 
     #[test]
     fn subset_core__upsert_schema_prefix_table_resolution() {
-        let tags = sql("INSERT OR REPLACE INTO plex.tags (id, tag, tag_type) VALUES (1, 'Action', 0)");
+        let tags =
+            sql("INSERT OR REPLACE INTO plex.tags (id, tag, tag_type) VALUES (1, 'Action', 0)");
         let low_tags = tags.to_lowercase();
         assert!(
             low_tags.contains("on conflict (id)") || low_tags.contains("on conflict(id)"),
@@ -398,7 +391,9 @@ mod tests {
 
     #[test]
     fn subset_core__upsert_unknown_table_fallback_no_returning() {
-        let out = sql("INSERT OR REPLACE INTO some_unknown_table (id, data, value) VALUES (1, 'test', 42)");
+        let out = sql(
+            "INSERT OR REPLACE INTO some_unknown_table (id, data, value) VALUES (1, 'test', 42)",
+        );
         let low = out.to_lowercase();
         assert!(
             low.contains("on conflict") && low.contains("do update set"),
@@ -435,9 +430,8 @@ mod tests {
 
     #[test]
     fn subset_core__upsert_quoted_columns_and_trailing_semicolon() {
-        let out = sql(
-            "INSERT OR REPLACE INTO tags (\"id\", tag, \"tag_type\") VALUES (1, 'Action', 0);",
-        );
+        let out =
+            sql("INSERT OR REPLACE INTO tags (\"id\", tag, \"tag_type\") VALUES (1, 'Action', 0);");
         let low = out.to_lowercase();
         assert!(
             low.contains("on conflict (id)") || low.contains("on conflict(id)"),
@@ -495,7 +489,10 @@ mod tests {
         let out = sql("INSERT OR REPLACE INTO tags (id, tag, tag_type) VALUES (1, 'Action', 0)");
         let low = out.to_lowercase();
         assert!(low.contains("tag = excluded.tag"));
-        assert!(low.contains("tag_type = excluded.tag_type") || low.contains("\"tag_type\" = excluded.\"tag_type\""));
+        assert!(
+            low.contains("tag_type = excluded.tag_type")
+                || low.contains("\"tag_type\" = excluded.\"tag_type\"")
+        );
         assert!(!low.contains("id = excluded.id"));
         assert!(low.contains("returning id"));
     }

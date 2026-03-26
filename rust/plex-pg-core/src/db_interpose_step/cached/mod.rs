@@ -1,0 +1,70 @@
+use std::os::raw::{c_char, c_int, c_void};
+
+use crate::ffi_types::sqlite3_stmt;
+
+mod read;
+mod write;
+
+use read::handle_cached_read;
+use write::handle_cached_write;
+
+use super::support::{
+    call_sqlite3_db_handle, call_sqlite3_expanded_sql, call_sqlite3_free, call_sqlite3_sql,
+};
+use super::STEP_RESULT_FALLBACK;
+
+pub(super) unsafe fn step_handle_cached_stmt(p_stmt: *mut sqlite3_stmt) -> c_int {
+    let db = call_sqlite3_db_handle(p_stmt);
+    let mut pg_conn = crate::pg_client::rust_pg_find_connection(db);
+    if pg_conn.is_null() {
+        pg_conn = crate::pg_client::rust_pg_find_any_library_connection();
+    }
+
+    if pg_conn.is_null()
+        || (*pg_conn).is_pg_active == 0
+        || (*pg_conn).conn.is_null()
+        || crate::db_interpose_helpers::rust_is_library_or_blobs_db_path(
+            (*pg_conn).db_path.as_ptr(),
+        ) == 0
+    {
+        return STEP_RESULT_FALLBACK;
+    }
+
+    let expanded_sql = call_sqlite3_expanded_sql(p_stmt);
+    let sql = if !expanded_sql.is_null() {
+        expanded_sql as *const c_char
+    } else {
+        call_sqlite3_sql(p_stmt)
+    };
+    let orig_sql = call_sqlite3_sql(p_stmt);
+
+    if !sql.is_null()
+        && crate::pg_config::pg_config_is_write_operation(sql) != 0
+        && crate::pg_config::pg_config_should_skip_sql(sql) == 0
+        && crate::pg_config::pg_config_should_skip_sql(orig_sql) == 0
+    {
+        let rc = handle_cached_write(p_stmt, pg_conn, sql, expanded_sql);
+        if rc != STEP_RESULT_FALLBACK {
+            return rc;
+        }
+    }
+
+    if !sql.is_null()
+        && crate::pg_config::pg_config_is_read_operation(sql) != 0
+        && crate::pg_config::pg_config_should_skip_sql(sql) == 0
+    {
+        let rc = handle_cached_read(p_stmt, pg_conn, sql, expanded_sql);
+        if rc != STEP_RESULT_FALLBACK {
+            return rc;
+        }
+    }
+
+    free_expanded_sql(expanded_sql);
+    STEP_RESULT_FALLBACK
+}
+
+pub(super) unsafe fn free_expanded_sql(expanded_sql: *mut c_char) {
+    if !expanded_sql.is_null() {
+        call_sqlite3_free(expanded_sql as *mut c_void);
+    }
+}

@@ -93,7 +93,6 @@ mkdir -p /libs
 cp db_interpose_pg.so /libs/
 cp /usr/local/pgsql/lib/libpq.so.5* /libs/
 cp /usr/lib/libgcc_s.so.1 /libs/
-cp /usr/lib/libstdc++.so.6* /libs/
 if [ -n "${SANITIZE_FLAGS}" ]; then
     for lib in asan ubsan; do
         lib_path="$(gcc -print-file-name=lib${lib}.so || true)"

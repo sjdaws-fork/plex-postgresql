@@ -1,4 +1,3 @@
-
 #![allow(
     clippy::manual_c_str_literals,
     clippy::single_match,
@@ -11,7 +10,9 @@ mod macos_impl {
     use std::os::raw::{c_char, c_void};
     use std::ptr;
 
-    use plex_pg_core::exception_what::{pg_exception_extract_what, pg_exception_install_terminate_logger};
+    use plex_pg_core::exception_what::{
+        pg_exception_extract_what, pg_exception_install_terminate_logger,
+    };
 
     #[repr(C)]
     struct FakeStdException {
@@ -39,8 +40,10 @@ mod macos_impl {
 
     fn get_std_exception_tinfo() -> *mut c_void {
         unsafe {
-            let sym =
-                libc::dlsym(libc::RTLD_DEFAULT, b"_ZTISt9exception\0".as_ptr() as *const c_char);
+            let sym = libc::dlsym(
+                libc::RTLD_DEFAULT,
+                b"_ZTISt9exception\0".as_ptr() as *const c_char,
+            );
             if !sym.is_null() {
                 return sym as *mut c_void;
             }

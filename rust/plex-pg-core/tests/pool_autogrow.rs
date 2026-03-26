@@ -7,11 +7,7 @@ struct AutoPool {
 
 impl AutoPool {
     fn new(size: usize, max: usize) -> Self {
-        Self {
-            size,
-            max,
-            used: 0,
-        }
+        Self { size, max, used: 0 }
     }
 
     fn acquire(&mut self) -> bool {

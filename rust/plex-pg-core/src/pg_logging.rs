@@ -317,7 +317,8 @@ pub extern "C" fn rust_logging_init() {
             .map(|v| parse_log_level(&v))
             .unwrap_or(LEVEL_INFO);
 
-        let requested_path = env_utils::env_string_or_else("PLEX_PG_LOG_FILE", default_log_file_path);
+        let requested_path =
+            env_utils::env_string_or_else("PLEX_PG_LOG_FILE", default_log_file_path);
 
         let max_size = env_utils::env_string("PLEX_PG_LOG_MAX_SIZE")
             .map(|v| parse_max_size(&v))
@@ -454,8 +455,9 @@ pub extern "C" fn rust_logging_write(level: i32, message: *const c_char) {
                         format_timestamp(),
                         count
                     );
-                    let mut state = logger().lock().unwrap_or_else(|e| e.into_inner());
-                    write_line(&mut state, &summary);
+                    if let Ok(mut state) = logger().try_lock() {
+                        write_line(&mut state, &summary);
+                    }
                 }
                 return;
             }
@@ -464,18 +466,30 @@ pub extern "C" fn rust_logging_write(level: i32, message: *const c_char) {
 
     let line = format!("{} {} {}", format_timestamp(), level_tag(level), msg);
 
-    let mut state = logger().lock().unwrap_or_else(|e| e.into_inner());
+    // Use try_lock to avoid deadlock when called while holding a stmt/conn mutex.
+    // If the logger is contended, fall back to writing directly to stderr.
+    match logger().try_lock() {
+        Ok(mut state) => {
+            // Rotation check every N writes.
+            let count = WRITE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if count.is_multiple_of(ROTATION_CHECK_INTERVAL) {
+                let max_size = MAX_SIZE.load(Ordering::Relaxed);
+                if should_rotate(&state, max_size) {
+                    rotate(&mut state);
+                }
+            }
 
-    // Rotation check every N writes.
-    let count = WRITE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    if count.is_multiple_of(ROTATION_CHECK_INTERVAL) {
-        let max_size = MAX_SIZE.load(Ordering::Relaxed);
-        if should_rotate(&state, max_size) {
-            rotate(&mut state);
+            write_line(&mut state, &line);
+        }
+        Err(_) => {
+            // Logger contended — write to stderr to avoid deadlock.
+            let bytes = line.as_bytes();
+            unsafe {
+                libc::write(libc::STDERR_FILENO, bytes.as_ptr() as *const _, bytes.len());
+                libc::write(libc::STDERR_FILENO, b"\n".as_ptr() as *const _, 1);
+            }
         }
     }
-
-    write_line(&mut state, &line);
 }
 
 /// Write to the fallback log file and also to the main log.
@@ -509,33 +523,26 @@ pub extern "C" fn rust_logging_fallback(
         ts, ctx, original, translated, error
     );
 
-    // Write to the dedicated fallback log file.
-    let fallback_path = {
-        let state = logger().lock().unwrap_or_else(|e| e.into_inner());
-        fallback_log_path_for(&state.path, state.is_stdout, state.is_stderr)
-    };
+    // Write to the dedicated fallback log file and main log.
+    // Use try_lock to avoid deadlock when called from mutex-holding contexts.
+    if let Ok(state) = logger().try_lock() {
+        let fallback_path =
+            fallback_log_path_for(&state.path, state.is_stdout, state.is_stderr);
+        drop(state);
 
-    match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&fallback_path)
-    {
-        Ok(mut f) => {
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&fallback_path)
+        {
             let _ = writeln!(f, "{}", fallback_line);
-        }
-        Err(e) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "pg_logging: failed to open fallback log '{}': {}",
-                fallback_path,
-                e
-            );
         }
     }
 
-    // Also write to the main log.
-    let mut state = logger().lock().unwrap_or_else(|e| e.into_inner());
-    write_line(&mut state, &fallback_line);
+    // Also write to the main log (non-blocking).
+    if let Ok(mut state) = logger().try_lock() {
+        write_line(&mut state, &fallback_line);
+    }
 }
 
 /// Check if an error message matches known translation limitations.

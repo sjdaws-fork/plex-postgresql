@@ -10,9 +10,9 @@
 ///
 /// - **HIGH #4 fix**: The C `cache_destructor()` called `free(cache)` unconditionally
 ///   even when entries still had `ref_count > 0`, causing use-after-free.
-///   The Rust `Drop` impl for `QueryCache` properly handles outstanding refs:
-///   entries with ref_count > 0 are leaked (their memory is abandoned) rather
-///   than freed while still referenced.
+///   The Rust cache never reclaims or overwrites an entry while it is still
+///   referenced, and thread-exit cleanup force-frees only after the owning
+///   TLS cache is being torn down.
 ///
 /// ## Design
 ///
@@ -37,8 +37,8 @@
 use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::LazyLock;
 
 use crate::env_utils;
 
@@ -155,6 +155,16 @@ impl CachedResult {
         self.cache_key != 0
     }
 
+    fn is_referenced(&self) -> bool {
+        self.ref_count.load(Ordering::Acquire) > 0
+    }
+
+    fn mark_expired(&mut self) {
+        if self.is_active() {
+            self.created_ms = 0;
+        }
+    }
+
     /// Free all heap-allocated data owned by this entry, but only if ref_count is 0.
     /// Returns true if the entry was actually freed.
     ///
@@ -167,7 +177,7 @@ impl CachedResult {
         }
 
         // Don't free if still referenced by a pg_stmt_t somewhere
-        if self.ref_count.load(Ordering::Acquire) > 0 {
+        if self.is_referenced() {
             return false;
         }
 
@@ -320,10 +330,10 @@ where
 {
     THREAD_CACHE
         .try_with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        let cache = borrow.get_or_insert_with(|| Box::new(QueryCache::new()));
-        Some(f(cache))
-    })
+            let mut borrow = cell.borrow_mut();
+            let cache = borrow.get_or_insert_with(|| Box::new(QueryCache::new()));
+            Some(f(cache))
+        })
         .ok()
         .flatten()
 }
@@ -593,31 +603,72 @@ pub extern "C" fn rust_query_cache_store(
     let nc = num_cols as usize;
 
     with_cache(|cache| {
-        // Find slot: exact match, free, or LRU
-        let mut target_slot: Option<usize> = None;
-        let mut oldest_time = u64::MAX;
-        let mut oldest_idx = 0usize;
+        // Find slot: exact match we can safely replace, free slot, expired slot
+        // with no live refs, or oldest reclaimable slot. Never overwrite a
+        // still-referenced entry: that leaks its heap allocations and can
+        // mutate data still visible through an outstanding cached_result*.
+        let now = get_time_ms_impl();
+        let mut exact_match_slot: Option<usize> = None;
+        let mut empty_slot: Option<usize> = None;
+        let mut expired_slot: Option<usize> = None;
+        let mut oldest_reclaimable_slot: Option<usize> = None;
+        let mut oldest_reclaimable_time = u64::MAX;
 
         for (i, entry) in cache.entries.iter().enumerate() {
             if entry.cache_key == cache_key {
-                target_slot = Some(i);
+                if entry.is_referenced() {
+                    log_debug(&format!(
+                        "QUERY_CACHE STORE: skip overwrite of live entry key={:x} refs={}",
+                        cache_key,
+                        entry.ref_count.load(Ordering::Acquire)
+                    ));
+                    return;
+                }
+                exact_match_slot = Some(i);
                 break;
             }
-            if entry.cache_key == 0 {
-                target_slot = Some(i);
-                break;
+            if !entry.is_active() {
+                empty_slot.get_or_insert(i);
+                continue;
             }
-            if entry.created_ms < oldest_time {
-                oldest_time = entry.created_ms;
-                oldest_idx = i;
+
+            let expired = now.wrapping_sub(entry.created_ms) >= QUERY_CACHE_TTL_MS;
+            if expired && !entry.is_referenced() {
+                expired_slot.get_or_insert(i);
+                continue;
+            }
+
+            if !entry.is_referenced() && entry.created_ms < oldest_reclaimable_time {
+                oldest_reclaimable_time = entry.created_ms;
+                oldest_reclaimable_slot = Some(i);
             }
         }
 
-        let slot = target_slot.unwrap_or(oldest_idx);
+        let slot = exact_match_slot
+            .or(empty_slot)
+            .or(expired_slot)
+            .or(oldest_reclaimable_slot);
+        let Some(slot) = slot else {
+            log_debug(&format!(
+                "QUERY_CACHE STORE: no reclaimable slot for key={:x}, skipping",
+                cache_key
+            ));
+            return;
+        };
 
-        // Free existing entry in this slot
-        unsafe {
-            cache.entries[slot].free_data();
+        // Free existing entry in this slot. This should always succeed for an
+        // active slot because selection filtered out referenced entries.
+        let slot_was_active = cache.entries[slot].is_active();
+        if slot_was_active {
+            let reclaimed = unsafe { cache.entries[slot].free_data() };
+            if !reclaimed {
+                log_debug(&format!(
+                    "QUERY_CACHE STORE: slot {} became busy before reclaim, skipping key={:x}",
+                    slot, cache_key
+                ));
+                return;
+            }
+            cache.count = cache.count.saturating_sub(1);
         }
 
         // Allocate and populate the new entry
@@ -790,10 +841,15 @@ pub extern "C" fn rust_query_cache_invalidate(cache_key: u64) {
     with_cache(|cache| {
         for entry in cache.entries.iter_mut() {
             if entry.cache_key == cache_key {
-                unsafe {
-                    entry.free_data();
+                let freed = unsafe { entry.free_data() };
+                if freed {
+                    cache.count = cache.count.saturating_sub(1);
+                } else {
+                    // Keep live readers safe, but prevent future lookups from
+                    // hitting this entry. Once refs drop to 0, a later lookup
+                    // or store can reclaim it.
+                    entry.mark_expired();
                 }
-                cache.count -= 1;
                 return;
             }
         }
@@ -879,6 +935,33 @@ pub extern "C" fn rust_query_cache_stats(hits: *mut u64, misses: *mut u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn store_single_text_value(cache_key: u64, value: &str) {
+        let col_types: [u32; 1] = [25];
+        let col_name = std::ffi::CString::new("val").unwrap();
+        let col_names: [*const c_char; 1] = [col_name.as_ptr()];
+        let val = std::ffi::CString::new(value).unwrap();
+        let values: [*const c_char; 1] = [val.as_ptr()];
+        let lengths: [i32; 1] = [value.len() as i32];
+        let is_null: [i32; 1] = [0];
+
+        rust_query_cache_store(
+            cache_key,
+            1,
+            1,
+            col_types.as_ptr(),
+            col_names.as_ptr(),
+            values.as_ptr(),
+            lengths.as_ptr(),
+            is_null.as_ptr(),
+            std::ptr::null(),
+        );
+    }
+
+    unsafe fn cached_text_at(entry: *mut CachedResult, row_idx: usize, col_idx: usize) -> Vec<u8> {
+        let row = &*(*entry).rows.add(row_idx);
+        CStr::from_ptr(*row.values.add(col_idx)).to_bytes().to_vec()
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // ── fnv1a_hash — correctness ─────────────────────────────────────────────
@@ -1232,6 +1315,108 @@ mod tests {
         // Should be gone
         let result2 = rust_query_cache_lookup(cache_key);
         assert!(result2.is_null());
+    }
+
+    #[test]
+    fn store_does_not_overwrite_live_exact_match_entry() {
+        let cache_key: u64 = 0xABCD_EF01_2345_6789;
+        store_single_text_value(cache_key, "Alice");
+
+        let live = rust_query_cache_lookup(cache_key);
+        assert!(!live.is_null());
+
+        store_single_text_value(cache_key, "Bob");
+
+        unsafe {
+            assert_eq!(cached_text_at(live, 0, 0), b"Alice");
+        }
+
+        let lookup_again = rust_query_cache_lookup(cache_key);
+        assert!(!lookup_again.is_null());
+        unsafe {
+            assert_eq!(cached_text_at(lookup_again, 0, 0), b"Alice");
+        }
+
+        rust_query_cache_release(lookup_again);
+        rust_query_cache_release(live);
+    }
+
+    #[test]
+    fn invalidate_live_entry_blocks_future_hits_without_clobbering_live_reader() {
+        let cache_key: u64 = 0x1357_2468_1357_2468;
+        store_single_text_value(cache_key, "Alice");
+
+        let live = rust_query_cache_lookup(cache_key);
+        assert!(!live.is_null());
+
+        rust_query_cache_invalidate(cache_key);
+
+        let miss = rust_query_cache_lookup(cache_key);
+        assert!(
+            miss.is_null(),
+            "invalidated live entry should not be returned"
+        );
+
+        unsafe {
+            assert_eq!(cached_text_at(live, 0, 0), b"Alice");
+        }
+
+        rust_query_cache_release(live);
+
+        let miss_after_release = rust_query_cache_lookup(cache_key);
+        assert!(
+            miss_after_release.is_null(),
+            "invalidated entry should stay gone after last release"
+        );
+
+        with_cache(|cache| {
+            assert!(
+                cache
+                    .entries
+                    .iter()
+                    .all(|entry| entry.cache_key != cache_key),
+                "invalidated entry should be reclaimed after final release"
+            );
+        });
+    }
+
+    #[test]
+    fn lru_store_skips_live_oldest_entry() {
+        let mut keys = Vec::with_capacity(QUERY_CACHE_SIZE);
+        for i in 0..QUERY_CACHE_SIZE {
+            let key = 0x9100_0000_0000_0000_u64 + i as u64;
+            keys.push(key);
+            store_single_text_value(key, &format!("v{i}"));
+        }
+
+        let live = rust_query_cache_lookup(keys[0]);
+        assert!(!live.is_null());
+
+        let new_key = 0x9200_0000_0000_0001_u64;
+        store_single_text_value(new_key, "fresh");
+
+        unsafe {
+            assert_eq!(cached_text_at(live, 0, 0), b"v0");
+        }
+
+        let oldest_again = rust_query_cache_lookup(keys[0]);
+        assert!(
+            !oldest_again.is_null(),
+            "live oldest entry should remain cached"
+        );
+        unsafe {
+            assert_eq!(cached_text_at(oldest_again, 0, 0), b"v0");
+        }
+
+        let fresh = rust_query_cache_lookup(new_key);
+        assert!(!fresh.is_null(), "new entry should use a reclaimable slot");
+        unsafe {
+            assert_eq!(cached_text_at(fresh, 0, 0), b"fresh");
+        }
+
+        rust_query_cache_release(fresh);
+        rust_query_cache_release(oldest_again);
+        rust_query_cache_release(live);
     }
 
     #[test]

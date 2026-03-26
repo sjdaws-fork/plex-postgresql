@@ -4,7 +4,8 @@
 /*
  * Compatibility wrapper around the generated translator ABI header.
  * The generated header owns the function declarations; this file preserves the
- * historical `sql_translation_t` alias used from C.
+ * historical `sql_translation_t` alias used from C. Broader legacy shim headers
+ * now live under `include/legacy/`.
  */
 
 #include "plex_pg_core_ffi.h"

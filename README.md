@@ -6,16 +6,17 @@
 
 A small shim library that catches Plex SQLite calls and sends them to PostgreSQL. You do not need to change Plex source code.
 
-## 🎉 Latest Release: v1.0.0
+## 🎉 Latest Release: v1.1.0
 
-**SQL translator and PG modules migrated to Rust** — the entire SQLite-to-PostgreSQL translation pipeline now runs on Rust's `sqlparser-rs` AST engine, and all 7 backend modules have been migrated to hybrid C/Rust.
+**100% Rust shim runtime** — the entire interpose layer is now pure Rust. All C runtime code has been eliminated. The shim compiles to a single static library linked into the dylib/so.
 
-- 🆕 **Rust SQL translator:** AST-based translation replacing the C string-manipulation translator
-- 🆕 **Rust PG modules:** pg_config, pg_logging, pg_mem_telemetry, shim_alloc, pg_query_cache, pg_statement, pg_client — all core logic in Rust
-- 🆕 **Log level cleanup:** informational pool messages demoted from ERROR to INFO
-- ✅ **Extensive test coverage** across Rust and C test suites
+- 🆕 **Full Rust runtime:** all interpose, column access, step execution, and connection management in Rust
+- 🆕 **Module architecture:** monolithic files split into focused submodules for maintainability
+- 🔧 **Deadlock fixes:** recursive connection mutex, reduced lock hold times, lock-free logging fallback
+- 🔧 **Stack safety:** heap-allocated thread-local buffers for Plex's 544K worker thread stacks
+- ✅ **712 tests passing** across unit, integration, and compatibility suites
 
-[📥 Download v1.0.0](https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.0) | [📋 Full Release Notes](https://github.com/cgnl/plex-postgresql/releases/tag/v1.0.0)
+[📥 Download v1.1.0](https://github.com/cgnl/plex-postgresql/releases/tag/v1.1.0) | [📋 Full Changelog](CHANGELOG.md)
 
 Linux and macOS release zips are built by GitHub Actions on tag push via `.github/workflows/release-linux-artifacts.yml` and `.github/workflows/release-macos-artifacts.yml`.
 Pull requests and `main`/`develop` pushes run `.github/workflows/ci.yml` (script validation + Linux amd64 build check + full test suite + FFI header verification).
@@ -373,7 +374,8 @@ make benchmark       # Shim micro-benchmarks
 ```
 
 `include/plex_pg_core_ffi.h` is generated from the small ABI contract crate in `rust/plex-pg-abi/`.  
-`include/sql_translator.h` is the compatibility wrapper used by the C side of the shim.
+`include/sql_translator.h` is the thin translator compatibility wrapper used by the legacy C ABI surface.  
+Legacy shim headers now live under `include/legacy/`; the old `src/*.h` and `src/interpose/*.h` paths remain as compatibility wrappers only.
 
 ### Exception Parity (macOS)
 
@@ -411,19 +413,15 @@ The shim includes opt-in allocation tracking to monitor memory usage and detect 
 | Environment Variable | Effect |
 |---|---|
 | `PLEX_PG_ALLOC_TRACK=1` | Logs shim memory summary every 60s: live/peak bytes, alloc/free counts |
-| `PLEX_PG_ALLOC_TRACE=1` | Same as TRACK + logs top 15 unfreed allocation sites with file:line |
+| `PLEX_PG_ALLOC_TRACE=1` | Same as TRACK + logs aggregate live allocations/bytes from the Rust tracker |
 
 Example output with `PLEX_PG_ALLOC_TRACE=1`:
 ```
 SHIM_ALLOC: live=3424KB peak=3502KB allocs=19092 frees=22269 total_alloc=26800KB total_freed=23376KB
-SHIM_ALLOC_TRACE: 17 leak sites, top 15:
-  #1 pg_statement.c:351 — 1414096 bytes in 62 allocs
-  #2 pg_client.c:553    — 1048832 bytes in 34 allocs
-  #3 pg_client.c:1163   — 678656 bytes in 22 allocs
-  ...
+SHIM_ALLOC_TRACE: 17 live allocations, 1414096 bytes total (per-site file:line not available in Rust backend)
 ```
 
-If `live` keeps growing over hours, there's a leak — the trace shows exactly where.
+If `live` keeps growing over hours, there's a leak. The Rust backend currently reports totals, not per-site file:line breakdowns.
 
 ## Troubleshooting
 
