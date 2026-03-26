@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.0] - 2026-03-26
 
 ### Changed
-- **Full Rust shim runtime** — all interpose/runtime C code eliminated. The shim is now 100% Rust (compiled to a single `.dylib`/`.so` via static linking). No C object files remain.
+- **Full Rust shim runtime** — all interpose/runtime C code eliminated. The shim is now 100% Rust (compiled to a single `.dylib`/`.so` via static linking). No C object files remain. Rust's ownership model, borrow checker, and type system prevent entire classes of bugs that plagued the C implementation: use-after-free, buffer overflows, double-free, null pointer dereference, and data races are caught at compile time rather than discovered in production.
 - **Module split** — large monolithic Rust files split into focused submodules: `db_interpose_column/`, `db_interpose_common/`, `db_interpose_step/`, `db_interpose_prepare/`, `pg_client/`, `pg_statement/`, and 15+ other module directories.
 - **Thread-local text buffers heap-allocated** — fixes stack overflow on Plex worker threads (544K stacks) by using `Box::new()` for the 512KB column text buffer pool.
 

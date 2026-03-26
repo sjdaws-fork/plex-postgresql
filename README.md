@@ -10,7 +10,7 @@ A small shim library that catches Plex SQLite calls and sends them to PostgreSQL
 
 **100% Rust shim runtime** — the entire interpose layer is now pure Rust. All C runtime code has been eliminated. The shim compiles to a single static library linked into the dylib/so.
 
-- 🆕 **Full Rust runtime:** all interpose, column access, step execution, and connection management in Rust
+- 🆕 **Full Rust runtime:** all interpose, column access, step execution, and connection management in Rust — eliminating memory leaks, buffer overflows, and use-after-free bugs by design
 - 🆕 **Module architecture:** monolithic files split into focused submodules for maintainability
 - 🔧 **Deadlock fixes:** recursive connection mutex, reduced lock hold times, lock-free logging fallback
 - 🔧 **Stack safety:** heap-allocated thread-local buffers for Plex's 544K worker thread stacks
