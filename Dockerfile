@@ -37,6 +37,7 @@ COPY include/ include/
 COPY rust/ rust/
 COPY Makefile Makefile
 COPY VERSION VERSION
+COPY scripts/docker-build-shim.sh scripts/docker-build-shim.sh
 
 # Build PostgreSQL/libpq, Rust core, shim, and collect runtime libs in /libs
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
