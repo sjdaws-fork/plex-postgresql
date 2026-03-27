@@ -17,7 +17,7 @@ use crate::db_interpose_conn_utils::{
     log_info, PgConnConfig, PthreadMutexGuard,
 };
 use crate::env_utils;
-use crate::ffi_types::{sqlite3, sqlite3_stmt, PgConnection, PgStmt, STMT_NAME_LEN};
+use crate::ffi_types::{sqlite3, sqlite3_stmt, PgConnection, PgStmt, StmtGuard, STMT_NAME_LEN};
 use crate::libpq_helpers::PGresult;
 pub use cached_write::{
     rust_step_cached_write_build_exec_sql, rust_step_cached_write_execute_and_finalize,

@@ -8,10 +8,14 @@ pub(crate) fn cstr_to_str(ptr: *const c_char) -> &'static str {
 }
 
 pub(crate) unsafe fn owned_db_path(conn: *mut PgConnection) -> Option<CString> {
-    if conn.is_null() || (*conn).db_path[0] == 0 {
+    if conn.is_null() {
         return None;
     }
-    Some(CStr::from_ptr((*conn).db_path.as_ptr()).to_owned())
+    let conn = &*conn;
+    if conn.db_path[0] == 0 {
+        return None;
+    }
+    Some(CStr::from_ptr(conn.db_path.as_ptr()).to_owned())
 }
 
 pub(crate) unsafe fn param_at(param_values: *const *const c_char, idx: usize) -> *const c_char {
@@ -61,17 +65,16 @@ pub(crate) fn step_read_clear_row_caches(stmt: *mut PgStmt) {
     if stmt.is_null() {
         return;
     }
-    unsafe {
-        let num_slots = (*stmt).cached_text.len().max((*stmt).decoded_blobs.len()) as c_int;
-        crate::db_interpose_helpers::rust_step_clear_row_caches(
-            (*stmt).cached_text.as_mut_ptr(),
-            (*stmt).cached_blob.as_mut_ptr(),
-            (*stmt).cached_blob_len.as_mut_ptr(),
-            (*stmt).decoded_blobs.as_mut_ptr(),
-            (*stmt).decoded_blob_lens.as_mut_ptr(),
-            num_slots,
-            &mut (*stmt).cached_row as *mut c_int,
-            &mut (*stmt).decoded_blob_row as *mut c_int,
-        );
-    }
+    let stmt = unsafe { &mut *stmt };
+    let num_slots = stmt.cached_text.len().max(stmt.decoded_blobs.len()) as c_int;
+    crate::db_interpose_helpers::rust_step_clear_row_caches(
+        stmt.cached_text.as_mut_ptr(),
+        stmt.cached_blob.as_mut_ptr(),
+        stmt.cached_blob_len.as_mut_ptr(),
+        stmt.decoded_blobs.as_mut_ptr(),
+        stmt.decoded_blob_lens.as_mut_ptr(),
+        num_slots,
+        &mut stmt.cached_row as *mut c_int,
+        &mut stmt.decoded_blob_row as *mut c_int,
+    );
 }

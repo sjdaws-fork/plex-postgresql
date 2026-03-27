@@ -6,25 +6,34 @@ use crate::ffi_types::PgConnection;
 use super::threading::{current_thread_id, threads_equal};
 use super::{pool, PoolManager, SLOT_READY};
 
-pub(super) fn conn_db_path(conn: *mut PgConnection) -> String {
-    if conn.is_null() {
-        return String::new();
-    }
-    unsafe { super::cbuf_to_string(&(*conn).db_path) }
+pub(super) fn conn_db_path(conn: &PgConnection) -> String {
+    super::cbuf_to_string(&conn.db_path)
 }
 
-pub(super) fn conn_is_pg_active(conn: *mut PgConnection) -> bool {
+pub(super) fn conn_is_pg_active(conn: &PgConnection) -> bool {
+    conn.is_pg_active != 0
+}
+
+pub(super) fn conn_is_streaming_active(conn: &PgConnection) -> bool {
+    conn.streaming_active.load(Ordering::Acquire) != 0
+}
+
+/// Raw-pointer wrapper for callers that still hold `*mut PgConnection`.
+/// Returns `false` when the pointer is null.
+pub(super) fn conn_is_streaming_active_ptr(conn: *mut PgConnection) -> bool {
     if conn.is_null() {
         return false;
     }
-    unsafe { (*conn).is_pg_active != 0 }
+    conn_is_streaming_active(unsafe { &*conn })
 }
 
-pub(super) fn conn_is_streaming_active(conn: *mut PgConnection) -> bool {
+/// Raw-pointer wrapper for callers that still hold `*mut PgConnection`.
+/// Returns `false` when the pointer is null.
+pub(super) fn conn_is_pg_active_ptr(conn: *mut PgConnection) -> bool {
     if conn.is_null() {
         return false;
     }
-    unsafe { (*conn).streaming_active.load(Ordering::Acquire) != 0 }
+    conn_is_pg_active(unsafe { &*conn })
 }
 
 pub(super) fn thread_streaming_connection_count(
@@ -51,7 +60,7 @@ pub(super) fn thread_streaming_connection_count(
         if conn.is_null() || conn == exclude_conn as *mut c_void {
             continue;
         }
-        if conn_is_streaming_active(conn as *mut PgConnection) {
+        if conn_is_streaming_active_ptr(conn as *mut PgConnection) {
             count += 1;
         }
     }

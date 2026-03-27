@@ -125,7 +125,8 @@ fn trace_badcast_sql_ok(pg_stmt: *const PgStmt) -> bool {
     if pg_stmt.is_null() {
         return false;
     }
-    let sql_ptr = unsafe { (*pg_stmt).pg_sql };
+    let stmt = unsafe { &*pg_stmt };
+    let sql_ptr = stmt.pg_sql;
     if sql_ptr.is_null() {
         return false;
     }
@@ -197,13 +198,11 @@ pub(super) fn trace_badcast_log_ctx(
     if pg_stmt.is_null() {
         return;
     }
-    let sql_ptr = unsafe { (*pg_stmt).pg_sql };
-    let sql = cstr_prefix(sql_ptr, 200, "?");
+    let s = unsafe { &*pg_stmt };
+    let sql = cstr_prefix(s.pg_sql, 200, "?");
     let col = cstr_to_string_or(col_name, "?");
-    let num_rows = unsafe { (*pg_stmt).num_rows };
-    let num_cols = unsafe { (*pg_stmt).num_cols };
     log_debug_lazy!(
         "TRACE_BADCAST_CTX: fn={} phase={} stmt={:p} pg_stmt={:p} idx={} col='{}' oid={} row={}/{} cols={} is_null={} sql={}",
-        fn_name, phase, stmt, pg_stmt, idx, col, oid, row, num_rows, num_cols, is_null, sql
+        fn_name, phase, stmt, pg_stmt, idx, col, oid, row, s.num_rows, s.num_cols, is_null, sql
     );
 }

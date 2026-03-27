@@ -118,6 +118,34 @@ pub(crate) fn cstr_to_str(ptr: *const c_char) -> &'static str {
     unsafe { CStr::from_ptr(ptr).to_str().unwrap_or("STEP") }
 }
 
+/// Safe wrapper: returns `""` if `ptr` is null, otherwise the CStr contents.
+/// Falls back to `""` on non-UTF-8 data.
+pub(crate) fn cstr_to_str_safe(ptr: *const c_char) -> &'static str {
+    if ptr.is_null() {
+        return "";
+    }
+    unsafe { CStr::from_ptr(ptr).to_str().unwrap_or("") }
+}
+
+/// Safe wrapper: returns `None` if `ptr` is null or non-UTF-8,
+/// otherwise `Some(str)`.
+pub(crate) fn cstr_to_option(ptr: *const c_char) -> Option<&'static str> {
+    if ptr.is_null() {
+        return None;
+    }
+    unsafe { CStr::from_ptr(ptr).to_str().ok() }
+}
+
+/// Safe wrapper: returns `Cow<str>` from a possibly-null C string pointer.
+/// Returns `default` if `ptr` is null. Uses lossy UTF-8 conversion to
+/// handle non-UTF-8 data gracefully.
+pub(crate) fn cstr_to_lossy_or(ptr: *const c_char, default: &str) -> std::borrow::Cow<'static, str> {
+    if ptr.is_null() {
+        return std::borrow::Cow::Owned(default.to_string());
+    }
+    unsafe { CStr::from_ptr(ptr).to_string_lossy() }
+}
+
 pub(crate) fn cstr_to_string_or(ptr: *const c_char, default: &str) -> String {
     if ptr.is_null() {
         return default.to_string();
@@ -178,39 +206,38 @@ pub(crate) unsafe fn apply_pg_session_settings(conn: *mut PGconn, cfg: &PgConnCo
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_step_conn_cancel_and_drain(
+pub fn rust_step_conn_cancel_and_drain(
     conn: *mut PgConnection,
     scope_tag: *const c_char,
 ) {
     if conn.is_null() {
         return;
     }
-    unsafe {
-        if (*conn).conn.is_null() {
-            return;
-        }
-        if (*conn)
-            .streaming_active
-            .load(std::sync::atomic::Ordering::Relaxed)
-            != 0
-        {
-            return;
-        }
+    let c = unsafe { &*conn };
+    if c.conn.is_null() {
+        return;
+    }
+    if c.streaming_active
+        .load(std::sync::atomic::Ordering::Relaxed)
+        != 0
+    {
+        return;
+    }
 
+    unsafe {
         // Fast path: if connection is idle (not busy), skip the expensive
         // PQcancel + drain entirely. This saves a TCP roundtrip per call.
-        crate::libpq_helpers::rust_pq_consume_input((*conn).conn);
-        if crate::libpq_helpers::rust_pq_is_busy((*conn).conn) == 0 {
+        crate::libpq_helpers::rust_pq_consume_input(c.conn);
+        if crate::libpq_helpers::rust_pq_is_busy(c.conn) == 0 {
             // Quick drain: clear any already-buffered results without cancel.
-            let pending = crate::libpq_helpers::rust_pq_get_result((*conn).conn);
+            let pending = crate::libpq_helpers::rust_pq_get_result(c.conn);
             if pending.is_null() {
                 return; // Nothing pending — skip entirely.
             }
             crate::libpq_helpers::rust_pq_clear(pending);
             // Drain any remaining.
             loop {
-                let more = crate::libpq_helpers::rust_pq_get_result((*conn).conn);
+                let more = crate::libpq_helpers::rust_pq_get_result(c.conn);
                 if more.is_null() {
                     break;
                 }
@@ -220,8 +247,8 @@ pub extern "C" fn rust_step_conn_cancel_and_drain(
         }
 
         // Slow path: connection is busy — cancel and drain.
-        crate::libpq_helpers::rust_pq_set_nonblocking((*conn).conn, 0);
-        let cancel: *mut PGcancel = crate::libpq_helpers::rust_pq_get_cancel((*conn).conn);
+        crate::libpq_helpers::rust_pq_set_nonblocking(c.conn, 0);
+        let cancel: *mut PGcancel = crate::libpq_helpers::rust_pq_get_cancel(c.conn);
         if !cancel.is_null() {
             let mut errbuf = [0 as c_char; 256];
             crate::libpq_helpers::rust_pq_cancel(
@@ -234,7 +261,7 @@ pub extern "C" fn rust_step_conn_cancel_and_drain(
 
         let mut drain_count = 0;
         loop {
-            let pending: *mut PGresult = crate::libpq_helpers::rust_pq_get_result((*conn).conn);
+            let pending: *mut PGresult = crate::libpq_helpers::rust_pq_get_result(c.conn);
             if pending.is_null() {
                 break;
             }

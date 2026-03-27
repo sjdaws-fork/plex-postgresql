@@ -2,8 +2,16 @@ use std::os::raw::{c_char, c_int, c_uchar, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use crate::db_interpose_conn_utils::{cstr_to_string_or, log_debug, PthreadMutexGuard};
-use crate::ffi_types::{sqlite3, sqlite3_stmt, sqlite3_value, PgStmt, PARAM_BUF_LEN};
+use crate::db_interpose_common::{
+    get_orig_sqlite3_bind_int, get_orig_sqlite3_bind_int64,
+    get_orig_sqlite3_bind_double, get_orig_sqlite3_bind_text,
+    get_orig_sqlite3_bind_text64, get_orig_sqlite3_bind_blob,
+    get_orig_sqlite3_bind_blob64, get_orig_sqlite3_bind_value,
+    get_orig_sqlite3_bind_null, get_orig_sqlite3_reset,
+    get_orig_sqlite3_sql, get_orig_sqlite3_db_handle,
+};
+use crate::db_interpose_conn_utils::{cstr_to_string_or, log_debug};
+use crate::ffi_types::{sqlite3, sqlite3_stmt, sqlite3_value, PgStmt, StmtGuard, PARAM_BUF_LEN};
 
 mod numeric_binds;
 mod support;
@@ -41,40 +49,6 @@ static PHASE_BIND_VALUE: &[u8] = b"bind_value\0";
 static PHASE_BIND_NULL: &[u8] = b"bind_null\0";
 
 extern "C" {
-    static mut orig_sqlite3_bind_int:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, c_int) -> c_int>;
-    static mut orig_sqlite3_bind_int64:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, i64) -> c_int>;
-    static mut orig_sqlite3_bind_double:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, f64) -> c_int>;
-    static mut orig_sqlite3_bind_text: Option<
-        unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_char, c_int, *mut c_void) -> c_int,
-    >;
-    static mut orig_sqlite3_bind_text64: Option<
-        unsafe extern "C" fn(
-            *mut sqlite3_stmt,
-            c_int,
-            *const c_char,
-            u64,
-            *mut c_void,
-            c_uchar,
-        ) -> c_int,
-    >;
-    static mut orig_sqlite3_bind_blob: Option<
-        unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_void, c_int, *mut c_void) -> c_int,
-    >;
-    static mut orig_sqlite3_bind_blob64: Option<
-        unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const c_void, u64, *mut c_void) -> c_int,
-    >;
-    static mut orig_sqlite3_bind_value:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, *const sqlite3_value) -> c_int>;
-    static mut orig_sqlite3_bind_null:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>;
-    static mut orig_sqlite3_reset: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
-    static mut orig_sqlite3_sql: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *const c_char>;
-    static mut orig_sqlite3_db_handle:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut sqlite3>;
-
     fn pg_find_any_stmt(stmt: *mut sqlite3_stmt) -> *mut PgStmt;
     fn pg_exception_note_phase(
         phase: *const c_char,

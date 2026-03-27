@@ -19,13 +19,12 @@ pub extern "C" fn pg_query_cache_key(stmt: *mut PgStmt) -> u64 {
     if stmt.is_null() {
         return 0;
     }
-    unsafe {
-        crate::pg_query_cache::rust_query_cache_key(
-            (*stmt).pg_sql,
-            (*stmt).param_values.as_ptr() as *const *const c_char,
-            (*stmt).param_count,
-        )
-    }
+    let s = unsafe { &*stmt };
+    crate::pg_query_cache::rust_query_cache_key(
+        s.pg_sql,
+        s.param_values.as_ptr() as *const *const c_char,
+        s.param_count,
+    )
 }
 
 #[no_mangle]
@@ -60,15 +59,14 @@ pub extern "C" fn pg_query_cache_store(stmt: *mut PgStmt, result_ptr: *mut c_voi
         return;
     }
 
-    unsafe {
-        crate::db_interpose_helpers::rust_query_cache_store_from_pgresult(
-            key,
-            result,
-            num_rows,
-            num_cols,
-            (*stmt).pg_sql,
-        );
-    }
+    let s = unsafe { &*stmt };
+    crate::db_interpose_helpers::rust_query_cache_store_from_pgresult(
+        key,
+        result,
+        num_rows,
+        num_cols,
+        s.pg_sql,
+    );
 }
 
 #[no_mangle]

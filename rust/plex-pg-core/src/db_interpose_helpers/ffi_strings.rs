@@ -9,8 +9,7 @@ pub struct RustNormalizedSql {
     pub param_count: c_int,
 }
 
-#[no_mangle]
-pub extern "C" fn rust_free_cstring(ptr: *mut c_char) {
+pub fn rust_free_cstring(ptr: *mut c_char) {
     if ptr.is_null() {
         return;
     }
@@ -19,8 +18,7 @@ pub extern "C" fn rust_free_cstring(ptr: *mut c_char) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_validate_utf8(ptr: *const c_char, len: usize) -> i32 {
+pub fn rust_validate_utf8(ptr: *const c_char, len: usize) -> i32 {
     if ptr.is_null() {
         return 0;
     }
@@ -28,8 +26,7 @@ pub extern "C" fn rust_validate_utf8(ptr: *const c_char, len: usize) -> i32 {
     i32::from(std::str::from_utf8(bytes).is_ok())
 }
 
-#[no_mangle]
-pub extern "C" fn rust_rewrite_server_library_uri(
+pub fn rust_rewrite_server_library_uri(
     input: *const c_char,
     out: *mut c_char,
     out_len: usize,
@@ -55,8 +52,7 @@ pub extern "C" fn rust_rewrite_server_library_uri(
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_normalize_sql_literals(sql: *const c_char) -> *mut RustNormalizedSql {
+pub fn rust_normalize_sql_literals(sql: *const c_char) -> *mut RustNormalizedSql {
     if sql.is_null() {
         return std::ptr::null_mut();
     }
@@ -105,8 +101,7 @@ pub extern "C" fn rust_normalize_sql_literals(sql: *const c_char) -> *mut RustNo
     }))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_free_normalized_sql(n: *mut RustNormalizedSql) {
+pub fn rust_free_normalized_sql(n: *mut RustNormalizedSql) {
     if n.is_null() {
         return;
     }

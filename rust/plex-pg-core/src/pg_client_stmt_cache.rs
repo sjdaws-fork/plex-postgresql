@@ -217,8 +217,7 @@ fn deallocate_stmt(conn: *mut c_void, stmt_name: &[c_char; STMT_NAME_LEN]) {
 
 /// Lookup statement in cache by hash.
 /// Returns 1 on hit, 0 on miss. Writes stmt_name_out to cached name on hit.
-#[no_mangle]
-pub extern "C" fn rust_stmt_cache_lookup(
+pub fn rust_stmt_cache_lookup(
     conn: *mut c_void,
     sql_hash: u64,
     stmt_name_out: *mut *const c_char,
@@ -250,8 +249,7 @@ pub extern "C" fn rust_stmt_cache_lookup(
 }
 
 /// Add statement to cache. Returns index on success, -1 on failure.
-#[no_mangle]
-pub extern "C" fn rust_stmt_cache_add(
+pub fn rust_stmt_cache_add(
     conn: *mut c_void,
     sql_hash: u64,
     stmt_name: *const c_char,
@@ -284,8 +282,7 @@ pub extern "C" fn rust_stmt_cache_add(
 }
 
 /// Clear local prepared statement cache without sending DEALLOCATE to server.
-#[no_mangle]
-pub extern "C" fn rust_stmt_cache_clear_local(conn: *mut c_void) {
+pub fn rust_stmt_cache_clear_local(conn: *mut c_void) {
     if conn.is_null() {
         return;
     }
@@ -300,8 +297,7 @@ pub extern "C" fn rust_stmt_cache_clear_local(conn: *mut c_void) {
 }
 
 /// Clear all cached statements for a connection (includes DEALLOCATE).
-#[no_mangle]
-pub extern "C" fn rust_stmt_cache_clear(conn: *mut c_void) {
+pub fn rust_stmt_cache_clear(conn: *mut c_void) {
     if conn.is_null() {
         return;
     }
@@ -326,8 +322,7 @@ pub extern "C" fn rust_stmt_cache_clear(conn: *mut c_void) {
 }
 
 /// Drop cache entry for a connection (no DEALLOCATE).
-#[no_mangle]
-pub extern "C" fn rust_stmt_cache_drop(conn: *mut c_void) {
+pub fn rust_stmt_cache_drop(conn: *mut c_void) {
     if conn.is_null() {
         return;
     }

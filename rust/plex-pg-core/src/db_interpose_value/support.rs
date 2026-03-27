@@ -57,9 +57,10 @@ pub(super) unsafe fn load_fake_value_context(
 }
 
 pub(super) unsafe fn fake_value_has_result(ctx: &FakeValueContext) -> bool {
-    !(*ctx.pg_stmt).result.is_null()
+    let s = &*ctx.pg_stmt;
+    !s.result.is_null()
         && ctx.row >= 0
-        && ctx.row < (*ctx.pg_stmt).num_rows
+        && ctx.row < s.num_rows
         && ctx.col >= 0
-        && ctx.col < (*ctx.pg_stmt).num_cols
+        && ctx.col < s.num_cols
 }

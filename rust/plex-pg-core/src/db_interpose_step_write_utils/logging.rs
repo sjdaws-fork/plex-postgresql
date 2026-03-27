@@ -7,13 +7,14 @@ pub extern "C" fn rust_step_write_log_debug_context(
     exec_conn: *mut PgConnection,
     param_values: *const *const c_char,
 ) {
-    unsafe {
-        if pg_stmt.is_null() {
-            return;
-        }
+    if pg_stmt.is_null() {
+        return;
+    }
+    let stmt = unsafe { &*pg_stmt };
 
-        if !(*pg_stmt).pg_sql.is_null()
-            && contains_bytes(cstr_bytes((*pg_stmt).pg_sql), b"play_queue_generators")
+    unsafe {
+        if !stmt.pg_sql.is_null()
+            && contains_bytes(cstr_bytes(stmt.pg_sql), b"play_queue_generators")
         {
             log_debug_lazy!(
                 "INSERT play_queue_generators on thread {:p} conn {:p}",
@@ -22,37 +23,37 @@ pub extern "C" fn rust_step_write_log_debug_context(
             );
         }
 
-        if !(*pg_stmt).sql.is_null()
-            && contains_icase_bytes(cstr_bytes((*pg_stmt).sql), b"INSERT INTO metadata_items")
+        if !stmt.sql.is_null()
+            && contains_icase_bytes(cstr_bytes(stmt.sql), b"INSERT INTO metadata_items")
         {
-            let p0 = if (*pg_stmt).param_count > 0 {
+            let p0 = if stmt.param_count > 0 {
                 param_at(param_values, 0)
             } else {
                 std::ptr::null()
             };
-            let p1 = if (*pg_stmt).param_count > 1 {
+            let p1 = if stmt.param_count > 1 {
                 param_at(param_values, 1)
             } else {
                 std::ptr::null()
             };
-            let p2 = if (*pg_stmt).param_count > 2 {
+            let p2 = if stmt.param_count > 2 {
                 param_at(param_values, 2)
             } else {
                 std::ptr::null()
             };
-            let p8 = if (*pg_stmt).param_count > 8 {
+            let p8 = if stmt.param_count > 8 {
                 param_at(param_values, 8)
             } else {
                 std::ptr::null()
             };
-            let p9 = if (*pg_stmt).param_count > 9 {
+            let p9 = if stmt.param_count > 9 {
                 param_at(param_values, 9)
             } else {
                 std::ptr::null()
             };
             log_debug_lazy!(
                 "STEP metadata_items INSERT: param_count={}",
-                (*pg_stmt).param_count
+                stmt.param_count
             );
             log_debug_lazy!(
                 "  PARAMS: [0]={} [1]={} [2]={} [8]={} [9]={}",
@@ -64,32 +65,32 @@ pub extern "C" fn rust_step_write_log_debug_context(
             );
         }
 
-        if !(*pg_stmt).sql.is_null()
-            && contains_bytes(cstr_bytes((*pg_stmt).sql), b"play_queue_generators")
+        if !stmt.sql.is_null()
+            && contains_bytes(cstr_bytes(stmt.sql), b"play_queue_generators")
         {
-            let p0 = if (*pg_stmt).param_count > 0 {
+            let p0 = if stmt.param_count > 0 {
                 param_at(param_values, 0)
             } else {
                 std::ptr::null()
             };
-            let p1 = if (*pg_stmt).param_count > 1 {
+            let p1 = if stmt.param_count > 1 {
                 param_at(param_values, 1)
             } else {
                 std::ptr::null()
             };
-            let p2 = if (*pg_stmt).param_count > 2 {
+            let p2 = if stmt.param_count > 2 {
                 param_at(param_values, 2)
             } else {
                 std::ptr::null()
             };
-            let p3 = if (*pg_stmt).param_count > 3 {
+            let p3 = if stmt.param_count > 3 {
                 param_at(param_values, 3)
             } else {
                 std::ptr::null()
             };
             log_debug_lazy!(
                 "STEP play_queue_generators INSERT: param_count={}",
-                (*pg_stmt).param_count
+                stmt.param_count
             );
             log_debug_lazy!(
                 "  PARAMS: [0]={} [1]={} [2]={} [3]={}",
@@ -100,7 +101,7 @@ pub extern "C" fn rust_step_write_log_debug_context(
             );
             log_debug_lazy!(
                 "  SQL: {}",
-                cstr_prefix((*pg_stmt).pg_sql, 300, "NULL")
+                cstr_prefix(stmt.pg_sql, 300, "NULL")
             );
         }
     }
@@ -108,23 +109,25 @@ pub extern "C" fn rust_step_write_log_debug_context(
 
 #[no_mangle]
 pub extern "C" fn rust_step_log_step_exit_trace(pg_stmt: *mut PgStmt) {
-    unsafe {
-        if pg_stmt.is_null() || (*pg_stmt).pg_sql.is_null() {
-            return;
-        }
-        let sql_bytes = cstr_bytes((*pg_stmt).pg_sql);
-        let is_count = contains_bytes(sql_bytes, b"COUNT(")
-            || contains_bytes(sql_bytes, b"SUM(")
-            || contains_bytes(sql_bytes, b"MAX(");
-        let is_playqueue = contains_bytes(sql_bytes, b"play_queue");
+    if pg_stmt.is_null() {
+        return;
+    }
+    let stmt = unsafe { &*pg_stmt };
+    if stmt.pg_sql.is_null() {
+        return;
+    }
+    let sql_bytes = unsafe { cstr_bytes(stmt.pg_sql) };
+    let is_count = contains_bytes(sql_bytes, b"COUNT(")
+        || contains_bytes(sql_bytes, b"SUM(")
+        || contains_bytes(sql_bytes, b"MAX(");
+    let is_playqueue = contains_bytes(sql_bytes, b"play_queue");
 
-        if is_count || is_playqueue {
-            log_debug_lazy!(
-                "DEBUG_TRACE: STEP_EXIT - rows={} cols={} sql={}",
-                (*pg_stmt).num_rows,
-                (*pg_stmt).num_cols,
-                cstr_prefix((*pg_stmt).pg_sql, 100, "NULL")
-            );
-        }
+    if is_count || is_playqueue {
+        log_debug_lazy!(
+            "DEBUG_TRACE: STEP_EXIT - rows={} cols={} sql={}",
+            stmt.num_rows,
+            stmt.num_cols,
+            cstr_prefix(stmt.pg_sql, 100, "NULL")
+        );
     }
 }

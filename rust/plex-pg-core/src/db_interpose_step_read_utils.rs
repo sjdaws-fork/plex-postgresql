@@ -13,7 +13,7 @@ use crate::db_interpose_conn_utils::{
     apply_pg_session_settings, connect_new, log_debug, log_error, log_info, PgConnConfig,
     PthreadMutexGuard, STATEMENT_TIMEOUT_SQL,
 };
-use crate::ffi_types::{sqlite3, sqlite3_stmt, PgConnection, PgStmt};
+use crate::ffi_types::{sqlite3, sqlite3_stmt, PgConnection, PgStmt, StmtGuard};
 use crate::libpq_helpers::PGresult;
 use first_execute::first_execute_impl;
 use next_result::{
@@ -113,141 +113,130 @@ mod tests {
 
     #[test]
     fn cross_thread_reexecution_only_clears_streaming_results() {
-        let stmt = make_stmt();
+        let stmt_ptr = make_stmt();
         let old_conn = 0x1234usize as *mut PgConnection;
         let new_conn = 0x5678usize as *mut PgConnection;
 
-        unsafe {
-            (*stmt).result_conn = old_conn;
-            (*stmt).streaming_mode = 1;
-        }
+        let s = unsafe { &mut *stmt_ptr };
+        s.result_conn = old_conn;
+        s.streaming_mode = 1;
 
-        assert!(should_clear_cross_thread_result(stmt, new_conn));
+        assert!(should_clear_cross_thread_result(stmt_ptr, new_conn));
 
-        rust_stmt_free(stmt);
+        rust_stmt_free(stmt_ptr);
     }
 
     #[test]
     fn cross_thread_reexecution_keeps_materialized_eager_results() {
-        let stmt = make_stmt();
+        let stmt_ptr = make_stmt();
         let result = 0x1234usize as *mut PGresult;
         let old_conn = 0x2345usize as *mut PgConnection;
         let new_conn = 0x3456usize as *mut PgConnection;
 
-        unsafe {
-            (*stmt).result = result;
-            (*stmt).result_conn = old_conn;
-            (*stmt).streaming_mode = 0;
-        }
+        let s = unsafe { &mut *stmt_ptr };
+        s.result = result;
+        s.result_conn = old_conn;
+        s.streaming_mode = 0;
 
-        assert!(!should_clear_cross_thread_result(stmt, new_conn));
-        assert!(unsafe { adopt_materialized_result_owner(stmt, new_conn) });
+        assert!(!should_clear_cross_thread_result(stmt_ptr, new_conn));
+        assert!(unsafe { adopt_materialized_result_owner(stmt_ptr, new_conn) });
 
-        unsafe {
-            assert_eq!((*stmt).result, result);
-            assert_eq!((*stmt).result_conn, new_conn);
-            (*stmt).result = std::ptr::null_mut();
-            (*stmt).result_conn = std::ptr::null_mut();
-        }
+        let s = unsafe { &mut *stmt_ptr };
+        assert_eq!(s.result, result);
+        assert_eq!(s.result_conn, new_conn);
+        s.result = std::ptr::null_mut();
+        s.result_conn = std::ptr::null_mut();
 
-        rust_stmt_free(stmt);
+        rust_stmt_free(stmt_ptr);
     }
 
     #[test]
     fn prepare_reexecution_state_adopts_materialized_eager_result() {
-        let stmt = make_stmt();
+        let stmt_ptr = make_stmt();
         let result = 0x1234usize as *mut PGresult;
         let old_conn = 0x4567usize as *mut PgConnection;
         let new_conn = 0x5678usize as *mut PgConnection;
 
-        unsafe {
-            (*stmt).result = result;
-            (*stmt).result_conn = old_conn;
-            (*stmt).streaming_mode = 0;
-            (*stmt).metadata_only_result = 0;
-        }
+        let s = unsafe { &mut *stmt_ptr };
+        s.result = result;
+        s.result_conn = old_conn;
+        s.streaming_mode = 0;
+        s.metadata_only_result = 0;
 
-        rust_step_read_prepare_reexecution_state(stmt, new_conn);
+        rust_step_read_prepare_reexecution_state(stmt_ptr, new_conn);
 
-        unsafe {
-            assert_eq!((*stmt).result, result);
-            assert_eq!((*stmt).result_conn, new_conn);
-            (*stmt).result = std::ptr::null_mut();
-            (*stmt).result_conn = std::ptr::null_mut();
-        }
+        let s = unsafe { &mut *stmt_ptr };
+        assert_eq!(s.result, result);
+        assert_eq!(s.result_conn, new_conn);
+        s.result = std::ptr::null_mut();
+        s.result_conn = std::ptr::null_mut();
 
-        rust_stmt_free(stmt);
+        rust_stmt_free(stmt_ptr);
     }
 
     #[test]
     fn prepare_reexecution_state_marks_cross_thread_streaming_stmt_for_eager_requery() {
-        let stmt = make_stmt();
+        let stmt_ptr = make_stmt();
         let old_conn = 0x4567usize as *mut PgConnection;
         let new_conn = 0x5678usize as *mut PgConnection;
 
-        unsafe {
-            (*stmt).streaming_mode = 1;
-            (*stmt).streaming_conn = old_conn;
-            (*stmt).result_conn = old_conn;
-            (*stmt).needs_requery = 0;
-        }
+        let s = unsafe { &mut *stmt_ptr };
+        s.streaming_mode = 1;
+        s.streaming_conn = old_conn;
+        s.result_conn = old_conn;
+        s.needs_requery = 0;
 
-        rust_step_read_prepare_reexecution_state(stmt, new_conn);
+        rust_step_read_prepare_reexecution_state(stmt_ptr, new_conn);
 
-        unsafe {
-            assert_eq!((*stmt).needs_requery, 1);
-            assert_eq!((*stmt).streaming_mode, 0);
-            assert!((*stmt).streaming_conn.is_null());
-            assert!((*stmt).result_conn.is_null());
-        }
+        let s = unsafe { &*stmt_ptr };
+        assert_eq!(s.needs_requery, 1);
+        assert_eq!(s.streaming_mode, 0);
+        assert!(s.streaming_conn.is_null());
+        assert!(s.result_conn.is_null());
 
-        rust_stmt_free(stmt);
+        rust_stmt_free(stmt_ptr);
     }
 
     #[test]
     fn should_use_streaming_respects_cross_thread_eager_fallback_flag() {
-        let stmt = make_stmt();
+        let stmt_ptr = make_stmt();
 
-        unsafe {
-            (*stmt).needs_requery = 0;
-        }
-        assert!(should_use_streaming(stmt, false));
+        let s = unsafe { &mut *stmt_ptr };
+        s.needs_requery = 0;
+        assert!(should_use_streaming(stmt_ptr, false));
 
-        unsafe {
-            (*stmt).needs_requery = 1;
-        }
-        assert!(!should_use_streaming(stmt, false));
-        assert!(!should_use_streaming(stmt, true));
+        let s = unsafe { &mut *stmt_ptr };
+        s.needs_requery = 1;
+        assert!(!should_use_streaming(stmt_ptr, false));
+        assert!(!should_use_streaming(stmt_ptr, true));
 
-        rust_stmt_free(stmt);
+        rust_stmt_free(stmt_ptr);
     }
 
     #[test]
     fn should_use_streaming_disables_limit_one_pg_probes() {
         let sql = CString::new("select * from metadata_items limit 1").unwrap();
-        let stmt = rust_stmt_create(std::ptr::null_mut(), sql.as_ptr(), std::ptr::null_mut());
-        assert!(!stmt.is_null());
+        let stmt_ptr = rust_stmt_create(std::ptr::null_mut(), sql.as_ptr(), std::ptr::null_mut());
+        assert!(!stmt_ptr.is_null());
 
         let pg_sql = CString::new("SELECT * FROM metadata_items LIMIT 1").unwrap();
-        unsafe {
-            (*stmt).pg_sql = libc::strdup(pg_sql.as_ptr());
-        }
+        let s = unsafe { &mut *stmt_ptr };
+        s.pg_sql = unsafe { libc::strdup(pg_sql.as_ptr()) };
 
-        assert!(!should_use_streaming(stmt, false));
+        assert!(!should_use_streaming(stmt_ptr, false));
 
-        rust_stmt_free(stmt);
+        rust_stmt_free(stmt_ptr);
     }
 
     #[test]
     fn should_use_streaming_keeps_non_limit_queries() {
-        let stmt = make_stmt();
+        let stmt_ptr = make_stmt();
 
-        unsafe {
-            (*stmt).needs_requery = 0;
-        }
+        let s = unsafe { &mut *stmt_ptr };
+        s.needs_requery = 0;
 
-        assert!(should_use_streaming(stmt, false));
+        assert!(should_use_streaming(stmt_ptr, false));
 
-        rust_stmt_free(stmt);
+        rust_stmt_free(stmt_ptr);
     }
 }

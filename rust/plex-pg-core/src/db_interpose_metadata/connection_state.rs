@@ -9,9 +9,10 @@ pub(super) fn changes_impl(db: *mut sqlite3) -> c_int {
 
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
     let mut result = 0;
-    unsafe {
-        if !pg_conn.is_null() && (*pg_conn).is_pg_active != 0 {
-            result = (*pg_conn).last_changes;
+    if !pg_conn.is_null() {
+        let conn = unsafe { &*pg_conn };
+        if conn.is_pg_active != 0 {
+            result = conn.last_changes;
         }
     }
     result
@@ -25,9 +26,10 @@ pub(super) fn changes64_impl(db: *mut sqlite3) -> i64 {
 
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
     let mut result: i64 = 0;
-    unsafe {
-        if !pg_conn.is_null() && (*pg_conn).is_pg_active != 0 {
-            result = (*pg_conn).last_changes as i64;
+    if !pg_conn.is_null() {
+        let conn = unsafe { &*pg_conn };
+        if conn.is_pg_active != 0 {
+            result = conn.last_changes as i64;
         }
     }
     result
@@ -58,9 +60,10 @@ pub(super) fn last_insert_rowid_impl(db: *mut sqlite3) -> i64 {
         db, pg_conn
     );
 
-    unsafe {
-        if (*pg_conn).last_insert_rowid > 0 {
-            let rowid = (*pg_conn).last_insert_rowid;
+    {
+        let pg = unsafe { &*pg_conn };
+        if pg.last_insert_rowid > 0 {
+            let rowid = pg.last_insert_rowid;
             log_debug_lazy!(
                 "last_insert_rowid: using cached connection rowid={}",
                 rowid
@@ -79,15 +82,16 @@ pub(super) fn last_insert_rowid_impl(db: *mut sqlite3) -> i64 {
     }
 
     let mut result: i64 = 0;
+    let pg = unsafe { &mut *pg_conn };
     unsafe {
-        if !pg_conn.is_null() && (*pg_conn).is_pg_active != 0 && !(*pg_conn).conn.is_null() {
-            let mut conn_guard = PthreadMutexGuard::lock(&mut (*pg_conn).mutex as *mut _);
+        if !pg_conn.is_null() && pg.is_pg_active != 0 && !pg.conn.is_null() {
+            let mut conn_guard = PthreadMutexGuard::lock(&mut pg.mutex as *mut _);
             log_debug_lazy!(
                 "last_insert_rowid: EXECUTING lastval() on conn {:p}",
-                (*pg_conn).conn
+                pg.conn
             );
             let res = crate::libpq_helpers::rust_pq_exec(
-                (*pg_conn).conn,
+                pg.conn,
                 b"SELECT lastval()\0".as_ptr() as *const c_char,
             );
             if res.is_null() {
@@ -131,7 +135,7 @@ pub(super) fn last_insert_rowid_impl(db: *mut sqlite3) -> i64 {
                 }
             } else {
                 if status == PGRES_FATAL_ERROR {
-                    let err = crate::libpq_helpers::rust_pq_error_message((*pg_conn).conn);
+                    let err = crate::libpq_helpers::rust_pq_error_message(pg.conn);
                     log_debug_lazy!(
                         "last_insert_rowid: FATAL_ERROR: {}",
                         cstr_to_string_or(err, "(null)")
@@ -156,7 +160,7 @@ pub(super) fn errmsg_impl(db: *mut sqlite3) -> *const c_char {
     log_debug_lazy!("ERRMSG: db={:p}", db);
     unsafe {
         if *tls_in_interpose_call_ptr() != 0 {
-            if let Some(f) = shim_sqlite3_errmsg {
+            if let Some(f) = get_shim_sqlite3_errmsg() {
                 return f(db);
             }
         }
@@ -164,26 +168,23 @@ pub(super) fn errmsg_impl(db: *mut sqlite3) -> *const c_char {
 
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
     if !pg_conn.is_null() {
-        unsafe {
-            if (*pg_conn).last_error_code != SQLITE_OK && (*pg_conn).last_error[0] != 0 {
-                log_debug_lazy!(
-                    "ERRMSG: returning tracked error='{}'",
-                    cstr_to_string_or((*pg_conn).last_error.as_ptr(), "")
-                );
-                return (*pg_conn).last_error.as_ptr();
-            }
+        let conn = unsafe { &*pg_conn };
+        if conn.last_error_code != SQLITE_OK && conn.last_error[0] != 0 {
+            log_debug_lazy!(
+                "ERRMSG: returning tracked error='{}'",
+                cstr_to_string_or(conn.last_error.as_ptr(), "")
+            );
+            return conn.last_error.as_ptr();
         }
         log_debug("ERRMSG: returning 'not an error'");
         return NOT_AN_ERROR.as_ptr() as *const c_char;
     }
 
-    unsafe {
-        if let Some(f) = shim_sqlite3_errmsg {
-            return f(db);
-        }
-        if let Some(f) = orig_sqlite3_errmsg {
-            return f(db);
-        }
+    if let Some(f) = get_shim_sqlite3_errmsg() {
+        return unsafe { f(db) };
+    }
+    if let Some(f) = get_orig_sqlite3_errmsg() {
+        return unsafe { f(db) };
     }
     b"unknown error\0".as_ptr() as *const c_char
 }
@@ -192,7 +193,7 @@ pub(super) fn errcode_impl(db: *mut sqlite3) -> c_int {
     log_debug_lazy!("ERRCODE: db={:p}", db);
     unsafe {
         if *tls_in_interpose_call_ptr() != 0 {
-            if let Some(f) = shim_sqlite3_errcode {
+            if let Some(f) = get_shim_sqlite3_errcode() {
                 return f(db);
             }
         }
@@ -200,22 +201,19 @@ pub(super) fn errcode_impl(db: *mut sqlite3) -> c_int {
 
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
     if !pg_conn.is_null() {
-        unsafe {
-            log_debug_lazy!(
-                "ERRCODE: pg_conn found, returning code={}",
-                (*pg_conn).last_error_code
-            );
-            return (*pg_conn).last_error_code;
-        }
+        let conn = unsafe { &*pg_conn };
+        log_debug_lazy!(
+            "ERRCODE: pg_conn found, returning code={}",
+            conn.last_error_code
+        );
+        return conn.last_error_code;
     }
 
-    unsafe {
-        if let Some(f) = shim_sqlite3_errcode {
-            return f(db);
-        }
-        if let Some(f) = orig_sqlite3_errcode {
-            return f(db);
-        }
+    if let Some(f) = get_shim_sqlite3_errcode() {
+        return unsafe { f(db) };
+    }
+    if let Some(f) = get_orig_sqlite3_errcode() {
+        return unsafe { f(db) };
     }
     SQLITE_ERROR
 }
@@ -223,14 +221,11 @@ pub(super) fn errcode_impl(db: *mut sqlite3) -> c_int {
 pub(super) fn extended_errcode_impl(db: *mut sqlite3) -> c_int {
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
     if !pg_conn.is_null() {
-        unsafe {
-            return (*pg_conn).last_error_code;
-        }
+        let conn = unsafe { &*pg_conn };
+        return conn.last_error_code;
     }
-    unsafe {
-        if let Some(f) = orig_sqlite3_extended_errcode {
-            return f(db);
-        }
+    if let Some(f) = get_orig_sqlite3_extended_errcode() {
+        return unsafe { f(db) };
     }
     SQLITE_ERROR
 }
@@ -244,25 +239,24 @@ pub(super) fn get_table_impl(
     pz_err_msg: *mut *mut c_char,
 ) -> c_int {
     if sql.is_null() {
-        unsafe {
-            return match orig_sqlite3_get_table {
-                Some(f) => f(db, sql, paz_result, pn_row, pn_column, pz_err_msg),
-                None => SQLITE_ERROR,
-            };
-        }
+        return match get_orig_sqlite3_get_table() {
+            Some(f) => unsafe { f(db, sql, paz_result, pn_row, pn_column, pz_err_msg) },
+            None => SQLITE_ERROR,
+        };
     }
 
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
     unsafe {
-        if !pg_conn.is_null()
-            && (*pg_conn).is_pg_active != 0
-            && !(*pg_conn).conn.is_null()
+        if !pg_conn.is_null() {
+        let pg = &mut *pg_conn;
+        if pg.is_pg_active != 0
+            && !pg.conn.is_null()
             && crate::pg_config::pg_config_is_read_operation(sql) != 0
         {
             let mut trans = sql_translate(sql);
             if trans.success != 0 && !trans.sql.is_null() {
-                let mut conn_guard = PthreadMutexGuard::lock(&mut (*pg_conn).mutex as *mut _);
-                let res = crate::libpq_helpers::rust_pq_exec((*pg_conn).conn, trans.sql);
+                let mut conn_guard = PthreadMutexGuard::lock(&mut pg.mutex as *mut _);
+                let res = crate::libpq_helpers::rust_pq_exec(pg.conn, trans.sql);
                 if crate::libpq_helpers::rust_pq_result_status(res) == PGRES_TUPLES_OK {
                     let mut result: *mut *mut c_char = std::ptr::null_mut();
                     let mut nrows = 0;
@@ -297,12 +291,11 @@ pub(super) fn get_table_impl(
             }
             sql_translation_free(&mut trans as *mut SqlTranslation);
         }
+        } // if !pg_conn.is_null()
     }
 
-    unsafe {
-        match orig_sqlite3_get_table {
-            Some(f) => f(db, sql, paz_result, pn_row, pn_column, pz_err_msg),
-            None => SQLITE_ERROR,
-        }
+    match get_orig_sqlite3_get_table() {
+        Some(f) => unsafe { f(db, sql, paz_result, pn_row, pn_column, pz_err_msg) },
+        None => SQLITE_ERROR,
     }
 }

@@ -4,38 +4,38 @@ use std::os::raw::c_void;
 use crate::ffi_types::{sqlite3, PgConnection};
 
 use super::config::env_nonzero;
-use super::connection_helpers::{conn_db_path, conn_is_pg_active};
+use super::connection_helpers::{conn_db_path, conn_is_pg_active, conn_is_pg_active_ptr};
 use super::pool_lookup::{is_library_db, pool_find_connection_for_db};
 use super::{log_debug, pool, rust_find_any_library_connection, rust_find_registered_connection};
 
 /// Register a non-pooled connection using its shadow DB handle.
 #[no_mangle]
-pub extern "C" fn rust_pg_register_connection(conn: *mut PgConnection) {
-    if conn.is_null() {
+pub extern "C" fn rust_pg_register_connection(conn_ptr: *mut PgConnection) {
+    if conn_ptr.is_null() {
         return;
     }
-    unsafe {
-        let db = (*conn).shadow_db;
-        if db.is_null() {
-            return;
-        }
-        pool().registry.register(db as usize, conn as usize);
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &*conn_ptr };
+    let db = conn.shadow_db;
+    if db.is_null() {
+        return;
     }
+    pool().registry.register(db as usize, conn_ptr as usize);
 }
 
 /// Unregister a non-pooled connection using its shadow DB handle.
 #[no_mangle]
-pub extern "C" fn rust_pg_unregister_connection(conn: *mut PgConnection) {
-    if conn.is_null() {
+pub extern "C" fn rust_pg_unregister_connection(conn_ptr: *mut PgConnection) {
+    if conn_ptr.is_null() {
         return;
     }
-    unsafe {
-        let db = (*conn).shadow_db;
-        if db.is_null() {
-            return;
-        }
-        pool().registry.unregister(db as usize);
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &*conn_ptr };
+    let db = conn.shadow_db;
+    if db.is_null() {
+        return;
     }
+    pool().registry.unregister(db as usize);
 }
 
 /// Find the handle connection for a sqlite3* handle.
@@ -62,7 +62,8 @@ pub extern "C" fn rust_pg_find_connection(db_handle: *const sqlite3) -> *mut PgC
         return std::ptr::null_mut();
     }
 
-    let path = conn_db_path(handle_conn);
+    let handle_ref = unsafe { &*handle_conn };
+    let path = conn_db_path(handle_ref);
 
     if is_library_db(&path) {
         if env_nonzero("PLEX_PG_FORCE_SQLITE_LIBRARY") {
@@ -70,7 +71,7 @@ pub extern "C" fn rust_pg_find_connection(db_handle: *const sqlite3) -> *mut PgC
         }
 
         if env_nonzero("PLEX_PG_DISABLE_POOL") {
-            if conn_is_pg_active(handle_conn) {
+            if conn_is_pg_active(handle_ref) {
                 return handle_conn;
             }
             return std::ptr::null_mut();
@@ -78,7 +79,7 @@ pub extern "C" fn rust_pg_find_connection(db_handle: *const sqlite3) -> *mut PgC
 
         if let Ok(cs) = CString::new(path) {
             let pool_conn = pool_find_connection_for_db(db_handle as usize, cs.as_ptr());
-            if !pool_conn.is_null() && conn_is_pg_active(pool_conn as *mut PgConnection) {
+            if !pool_conn.is_null() && conn_is_pg_active_ptr(pool_conn as *mut PgConnection) {
                 return pool_conn as *mut PgConnection;
             }
         }
@@ -87,7 +88,7 @@ pub extern "C" fn rust_pg_find_connection(db_handle: *const sqlite3) -> *mut PgC
         return std::ptr::null_mut();
     }
 
-    if conn_is_pg_active(handle_conn) {
+    if conn_is_pg_active(handle_ref) {
         handle_conn
     } else {
         std::ptr::null_mut()

@@ -11,8 +11,7 @@ use super::{
     STMT_INIT,
 };
 
-#[no_mangle]
-pub extern "C" fn rust_stmt_ref(pg_stmt: *mut PgStmt) {
+pub fn rust_stmt_ref(pg_stmt: *mut PgStmt) {
     if pg_stmt.is_null() {
         return;
     }
@@ -22,8 +21,7 @@ pub extern "C" fn rust_stmt_ref(pg_stmt: *mut PgStmt) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_stmt_unref(pg_stmt: *mut PgStmt) {
+pub fn rust_stmt_unref(pg_stmt: *mut PgStmt) {
     if pg_stmt.is_null() {
         return;
     }
@@ -94,8 +92,7 @@ pub extern "C" fn rust_stmt_unref(pg_stmt: *mut PgStmt) {
 }
 
 /// Initialize the statement registry.
-#[no_mangle]
-pub extern "C" fn rust_stmt_registry_init() {
+pub fn rust_stmt_registry_init() {
     STMT_INIT.call_once(|| {
         let _reg = rwlock_read(&REGISTRY);
         log_debug("pg_statement registry initialized (Rust HashMap)");
@@ -104,8 +101,7 @@ pub extern "C" fn rust_stmt_registry_init() {
 
 /// Clear all entries from the registry.
 /// Each pg_stmt_t gets unref'd.
-#[no_mangle]
-pub extern "C" fn rust_stmt_registry_cleanup() {
+pub fn rust_stmt_registry_cleanup() {
     let mut reg = rwlock_write(&REGISTRY);
     let pg_stmts: Vec<usize> = reg.forward.values().copied().collect();
     reg.clear();
@@ -120,8 +116,7 @@ pub extern "C" fn rust_stmt_registry_cleanup() {
 /// # Safety
 /// Both pointers must be valid. The pg_stmt_t must remain valid until
 /// `rust_stmt_unregister` is called.
-#[no_mangle]
-pub extern "C" fn rust_stmt_register(sqlite_stmt: usize, pg_stmt: usize) {
+pub fn rust_stmt_register(sqlite_stmt: usize, pg_stmt: usize) {
     if sqlite_stmt == 0 || pg_stmt == 0 {
         return;
     }
@@ -130,8 +125,7 @@ pub extern "C" fn rust_stmt_register(sqlite_stmt: usize, pg_stmt: usize) {
 }
 
 /// Remove a sqlite3_stmt -> pg_stmt_t mapping.
-#[no_mangle]
-pub extern "C" fn rust_stmt_unregister(sqlite_stmt: usize) {
+pub fn rust_stmt_unregister(sqlite_stmt: usize) {
     if sqlite_stmt == 0 {
         return;
     }
@@ -141,8 +135,7 @@ pub extern "C" fn rust_stmt_unregister(sqlite_stmt: usize) {
 
 /// Look up pg_stmt_t by sqlite3_stmt pointer.
 /// Returns 0 if not found.
-#[no_mangle]
-pub extern "C" fn rust_stmt_find(sqlite_stmt: usize) -> usize {
+pub fn rust_stmt_find(sqlite_stmt: usize) -> usize {
     if sqlite_stmt == 0 {
         return 0;
     }
@@ -152,8 +145,7 @@ pub extern "C" fn rust_stmt_find(sqlite_stmt: usize) -> usize {
 
 /// Look up pg_stmt_t by sqlite3_stmt pointer - first in registry, then TLS cache.
 /// Returns 0 if not found anywhere.
-#[no_mangle]
-pub extern "C" fn rust_stmt_find_any(sqlite_stmt: usize) -> usize {
+pub fn rust_stmt_find_any(sqlite_stmt: usize) -> usize {
     if sqlite_stmt == 0 {
         return 0;
     }
@@ -172,8 +164,7 @@ pub extern "C" fn rust_stmt_find_any(sqlite_stmt: usize) -> usize {
 }
 
 /// Check if a pg_stmt_t pointer is registered.
-#[no_mangle]
-pub extern "C" fn rust_stmt_is_ours(pg_stmt: usize) -> i32 {
+pub fn rust_stmt_is_ours(pg_stmt: usize) -> i32 {
     if pg_stmt == 0 {
         return 0;
     }
@@ -186,8 +177,7 @@ pub extern "C" fn rust_stmt_is_ours(pg_stmt: usize) -> i32 {
 }
 
 /// Get the current number of registered statements.
-#[no_mangle]
-pub extern "C" fn rust_stmt_registry_count() -> usize {
+pub fn rust_stmt_registry_count() -> usize {
     let reg = rwlock_read(&REGISTRY);
     reg.len()
 }

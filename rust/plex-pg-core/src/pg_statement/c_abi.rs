@@ -120,18 +120,21 @@ pub extern "C" fn pg_create_column_value(
     pg_stmt: *mut PgStmt,
     col_idx: c_int,
 ) -> *mut sqlite3_value {
-    if pg_stmt.is_null() || unsafe { (*pg_stmt).result.is_null() } {
+    if pg_stmt.is_null() {
         return rust_create_column_value(pg_stmt as usize, col_idx, SQLITE_NULL)
             as *mut sqlite3_value;
     }
-    let sqlite_type = unsafe {
-        crate::db_interpose_helpers::rust_pg_create_column_value(
-            (*pg_stmt).result,
-            (*pg_stmt).current_row,
-            (*pg_stmt).num_rows,
-            col_idx,
-        )
-    };
+    let stmt = unsafe { &*pg_stmt };
+    if stmt.result.is_null() {
+        return rust_create_column_value(pg_stmt as usize, col_idx, SQLITE_NULL)
+            as *mut sqlite3_value;
+    }
+    let sqlite_type = crate::db_interpose_helpers::rust_pg_create_column_value(
+        stmt.result,
+        stmt.current_row,
+        stmt.num_rows,
+        col_idx,
+    );
     rust_create_column_value(pg_stmt as usize, col_idx, sqlite_type) as *mut sqlite3_value
 }
 

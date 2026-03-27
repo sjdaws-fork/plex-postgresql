@@ -29,8 +29,7 @@ pub static mut fake_value_next: c_uint = 0;
 #[no_mangle]
 pub static mut fake_value_mutex: libc::pthread_mutex_t = libc::PTHREAD_MUTEX_INITIALIZER;
 
-#[no_mangle]
-pub extern "C" fn rust_pg_check_fake_value(
+pub fn rust_pg_check_fake_value(
     p_val: *mut crate::ffi_types::sqlite3_value,
 ) -> *mut PgFakeValue {
     if p_val.is_null() {

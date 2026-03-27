@@ -18,6 +18,7 @@ mod lifecycle;
 #[cfg(target_os = "linux")]
 mod process_policy;
 mod sqlite_abi;
+mod sqlite_fn_accessors;
 mod sqlite_symbols;
 mod state;
 mod tls_support;
@@ -74,6 +75,7 @@ pub(crate) use process_policy::{
     linux_process_name_is_primary, linux_process_name_requires_passthrough,
 };
 pub(crate) use sqlite_abi::*;
+pub(crate) use sqlite_fn_accessors::*;
 pub use sqlite_symbols::{
     rust_common_load_sqlite_symbols, rust_reset_symbol_verification, rust_shim_ensure_ready,
 };

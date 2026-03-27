@@ -18,11 +18,9 @@ pub(super) fn create_collation_impl(
             return SQLITE_OK;
         }
     }
-    unsafe {
-        match orig_sqlite3_create_collation {
-            Some(f) => f(db, name, text_rep, arg, compare),
-            None => SQLITE_ERROR,
-        }
+    match get_orig_sqlite3_create_collation() {
+        Some(f) => unsafe { f(db, name, text_rep, arg, compare) },
+        None => SQLITE_ERROR,
     }
 }
 
@@ -44,29 +42,23 @@ pub(super) fn create_collation_v2_impl(
             return SQLITE_OK;
         }
     }
-    unsafe {
-        match orig_sqlite3_create_collation_v2 {
-            Some(f) => f(db, name, text_rep, arg, compare, destroy),
-            None => SQLITE_ERROR,
-        }
+    match get_orig_sqlite3_create_collation_v2() {
+        Some(f) => unsafe { f(db, name, text_rep, arg, compare, destroy) },
+        None => SQLITE_ERROR,
     }
 }
 
 pub(super) fn free_impl(ptr: *mut c_void) {
-    unsafe {
-        if let Some(f) = orig_sqlite3_free {
-            f(ptr);
-        } else {
-            libc::free(ptr);
-        }
+    if let Some(f) = get_orig_sqlite3_free() {
+        unsafe { f(ptr) };
+    } else {
+        unsafe { libc::free(ptr) };
     }
 }
 
 pub(super) fn malloc_impl(n: c_int) -> *mut c_void {
-    unsafe {
-        if let Some(f) = orig_sqlite3_malloc {
-            return f(n);
-        }
+    if let Some(f) = get_orig_sqlite3_malloc() {
+        return unsafe { f(n) };
     }
     unsafe { libc::malloc(n as usize) }
 }

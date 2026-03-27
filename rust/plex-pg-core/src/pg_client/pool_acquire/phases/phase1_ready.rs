@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 
 use crate::ffi_types::PgConnection;
 
-use super::super::super::connection_helpers::conn_is_streaming_active;
+use super::super::super::connection_helpers::conn_is_streaming_active_ptr;
 use super::super::super::connection_lifecycle::{check_conn_ok, reconnect_conn};
 use super::super::super::threading::threads_equal;
 use super::super::super::tls_cache::{tls_pool_cache_clear, tls_pool_cache_get};
@@ -29,7 +29,7 @@ pub(crate) fn phase1_existing_ready(ctx: &AcquireCtx<'_>) -> AcquireDecision {
                             idx
                         );
                     } else if !conn.is_null() && check_conn_ok(conn) {
-                        if conn_is_streaming_active(conn as *mut PgConnection) {
+                        if conn_is_streaming_active_ptr(conn as *mut PgConnection) {
                             log_debug_lazy!(
                                 "Pool FAST PATH: streaming_active on slot {}, falling through",
                                 idx
@@ -64,7 +64,7 @@ pub(crate) fn phase1_existing_ready(ctx: &AcquireCtx<'_>) -> AcquireDecision {
             continue;
         }
         if !conn.is_null() && check_conn_ok(conn) {
-            if conn_is_streaming_active(conn as *mut PgConnection) {
+            if conn_is_streaming_active_ptr(conn as *mut PgConnection) {
                 log_debug_lazy!(
                     "Pool: slot {} streaming_active, skipping for thread",
                     i

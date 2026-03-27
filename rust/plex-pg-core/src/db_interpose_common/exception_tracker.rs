@@ -1,4 +1,5 @@
 use super::*;
+use std::ffi::CStr;
 
 const MAX_EXCEPTION_TYPES: usize = 64;
 
@@ -28,7 +29,7 @@ pub(super) unsafe fn get_exception_tracker_impl(
         if tracker_ref.type_name == type_name
             || (!tracker_ref.type_name.is_null()
                 && !type_name.is_null()
-                && libc::strcmp(tracker_ref.type_name, type_name) == 0)
+                && CStr::from_ptr(tracker_ref.type_name) == CStr::from_ptr(type_name))
         {
             tracker_ref.count += 1;
             exc_guard.unlock();

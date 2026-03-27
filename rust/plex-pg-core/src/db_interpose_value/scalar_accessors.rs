@@ -19,16 +19,17 @@ pub(super) fn value_int_impl(p_val: *mut sqlite3_value) -> c_int {
     }
 
     let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_INT") }) else {
-        return unsafe { orig_sqlite3_value_int.map(|f| f(p_val)).unwrap_or(0) };
+        return get_orig_sqlite3_value_int().map(|f| unsafe { f(p_val) }).unwrap_or(0);
     };
 
     let _call_num = VALUE_INT_CALLS.fetch_add(1, Ordering::Relaxed);
-    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    let pg_stmt_ref = unsafe { &mut *ctx.pg_stmt };
+    let _guard = unsafe { PgStmt::lock_mutex(ctx.pg_stmt) };
     if unsafe { !fake_value_has_result(&ctx) } {
         return 0;
     }
 
-    let result_ptr = unsafe { (*ctx.pg_stmt).result };
+    let result_ptr = pg_stmt_ref.result;
     let result = crate::db_interpose_helpers::rust_pg_result_int(
         helpers_result_ptr(result_ptr),
         ctx.row,
@@ -61,7 +62,7 @@ pub(super) fn value_int_impl(p_val: *mut sqlite3_value) -> c_int {
                 ctx.row,
                 raw_val,
                 result,
-                cstr_prefix(unsafe { (*ctx.pg_stmt).pg_sql }, 200, "?")
+                cstr_prefix(pg_stmt_ref.pg_sql, 200, "?")
             );
         }
     }
@@ -84,21 +85,20 @@ pub(super) fn value_int64_impl(p_val: *mut sqlite3_value) -> i64 {
     }
 
     let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_INT64") }) else {
-        return unsafe { orig_sqlite3_value_int64.map(|f| f(p_val)).unwrap_or(0) };
+        return get_orig_sqlite3_value_int64().map(|f| unsafe { f(p_val) }).unwrap_or(0);
     };
 
-    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    let pg_stmt_ref = unsafe { &mut *ctx.pg_stmt };
+    let _guard = unsafe { PgStmt::lock_mutex(ctx.pg_stmt) };
     if unsafe { !fake_value_has_result(&ctx) } {
         return 0;
     }
 
-    unsafe {
-        crate::db_interpose_helpers::rust_pg_result_int64(
-            helpers_result_ptr((*ctx.pg_stmt).result),
-            ctx.row,
-            ctx.col,
-        )
-    }
+    crate::db_interpose_helpers::rust_pg_result_int64(
+        helpers_result_ptr(pg_stmt_ref.result),
+        ctx.row,
+        ctx.col,
+    )
 }
 
 pub(super) fn value_double_impl(p_val: *mut sqlite3_value) -> f64 {
@@ -107,21 +107,20 @@ pub(super) fn value_double_impl(p_val: *mut sqlite3_value) -> f64 {
     }
 
     let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_DOUBLE") }) else {
-        return unsafe { orig_sqlite3_value_double.map(|f| f(p_val)).unwrap_or(0.0) };
+        return get_orig_sqlite3_value_double().map(|f| unsafe { f(p_val) }).unwrap_or(0.0);
     };
 
-    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    let pg_stmt_ref = unsafe { &mut *ctx.pg_stmt };
+    let _guard = unsafe { PgStmt::lock_mutex(ctx.pg_stmt) };
     if unsafe { !fake_value_has_result(&ctx) } {
         return 0.0;
     }
 
-    unsafe {
-        crate::db_interpose_helpers::rust_pg_result_double(
-            helpers_result_ptr((*ctx.pg_stmt).result),
-            ctx.row,
-            ctx.col,
-        )
-    }
+    crate::db_interpose_helpers::rust_pg_result_double(
+        helpers_result_ptr(pg_stmt_ref.result),
+        ctx.row,
+        ctx.col,
+    )
 }
 
 pub(super) fn value_bytes_impl(p_val: *mut sqlite3_value) -> c_int {
@@ -130,21 +129,20 @@ pub(super) fn value_bytes_impl(p_val: *mut sqlite3_value) -> c_int {
     }
 
     let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_BYTES") }) else {
-        return unsafe { orig_sqlite3_value_bytes.map(|f| f(p_val)).unwrap_or(0) };
+        return get_orig_sqlite3_value_bytes().map(|f| unsafe { f(p_val) }).unwrap_or(0);
     };
 
-    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    let pg_stmt_ref = unsafe { &mut *ctx.pg_stmt };
+    let _guard = unsafe { PgStmt::lock_mutex(ctx.pg_stmt) };
     if unsafe { !fake_value_has_result(&ctx) } {
         return 0;
     }
 
-    let len = unsafe {
-        crate::db_interpose_helpers::rust_pg_result_length(
-            helpers_result_ptr((*ctx.pg_stmt).result),
-            ctx.row,
-            ctx.col,
-        )
-    };
+    let len = crate::db_interpose_helpers::rust_pg_result_length(
+        helpers_result_ptr(pg_stmt_ref.result),
+        ctx.row,
+        ctx.col,
+    );
     if len > 0 {
         len
     } else {
@@ -158,20 +156,17 @@ pub(super) fn value_blob_impl(p_val: *mut sqlite3_value) -> *const c_void {
     }
 
     let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_BLOB") }) else {
-        return unsafe {
-            orig_sqlite3_value_blob
-                .map(|f| f(p_val))
-                .unwrap_or(ptr::null())
-        };
+        return get_orig_sqlite3_value_blob().map(|f| unsafe { f(p_val) }).unwrap_or(ptr::null());
     };
 
-    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    let pg_stmt_ref = unsafe { &mut *ctx.pg_stmt };
+    let _guard = unsafe { PgStmt::lock_mutex(ctx.pg_stmt) };
     if unsafe { !fake_value_has_result(&ctx) } {
         return ptr::null();
     }
 
     let buf = VALUE_BLOB_IDX.fetch_add(1, Ordering::Relaxed) & 0x3F;
-    let result_ptr = unsafe { (*ctx.pg_stmt).result };
+    let result_ptr = pg_stmt_ref.result;
     let len = unsafe {
         crate::db_interpose_helpers::rust_pg_result_blob_copy(
             helpers_result_ptr(result_ptr),
@@ -185,5 +180,5 @@ pub(super) fn value_blob_impl(p_val: *mut sqlite3_value) -> *const c_void {
         return ptr::null();
     }
 
-    unsafe { VALUE_BLOB_BUFFERS[buf].as_ptr() as *const c_void }
+    (unsafe { VALUE_BLOB_BUFFERS[buf].as_ptr() }) as *const c_void
 }

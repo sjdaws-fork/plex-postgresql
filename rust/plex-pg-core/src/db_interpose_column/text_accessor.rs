@@ -25,9 +25,9 @@ fn empty_text_buffer() -> *const c_uchar {
     out_ptr
 }
 
-unsafe fn load_cached_text_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<CachedTextState> {
-    let cached = &*(*pg_stmt).cached_result;
-    let row = (*pg_stmt).current_row;
+unsafe fn load_cached_text_state(pg_stmt: &mut PgStmt, idx: c_int) -> Option<CachedTextState> {
+    let cached = &*pg_stmt.cached_result;
+    let row = pg_stmt.current_row;
     if idx < 0 || idx >= cached.num_cols || row < 0 || row >= cached.num_rows {
         return None;
     }
@@ -64,7 +64,7 @@ unsafe fn load_cached_text_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<Cac
 /// SAFETY: Must be called while stmt mutex is held. Does NOT call log_debug/log_error
 /// to avoid deadlock with the LOGGER mutex.
 unsafe fn write_cached_text_output(
-    pg_stmt: *mut PgStmt,
+    pg_stmt: &mut PgStmt,
     _idx: c_int,
     state: &CachedTextState,
 ) -> *const c_uchar {
@@ -77,7 +77,7 @@ unsafe fn write_cached_text_output(
         let transform_rc = crate::db_interpose_helpers::rust_column_text_transform(
             state.col_name,
             state.oid as c_uint,
-            (*pg_stmt).pg_sql,
+            pg_stmt.pg_sql,
             state.source_value,
             str_len,
             buf.as_mut_ptr() as *mut c_char,
@@ -98,13 +98,13 @@ unsafe fn write_cached_text_output(
     out_ptr
 }
 
-unsafe fn load_live_text_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveTextState> {
-    if (*pg_stmt).result.is_null() || idx < 0 || idx >= (*pg_stmt).num_cols {
+unsafe fn load_live_text_state(pg_stmt: &mut PgStmt, idx: c_int) -> Option<LiveTextState> {
+    if pg_stmt.result.is_null() || idx < 0 || idx >= pg_stmt.num_cols {
         return None;
     }
 
-    let row = (*pg_stmt).current_row;
-    if row < 0 || row >= (*pg_stmt).num_rows {
+    let row = pg_stmt.current_row;
+    if row < 0 || row >= pg_stmt.num_rows {
         return None;
     }
 
@@ -112,7 +112,7 @@ unsafe fn load_live_text_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveT
     let mut oid_u: c_uint = 0;
     let mut sqlite_type = SQLITE_NULL;
     crate::db_interpose_helpers::rust_pg_result_type_info(
-        helpers_result_ptr((*pg_stmt).result),
+        helpers_result_ptr(pg_stmt.result),
         row,
         idx,
         &mut oid_u as *mut c_uint,
@@ -124,7 +124,7 @@ unsafe fn load_live_text_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveT
     }
 
     let col_name = crate::db_interpose_helpers::rust_pg_result_col_name(
-        helpers_result_ptr((*pg_stmt).result),
+        helpers_result_ptr(pg_stmt.result),
         idx,
     );
 
@@ -140,7 +140,7 @@ unsafe fn load_live_text_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveT
 /// SAFETY: Must be called while stmt mutex is held. Does NOT call log_debug/log_error
 /// to avoid deadlock with the LOGGER mutex.
 unsafe fn write_live_text_output(
-    pg_stmt: *mut PgStmt,
+    pg_stmt: &mut PgStmt,
     idx: c_int,
     state: &LiveTextState,
 ) -> *const c_uchar {
@@ -153,12 +153,12 @@ unsafe fn write_live_text_output(
         let mut bufs = bufs.borrow_mut();
         let buf = &mut bufs[buf_idx];
         transform_rc = crate::db_interpose_helpers::rust_pg_result_text_transform_copy(
-            helpers_result_ptr((*pg_stmt).result),
+            helpers_result_ptr(pg_stmt.result),
             state.row,
             idx,
             state.col_name,
             state.oid_u,
-            (*pg_stmt).pg_sql,
+            pg_stmt.pg_sql,
             0,
             buf.as_mut_ptr() as *mut c_char,
             TEXT_BUFFER_SIZE,
@@ -188,11 +188,7 @@ pub(super) fn column_text_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const 
     } else {
         ptr::null()
     };
-    let dbg_db = unsafe {
-        orig_sqlite3_db_handle
-            .map(|f| f(p_stmt))
-            .unwrap_or(ptr::null_mut())
-    };
+    let dbg_db = get_orig_sqlite3_db_handle().map(|f| unsafe { f(p_stmt) }).unwrap_or(ptr::null_mut());
     unsafe {
         pg_exception_note_phase(
             b"column_text\0".as_ptr() as *const c_char,
@@ -204,32 +200,29 @@ pub(super) fn column_text_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const 
 
     validate_type_consistency(p_stmt, idx, "column_text");
 
-    let pg_stmt = dbg_stmt;
-    if pg_stmt.is_null() || unsafe { (*pg_stmt).is_pg == 0 } {
-        return unsafe {
-            orig_sqlite3_column_text
-                .map(|f| f(p_stmt, idx))
-                .unwrap_or(ptr::null())
-        };
+    if dbg_stmt.is_null() || unsafe { (*dbg_stmt).is_pg == 0 } {
+        return get_orig_sqlite3_column_text().map(|f| unsafe { f(p_stmt, idx) }).unwrap_or(ptr::null());
     }
+
+    let pg_stmt = unsafe { &mut *dbg_stmt };
 
     // Hold mutex only for data extraction — no logging inside this block
     // to avoid ABBA deadlock between stmt mutex and LOGGER mutex.
     {
-        let _guard = unsafe { PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _) };
+        let _guard = unsafe { PgStmt::lock_mutex(dbg_stmt) };
 
-        if !unsafe { (*pg_stmt).cached_result }.is_null() {
+        if !pg_stmt.cached_result.is_null() {
             match unsafe { load_cached_text_state(pg_stmt, idx) } {
                 Some(state) => unsafe { write_cached_text_output(pg_stmt, idx, &state) },
                 None => ptr::null(),
             }
-        } else if unsafe { (*pg_stmt).result.is_null() } {
+        } else if pg_stmt.result.is_null() {
             empty_text_buffer()
-        } else if idx < 0 || idx >= unsafe { (*pg_stmt).num_cols } {
+        } else if idx < 0 || idx >= pg_stmt.num_cols {
             empty_text_buffer()
         } else {
-            let row = unsafe { (*pg_stmt).current_row };
-            if row < 0 || row >= unsafe { (*pg_stmt).num_rows } {
+            let row = pg_stmt.current_row;
+            if row < 0 || row >= pg_stmt.num_rows {
                 empty_text_buffer()
             } else {
                 match unsafe { load_live_text_state(pg_stmt, idx) } {

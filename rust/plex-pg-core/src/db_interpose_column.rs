@@ -26,6 +26,13 @@ use crate::db_interpose_common::{
     fake_value_mutex, fake_value_next, fake_value_pool, tls_column_type_calls_ptr,
     tls_in_resolve_tables_ptr, tls_last_query_ptr, PgFakeValue, MAX_FAKE_VALUES,
     PG_FAKE_VALUE_MAGIC, GLOBAL_COLUMN_TYPE_CALLS,
+    get_orig_sqlite3_column_count, get_orig_sqlite3_column_type,
+    get_orig_sqlite3_column_int, get_orig_sqlite3_column_int64,
+    get_orig_sqlite3_column_double, get_orig_sqlite3_column_text,
+    get_orig_sqlite3_column_blob, get_orig_sqlite3_column_bytes,
+    get_orig_sqlite3_column_name, get_orig_sqlite3_column_decltype,
+    get_orig_sqlite3_column_value, get_orig_sqlite3_data_count,
+    get_orig_sqlite3_db_handle,
 };
 use crate::db_interpose_conn_utils::{
     cstr_prefix, cstr_to_string_or, log_debug, log_error, log_info, PthreadMutexGuard,
@@ -96,31 +103,6 @@ thread_local! {
 }
 
 extern "C" {
-    static mut orig_sqlite3_column_count: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
-    static mut orig_sqlite3_column_type:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>;
-    static mut orig_sqlite3_column_int:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>;
-    static mut orig_sqlite3_column_int64:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> i64>;
-    static mut orig_sqlite3_column_double:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> f64>;
-    static mut orig_sqlite3_column_text:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_uchar>;
-    static mut orig_sqlite3_column_blob:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_void>;
-    static mut orig_sqlite3_column_bytes:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>;
-    static mut orig_sqlite3_column_name:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char>;
-    static mut orig_sqlite3_column_decltype:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char>;
-    static mut orig_sqlite3_column_value:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *mut sqlite3_value>;
-    static mut orig_sqlite3_data_count: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
-    static mut orig_sqlite3_db_handle:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut sqlite3>;
-
     fn pg_find_any_stmt(stmt: *mut sqlite3_stmt) -> *mut PgStmt;
     fn pg_get_thread_connection(db_path: *const c_char) -> *mut PgConnection;
     fn pg_get_thread_connection_excluding(
@@ -291,14 +273,15 @@ mod tests {
         let exec_conn = 0x5678usize as *mut PgConnection;
 
         unsafe {
-            set_metadata_result_state(stmt, result, exec_conn, 0, 0);
-            assert_eq!((*stmt).result, result);
-            assert_eq!((*stmt).result_conn, exec_conn);
-            assert_eq!((*stmt).metadata_only_result, 1);
-
-            (*stmt).result = std::ptr::null_mut();
-            (*stmt).result_conn = std::ptr::null_mut();
+            set_metadata_result_state(&mut *stmt, result, exec_conn, 0, 0);
         }
+        let s = unsafe { &mut *stmt };
+        assert_eq!(s.result, result);
+        assert_eq!(s.result_conn, exec_conn);
+        assert_eq!(s.metadata_only_result, 1);
+
+        s.result = std::ptr::null_mut();
+        s.result_conn = std::ptr::null_mut();
 
         rust_stmt_free(stmt);
     }

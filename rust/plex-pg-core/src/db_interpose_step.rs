@@ -2,7 +2,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::Ordering;
 
 use crate::db_interpose_common::tls_in_resolve_tables_ptr;
-use crate::db_interpose_conn_utils::{cstr_prefix, PthreadMutexGuard};
+use crate::db_interpose_conn_utils::cstr_prefix;
 use crate::ffi_types::{sqlite3, sqlite3_stmt, PgConnection, PgStmt};
 use crate::log_debug_lazy;
 
@@ -36,10 +36,11 @@ pub extern "C" fn rust_my_sqlite3_step(p_stmt: *mut sqlite3_stmt) -> c_int {
 
     unsafe {
         if !dbg_stmt.is_null() {
-            dbg_sql = if !(*dbg_stmt).pg_sql.is_null() {
-                (*dbg_stmt).pg_sql
+            let s = &*dbg_stmt;
+            dbg_sql = if !s.pg_sql.is_null() {
+                s.pg_sql
             } else {
-                (*dbg_stmt).sql
+                s.sql
             };
         }
         if dbg_sql.is_null() {
@@ -72,17 +73,21 @@ unsafe fn my_sqlite3_step_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
     let pg_stmt = crate::pg_statement::rust_stmt_find(p_stmt as usize) as *mut PgStmt;
 
     if !pg_stmt.is_null() {
-        (*pg_stmt).in_step.store(1, Ordering::SeqCst);
+        let s = &*pg_stmt;
+        s.in_step.store(1, Ordering::SeqCst);
     }
 
-    if !pg_stmt.is_null() && (*pg_stmt).is_pg == 3 {
-        log_debug_lazy!(
-            "[RACE_DEBUG] STEP_END thread={:p} stmt={:p} rc={} reason=skip",
-            libc::pthread_self() as *mut c_void,
-            p_stmt,
-            SQLITE_DONE
-        );
-        return SQLITE_DONE;
+    if !pg_stmt.is_null() {
+        let s = &*pg_stmt;
+        if s.is_pg == 3 {
+            log_debug_lazy!(
+                "[RACE_DEBUG] STEP_END thread={:p} stmt={:p} rc={} reason=skip",
+                libc::pthread_self() as *mut c_void,
+                p_stmt,
+                SQLITE_DONE
+            );
+            return SQLITE_DONE;
+        }
     }
 
     if pg_stmt.is_null() {
@@ -94,186 +99,192 @@ unsafe fn my_sqlite3_step_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
 
     let mut exec_conn: *mut PgConnection = std::ptr::null_mut();
 
-    if !pg_stmt.is_null() && !(*pg_stmt).shadow_stmt.is_null() {
-        let db = call_sqlite3_db_handle((*pg_stmt).shadow_stmt);
-        let handle_conn = crate::pg_client::rust_pg_find_connection(db);
-        if !handle_conn.is_null()
-            && (*handle_conn).is_pg_active != 0
-            && crate::db_interpose_helpers::rust_is_library_or_blobs_db_path(
-                (*handle_conn).db_path.as_ptr(),
-            ) != 0
-        {
-            if !(*handle_conn).conn.is_null() {
-                exec_conn = handle_conn;
-            } else {
-                let thread_conn =
-                    crate::pg_client::rust_pool_get_connection((*handle_conn).db_path.as_ptr())
-                        as *mut PgConnection;
-                if !thread_conn.is_null()
-                    && (*thread_conn).is_pg_active != 0
-                    && !(*thread_conn).conn.is_null()
-                {
-                    exec_conn = thread_conn;
-                    crate::pg_client::rust_pool_touch_connection(exec_conn as *const c_void);
+    if !pg_stmt.is_null() {
+        let s = &*pg_stmt;
+        if !s.shadow_stmt.is_null() {
+            let db = call_sqlite3_db_handle(s.shadow_stmt);
+            let handle_conn = crate::pg_client::rust_pg_find_connection(db);
+            if !handle_conn.is_null()
+                && (*handle_conn).is_pg_active != 0
+                && crate::db_interpose_helpers::rust_is_library_or_blobs_db_path(
+                    (*handle_conn).db_path.as_ptr(),
+                ) != 0
+            {
+                if !(*handle_conn).conn.is_null() {
+                    exec_conn = handle_conn;
+                } else {
+                    let thread_conn =
+                        crate::pg_client::rust_pool_get_connection((*handle_conn).db_path.as_ptr())
+                            as *mut PgConnection;
+                    if !thread_conn.is_null()
+                        && (*thread_conn).is_pg_active != 0
+                        && !(*thread_conn).conn.is_null()
+                    {
+                        exec_conn = thread_conn;
+                        crate::pg_client::rust_pool_touch_connection(exec_conn as *const c_void);
+                    }
                 }
             }
         }
     }
 
-    if !pg_stmt.is_null()
-        && !(*pg_stmt).pg_sql.is_null()
-        && !exec_conn.is_null()
-        && !(*exec_conn).conn.is_null()
-    {
-        let (param_values, stmt_is_pg, read_done, has_cached_result, write_executed, pg_sql) = {
-            let _stmt_guard = PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _);
-            let max_params = (*pg_stmt).param_count.max(0) as usize;
-            let max_params = max_params.min((*pg_stmt).param_values.len());
-            let mut pv: Vec<*const c_char> = vec![std::ptr::null(); max_params];
-            for i in 0..max_params {
-                pv[i] = (*pg_stmt).param_values[i] as *const c_char;
-            }
-            (
-                pv,
-                (*pg_stmt).is_pg,
-                (*pg_stmt).read_done != 0,
-                !(*pg_stmt).cached_result.is_null(),
-                (*pg_stmt).write_executed != 0,
-                (*pg_stmt).pg_sql,
-            )
-        };
-
-        if stmt_is_pg == 2 {
-            if read_done {
-                return SQLITE_DONE;
-            }
-
-            if has_cached_result {
-                return crate::db_interpose_step_read_utils::rust_step_read_advance_cached_result(
-                    pg_stmt,
-                );
-            }
-
-            crate::db_interpose_step_read_utils::rust_step_read_log_debug_context(
-                pg_stmt, exec_conn,
-            );
-            crate::db_interpose_step_read_utils::rust_step_read_prepare_reexecution_state(
-                pg_stmt, exec_conn,
-            );
-
-            let (read_done, has_cached_result, streaming_mode, has_result) = {
-                let _stmt_guard = PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _);
+    if !pg_stmt.is_null() && !exec_conn.is_null() {
+        let s = &*pg_stmt;
+        if !s.pg_sql.is_null() && !(*exec_conn).conn.is_null() {
+            let (param_values, stmt_is_pg, read_done, has_cached_result, write_executed, pg_sql) = {
+                let _stmt_guard = PgStmt::lock_mutex(pg_stmt);
+                let max_params = s.param_count.max(0) as usize;
+                let max_params = max_params.min(s.param_values.len());
+                let mut pv: Vec<*const c_char> = vec![std::ptr::null(); max_params];
+                for i in 0..max_params {
+                    pv[i] = s.param_values[i] as *const c_char;
+                }
                 (
-                    (*pg_stmt).read_done != 0,
-                    !(*pg_stmt).cached_result.is_null(),
-                    (*pg_stmt).streaming_mode != 0,
-                    !(*pg_stmt).result.is_null(),
+                    pv,
+                    s.is_pg,
+                    s.read_done != 0,
+                    !s.cached_result.is_null(),
+                    s.write_executed != 0,
+                    s.pg_sql,
                 )
             };
 
-            if read_done {
-                return SQLITE_DONE;
-            }
+            if stmt_is_pg == 2 {
+                if read_done {
+                    return SQLITE_DONE;
+                }
 
-            if has_cached_result {
-                return crate::db_interpose_step_read_utils::rust_step_read_advance_cached_result(
+                if has_cached_result {
+                    return crate::db_interpose_step_read_utils::rust_step_read_advance_cached_result(
+                        pg_stmt,
+                    );
+                }
+
+                crate::db_interpose_step_read_utils::rust_step_read_log_debug_context(
+                    pg_stmt, exec_conn,
+                );
+                crate::db_interpose_step_read_utils::rust_step_read_prepare_reexecution_state(
+                    pg_stmt, exec_conn,
+                );
+
+                let (read_done, has_cached_result, streaming_mode, has_result) = {
+                    let _stmt_guard = PgStmt::lock_mutex(pg_stmt);
+                    (
+                        s.read_done != 0,
+                        !s.cached_result.is_null(),
+                        s.streaming_mode != 0,
+                        !s.result.is_null(),
+                    )
+                };
+
+                if read_done {
+                    return SQLITE_DONE;
+                }
+
+                if has_cached_result {
+                    return crate::db_interpose_step_read_utils::rust_step_read_advance_cached_result(
+                        pg_stmt,
+                    );
+                }
+
+                if streaming_mode {
+                    return crate::db_interpose_step_read_utils::rust_step_read_streaming_next(
+                        p_stmt, pg_stmt,
+                    );
+                }
+
+                if has_result {
+                    return crate::db_interpose_step_read_utils::rust_step_read_eager_next(pg_stmt);
+                }
+
+                let mut conn_error = 0;
+                let first_rc = crate::db_interpose_step_read_utils::rust_step_read_first_execute(
                     pg_stmt,
+                    &mut exec_conn,
+                    param_values.as_ptr(),
+                    &mut conn_error,
                 );
-            }
-
-            if streaming_mode {
-                return crate::db_interpose_step_read_utils::rust_step_read_streaming_next(
-                    p_stmt, pg_stmt,
-                );
-            }
-
-            if has_result {
-                return crate::db_interpose_step_read_utils::rust_step_read_eager_next(pg_stmt);
-            }
-
-            let mut conn_error = 0;
-            let first_rc = crate::db_interpose_step_read_utils::rust_step_read_first_execute(
-                pg_stmt,
-                &mut exec_conn,
-                param_values.as_ptr(),
-                &mut conn_error,
-            );
-            if first_rc == STEP_RESULT_ERROR && conn_error != 0 {
-                note_pg_conn_error();
-            }
-            return first_rc;
-        } else if stmt_is_pg == 1 {
-            if write_executed {
-                return SQLITE_DONE;
-            }
-
-            let mut txn_state = PQTRANS_IDLE;
-            if crate::db_interpose_step_write_utils::rust_step_pg_write_should_noop(
-                exec_conn,
-                pg_sql,
-                &mut txn_state,
-            ) != 0
-            {
-                log_debug_lazy!(
-                    "TXN_NOOP: skipping tx terminator in state={} sql={}",
-                    txn_state,
-                    cstr_prefix(pg_sql, 120, "(null)")
-                );
-                let _stmt_guard = PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _);
-                (*pg_stmt).write_executed = 1;
-                return SQLITE_DONE;
-            }
-
-            crate::db_interpose_step_write_utils::rust_step_write_log_debug_context(
-                pg_stmt,
-                exec_conn,
-                param_values.as_ptr(),
-            );
-
-            if crate::db_interpose_step_write_utils::rust_step_write_should_skip_special_insert(
-                pg_stmt,
-                exec_conn,
-                param_values.as_ptr(),
-            ) != 0
-            {
-                return SQLITE_DONE;
-            }
-
-            let mut prep_conn_error = 0;
-            let prep_rc = crate::db_interpose_step_write_utils::rust_step_write_prepare_connection(
-                pg_stmt,
-                &mut exec_conn,
-                &mut prep_conn_error,
-            );
-            if prep_rc == STEP_RESULT_ERROR {
-                if prep_conn_error != 0 {
+                if first_rc == STEP_RESULT_ERROR && conn_error != 0 {
                     note_pg_conn_error();
                 }
-                return SQLITE_ERROR;
-            }
+                return first_rc;
+            } else if stmt_is_pg == 1 {
+                if write_executed {
+                    return SQLITE_DONE;
+                }
 
-            let mut write_conn_error = 0;
-            let write_rc =
-                crate::db_interpose_step_write_utils::rust_step_write_execute_and_finalize(
+                let mut txn_state = PQTRANS_IDLE;
+                if crate::db_interpose_step_write_utils::rust_step_pg_write_should_noop(
+                    exec_conn,
+                    pg_sql,
+                    &mut txn_state,
+                ) != 0
+                {
+                    log_debug_lazy!(
+                        "TXN_NOOP: skipping tx terminator in state={} sql={}",
+                        txn_state,
+                        cstr_prefix(pg_sql, 120, "(null)")
+                    );
+                    let _stmt_guard = PgStmt::lock_mutex(pg_stmt);
+                    let s_mut = &mut *pg_stmt;
+                    s_mut.write_executed = 1;
+                    return SQLITE_DONE;
+                }
+
+                crate::db_interpose_step_write_utils::rust_step_write_log_debug_context(
                     pg_stmt,
                     exec_conn,
                     param_values.as_ptr(),
-                    &mut write_conn_error,
                 );
-            if write_rc == STEP_RESULT_ERROR {
-                if write_conn_error != 0 {
-                    note_pg_conn_error();
+
+                if crate::db_interpose_step_write_utils::rust_step_write_should_skip_special_insert(
+                    pg_stmt,
+                    exec_conn,
+                    param_values.as_ptr(),
+                ) != 0
+                {
+                    return SQLITE_DONE;
                 }
-                return SQLITE_ERROR;
+
+                let mut prep_conn_error = 0;
+                let prep_rc = crate::db_interpose_step_write_utils::rust_step_write_prepare_connection(
+                    pg_stmt,
+                    &mut exec_conn,
+                    &mut prep_conn_error,
+                );
+                if prep_rc == STEP_RESULT_ERROR {
+                    if prep_conn_error != 0 {
+                        note_pg_conn_error();
+                    }
+                    return SQLITE_ERROR;
+                }
+
+                let mut write_conn_error = 0;
+                let write_rc =
+                    crate::db_interpose_step_write_utils::rust_step_write_execute_and_finalize(
+                        pg_stmt,
+                        exec_conn,
+                        param_values.as_ptr(),
+                        &mut write_conn_error,
+                    );
+                if write_rc == STEP_RESULT_ERROR {
+                    if write_conn_error != 0 {
+                        note_pg_conn_error();
+                    }
+                    return SQLITE_ERROR;
+                }
             }
         }
     }
 
-    if !pg_stmt.is_null() && (*pg_stmt).is_pg != 0 {
-        if (*pg_stmt).is_pg == 1 {
-            return SQLITE_DONE;
+    if !pg_stmt.is_null() {
+        let s = &*pg_stmt;
+        if s.is_pg != 0 {
+            if s.is_pg == 1 {
+                return SQLITE_DONE;
+            }
+            crate::db_interpose_step_write_utils::rust_step_log_step_exit_trace(pg_stmt);
         }
-        crate::db_interpose_step_write_utils::rust_step_log_step_exit_trace(pg_stmt);
     }
 
     orig_step(p_stmt)

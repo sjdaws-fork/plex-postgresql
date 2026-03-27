@@ -2,7 +2,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
 
-use crate::db_interpose_conn_utils::{log_debug, log_info, PthreadMutexGuard};
+use crate::db_interpose_conn_utils::{log_debug, log_info};
 use crate::ffi_types::{sqlite3_stmt, PgStmt};
 
 use super::ring_tracker::{
@@ -13,23 +13,24 @@ use super::ring_tracker::{
 use super::*;
 use crate::log_debug_lazy;
 
-unsafe fn clear_dynamic_param_values(stmt: *mut PgStmt) {
-    for i in 0..(*stmt).param_values.len() {
-        if !(*stmt).param_values[i].is_null() && !(*stmt).is_preallocated_buffer(i) {
-            libc::free((*stmt).param_values[i] as *mut c_void);
-            (*stmt).param_values[i] = ptr::null_mut();
+unsafe fn clear_dynamic_param_values(stmt: &mut PgStmt) {
+    for i in 0..stmt.param_values.len() {
+        if !stmt.param_values[i].is_null() && !stmt.is_preallocated_buffer(i) {
+            libc::free(stmt.param_values[i] as *mut c_void);
+            stmt.param_values[i] = ptr::null_mut();
         }
     }
 }
 
 unsafe fn reset_pg_stmt_locked(p_stmt: *mut sqlite3_stmt, stmt: *mut PgStmt) -> c_int {
-    let _guard = PthreadMutexGuard::lock(&mut (*stmt).mutex as *mut _);
-    (*stmt).in_step.store(0, Ordering::Relaxed);
+    let stmt_ref = &mut *stmt;
+    let _guard = PgStmt::lock_mutex(stmt);
+    stmt_ref.in_step.store(0, Ordering::Relaxed);
 
-    clear_dynamic_param_values(stmt);
+    clear_dynamic_param_values(stmt_ref);
     pg_stmt_clear_result(stmt);
 
-    if (*stmt).is_pg != 2 {
+    if stmt_ref.is_pg != 2 {
         return orig_sqlite3_reset
             .map(|f| f(p_stmt))
             .unwrap_or(SQLITE_ERROR);
@@ -79,12 +80,13 @@ pub(super) fn finalize_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
 
         let pg_stmt = pg_find_stmt(p_stmt);
         if !pg_stmt.is_null() {
-            is_pg_value = (*pg_stmt).is_pg;
-            is_pg_only = if (*pg_stmt).is_pg == 2 { 1 } else { 0 };
-            final_sql = if !(*pg_stmt).pg_sql.is_null() {
-                (*pg_stmt).pg_sql
+            let pg_stmt_ref = &*pg_stmt;
+            is_pg_value = pg_stmt_ref.is_pg;
+            is_pg_only = if pg_stmt_ref.is_pg == 2 { 1 } else { 0 };
+            final_sql = if !pg_stmt_ref.pg_sql.is_null() {
+                pg_stmt_ref.pg_sql
             } else {
-                (*pg_stmt).sql
+                pg_stmt_ref.sql
             };
 
             let cached = pg_find_cached_stmt(p_stmt);
@@ -101,18 +103,19 @@ pub(super) fn finalize_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
         } else {
             let cached = pg_find_cached_stmt(p_stmt);
             if !cached.is_null() {
-                is_pg_value = (*cached).is_pg;
-                is_pg_only = if (*cached).is_pg == 2 { 1 } else { 0 };
+                let cached_ref = &*cached;
+                is_pg_value = cached_ref.is_pg;
+                is_pg_only = if cached_ref.is_pg == 2 { 1 } else { 0 };
                 if final_sql.is_null() {
-                    final_sql = if !(*cached).pg_sql.is_null() {
-                        (*cached).pg_sql
+                    final_sql = if !cached_ref.pg_sql.is_null() {
+                        cached_ref.pg_sql
                     } else {
-                        (*cached).sql
+                        cached_ref.sql
                     };
                 }
                 log_debug_lazy!(
                     "finalize: stmt only in TLS (ref_count={}), clearing",
-                    (*cached).ref_count.load(Ordering::Relaxed)
+                    cached_ref.ref_count.load(Ordering::Relaxed)
                 );
                 pg_clear_cached_stmt(p_stmt);
                 pg_stmt_unref(cached);
@@ -150,9 +153,10 @@ pub(super) fn clear_bindings_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
         }
 
         if !pg_stmt.is_null() {
-            let _guard = PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _);
-            clear_dynamic_param_values(pg_stmt);
-            if (*pg_stmt).is_pg == 0 {
+            let pg_stmt_ref = &mut *pg_stmt;
+            let _guard = PgStmt::lock_mutex(pg_stmt);
+            clear_dynamic_param_values(pg_stmt_ref);
+            if pg_stmt_ref.is_pg == 0 {
                 return orig_sqlite3_clear_bindings
                     .map(|f| f(p_stmt))
                     .unwrap_or(SQLITE_ERROR);

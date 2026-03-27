@@ -1,5 +1,7 @@
 use super::*;
+use crate::db_interpose_conn_utils::cstr_to_lossy_or;
 use crate::log_info_lazy;
+use std::ffi::CStr;
 
 extern "C" {
     fn pg_exception_extract_what(
@@ -25,8 +27,7 @@ static EXC_DUMP_POINTER_BYTES_ENV: &[u8] = b"PLEX_PG_EXCEPTION_DUMP_POINTER_BYTE
 static EXC_DUMP_SCAN_STRINGS_ENV: &[u8] = b"PLEX_PG_EXCEPTION_SCAN_STRINGS\0";
 static EXC_DUMP_SCAN_STRINGS_BYTES_ENV: &[u8] = b"PLEX_PG_EXCEPTION_SCAN_STRINGS_BYTES\0";
 
-#[no_mangle]
-pub extern "C" fn rust_common_signal_handler(sig: c_int) {
+pub fn rust_common_signal_handler(sig: c_int) {
     let (sig_name, sig_desc) = match sig {
         libc::SIGSEGV => (
             b"SIGSEGV\0".as_ptr() as *const c_char,
@@ -165,8 +166,8 @@ pub extern "C" fn rust_common_signal_handler(sig: c_int) {
 
     log_error(&format!(
         "FATAL SIGNAL: {} ({})",
-        unsafe { CStr::from_ptr(sig_name).to_string_lossy() },
-        unsafe { CStr::from_ptr(sig_desc).to_string_lossy() }
+        cstr_to_lossy_or(sig_name, "UNKNOWN"),
+        cstr_to_lossy_or(sig_desc, "Unknown signal")
     ));
 
     unsafe {
@@ -175,8 +176,7 @@ pub extern "C" fn rust_common_signal_handler(sig: c_int) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_print_exception_info(
+pub fn rust_print_exception_info(
     type_name: *const c_char,
     count: c_int,
     thrown_exception: *mut c_void,
@@ -360,13 +360,9 @@ pub extern "C" fn rust_print_exception_info(
         log_error(&format!(
             "EXCEPTION #{} [{}]: what='{}' shim={} tls_shim={} col={} val={}",
             count,
-            if !readable_name.is_null() {
-                CStr::from_ptr(readable_name).to_string_lossy()
-            } else {
-                "".into()
-            },
+            cstr_to_lossy_or(readable_name, ""),
             if has_what != 0 {
-                CStr::from_ptr(what_buf.as_ptr()).to_string_lossy()
+                cstr_to_lossy_or(what_buf.as_ptr(), "")
             } else {
                 "".into()
             },
@@ -380,8 +376,7 @@ pub extern "C" fn rust_print_exception_info(
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_common_handle_exception(
+pub fn rust_common_handle_exception(
     thrown_exception: *mut c_void,
     tinfo: *mut c_void,
     in_handler_flag: *mut c_int,
@@ -424,8 +419,7 @@ pub extern "C" fn rust_common_handle_exception(
             pid, tid as usize, throw_addr, type_addr, total_count
         );
         if !type_name.is_null() {
-            let raw = unsafe { CStr::from_ptr(type_name).to_string_lossy() };
-            log_info_lazy!("EXC_META: type_name_raw={}", raw);
+            log_info_lazy!("EXC_META: type_name_raw={}", cstr_to_lossy_or(type_name, ""));
         }
     }
     if should_dump_object {
@@ -468,11 +462,11 @@ pub extern "C" fn rust_common_handle_exception(
     unsafe {
         let verbose_env = libc::getenv(b"PLEX_PG_EXCEPTION_VERBOSE\0".as_ptr() as *const c_char);
         let verbose_exceptions = !verbose_env.is_null()
-            && libc::strcmp(verbose_env, b"0\0".as_ptr() as *const c_char) != 0;
+            && CStr::from_ptr(verbose_env) != CStr::from_bytes_with_nul(b"0\0").unwrap();
         let nonshim_env =
             libc::getenv(b"PLEX_PG_EXCEPTION_LOG_NONSHIM_DB\0".as_ptr() as *const c_char);
         let log_nonshim_db = !nonshim_env.is_null()
-            && libc::strcmp(nonshim_env, b"0\0".as_ptr() as *const c_char) != 0;
+            && CStr::from_ptr(nonshim_env) != CStr::from_bytes_with_nul(b"0\0").unwrap();
 
         let mut is_db_exception = false;
         if !type_name.is_null() {
@@ -537,13 +531,11 @@ pub extern "C" fn rust_common_handle_exception(
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_exception_get_last_query() -> *const c_char {
+pub fn rust_pg_exception_get_last_query() -> *const c_char {
     unsafe { *tls_last_query_ptr() }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_exception_get_last_column() -> *const c_char {
+pub fn rust_pg_exception_get_last_column() -> *const c_char {
     let len = CRASH_LAST_COLUMN_LEN.load(Ordering::SeqCst);
     if len > 0 && (len as usize) < CRASH_COLUMN_MAX_LEN {
         ptr::addr_of!(CRASH_LAST_COLUMN) as *const c_char

@@ -20,11 +20,14 @@ pub(super) unsafe fn step_handle_cached_stmt(p_stmt: *mut sqlite3_stmt) -> c_int
         pg_conn = crate::pg_client::rust_pg_find_any_library_connection();
     }
 
-    if pg_conn.is_null()
-        || (*pg_conn).is_pg_active == 0
-        || (*pg_conn).conn.is_null()
+    if pg_conn.is_null() {
+        return STEP_RESULT_FALLBACK;
+    }
+    let pg_conn_ref = &*pg_conn;
+    if pg_conn_ref.is_pg_active == 0
+        || pg_conn_ref.conn.is_null()
         || crate::db_interpose_helpers::rust_is_library_or_blobs_db_path(
-            (*pg_conn).db_path.as_ptr(),
+            pg_conn_ref.db_path.as_ptr(),
         ) == 0
     {
         return STEP_RESULT_FALLBACK;

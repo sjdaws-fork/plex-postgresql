@@ -22,8 +22,7 @@ extern "C" {
     fn PQnfields(res: *const PGresult) -> c_int;
 }
 
-#[no_mangle]
-pub extern "C" fn rust_column_text_reformat_aggregate(
+pub fn rust_column_text_reformat_aggregate(
     col_name: *const c_char,
     oid: c_uint,
     pg_sql: *const c_char,
@@ -65,8 +64,7 @@ pub extern "C" fn rust_column_text_reformat_aggregate(
     c_int::from(write_i32_to_buf(out, out_len, val))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_column_text_transform(
+pub fn rust_column_text_transform(
     col_name: *const c_char,
     oid: c_uint,
     pg_sql: *const c_char,
@@ -104,8 +102,7 @@ pub extern "C" fn rust_column_text_transform(
     0
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_text_copy(
+pub fn rust_pg_result_text_copy(
     result: *const PGresult,
     row: c_int,
     col: c_int,
@@ -136,8 +133,7 @@ pub extern "C" fn rust_pg_result_text_copy(
     len
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_blob_copy(
+pub fn rust_pg_result_blob_copy(
     result: *const PGresult,
     row: c_int,
     col: c_int,
@@ -167,8 +163,7 @@ pub extern "C" fn rust_pg_result_blob_copy(
     copy_len as c_int
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_length(result: *const PGresult, row: c_int, col: c_int) -> c_int {
+pub fn rust_pg_result_length(result: *const PGresult, row: c_int, col: c_int) -> c_int {
     if result.is_null() {
         return -1;
     }
@@ -179,8 +174,7 @@ pub extern "C" fn rust_pg_result_length(result: *const PGresult, row: c_int, col
     unsafe { PQgetlength(result, row, col) }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_int(result: *const PGresult, row: c_int, col: c_int) -> c_int {
+pub fn rust_pg_result_int(result: *const PGresult, row: c_int, col: c_int) -> c_int {
     if result.is_null() {
         return 0;
     }
@@ -195,8 +189,7 @@ pub extern "C" fn rust_pg_result_int(result: *const PGresult, row: c_int, col: c
     pg_text_to_int_impl(val_ptr)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_int64(result: *const PGresult, row: c_int, col: c_int) -> i64 {
+pub fn rust_pg_result_int64(result: *const PGresult, row: c_int, col: c_int) -> i64 {
     if result.is_null() {
         return 0;
     }
@@ -211,8 +204,7 @@ pub extern "C" fn rust_pg_result_int64(result: *const PGresult, row: c_int, col:
     pg_text_to_int64_impl(val_ptr)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_double(result: *const PGresult, row: c_int, col: c_int) -> f64 {
+pub fn rust_pg_result_double(result: *const PGresult, row: c_int, col: c_int) -> f64 {
     if result.is_null() {
         return 0.0;
     }
@@ -227,8 +219,7 @@ pub extern "C" fn rust_pg_result_double(result: *const PGresult, row: c_int, col
     pg_text_to_double_impl(val_ptr)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_text_transform_copy(
+pub fn rust_pg_result_text_transform_copy(
     result: *const PGresult,
     row: c_int,
     col: c_int,
@@ -342,8 +333,7 @@ pub extern "C" fn rust_pg_result_text_transform_copy(
     0
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_value_ptr_len(
+pub fn rust_pg_result_value_ptr_len(
     result: *const PGresult,
     row: c_int,
     col: c_int,
@@ -417,24 +407,21 @@ pub extern "C" fn rust_pg_result_value_ptr_len(
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_col_oid(result: *const PGresult, col: c_int) -> c_uint {
+pub fn rust_pg_result_col_oid(result: *const PGresult, col: c_int) -> c_uint {
     if result.is_null() {
         return 0;
     }
     unsafe { PQftype(result, col) }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_col_table_oid(result: *const PGresult, col: c_int) -> c_uint {
+pub fn rust_pg_result_col_table_oid(result: *const PGresult, col: c_int) -> c_uint {
     if result.is_null() {
         return 0;
     }
     unsafe { PQftable(result, col) }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_decode_bytea(
+pub fn rust_pg_decode_bytea(
     result: *const PGresult,
     row: c_int,
     col: c_int,
@@ -533,8 +520,7 @@ pub extern "C" fn rust_pg_decode_bytea(
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_query_cache_store_from_pgresult(
+pub fn rust_query_cache_store_from_pgresult(
     cache_key: u64,
     result: *const PGresult,
     num_rows: c_int,
@@ -590,8 +576,7 @@ pub extern "C" fn rust_query_cache_store_from_pgresult(
     );
 }
 
-#[no_mangle]
-pub extern "C" fn rust_get_table_from_pgresult(
+pub fn rust_get_table_from_pgresult(
     result: *const PGresult,
     out_rows: *mut *mut *mut c_char,
     out_rows_count: *mut c_int,
@@ -709,8 +694,7 @@ pub extern "C" fn rust_get_table_from_pgresult(
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_create_column_value(
+pub fn rust_pg_create_column_value(
     result: *const PGresult,
     current_row: c_int,
     num_rows: c_int,
@@ -729,8 +713,7 @@ pub extern "C" fn rust_pg_create_column_value(
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_type_info(
+pub fn rust_pg_result_type_info(
     result: *const PGresult,
     row: c_int,
     col: c_int,
@@ -766,16 +749,14 @@ pub extern "C" fn rust_pg_result_type_info(
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_result_col_name(result: *const PGresult, col: c_int) -> *const c_char {
+pub fn rust_pg_result_col_name(result: *const PGresult, col: c_int) -> *const c_char {
     if result.is_null() {
         return std::ptr::null();
     }
     unsafe { PQfname(result, col) }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_step_clear_row_caches(
+pub fn rust_step_clear_row_caches(
     cached_text: *mut *mut c_char,
     cached_blob: *mut *mut c_void,
     cached_blob_len: *mut c_int,

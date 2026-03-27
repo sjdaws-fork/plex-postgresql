@@ -31,15 +31,15 @@ pub(super) fn resolve_column_tables_impl(
         return 0;
     }
 
-    unsafe {
-        if (*pg_stmt).result.is_null() || (*pg_stmt).col_tables_resolved != 0 {
-            return 0;
-        }
+    let pg_stmt_ref = unsafe { &mut *pg_stmt };
+
+    if pg_stmt_ref.result.is_null() || pg_stmt_ref.col_tables_resolved != 0 {
+        return 0;
     }
 
-    let num_cols = unsafe { (*pg_stmt).num_cols };
+    let num_cols = pg_stmt_ref.num_cols;
     if num_cols <= 0 {
-        unsafe { (*pg_stmt).col_tables_resolved = 1 };
+        pg_stmt_ref.col_tables_resolved = 1;
         return 0;
     }
 
@@ -50,13 +50,11 @@ pub(super) fn resolve_column_tables_impl(
     let mut num_uncached = 0usize;
     let mut cache_hits = 0usize;
 
-    for i in 0..(num_cols as usize) {
-        let table_oid = unsafe {
-            crate::db_interpose_helpers::rust_pg_result_col_table_oid(
-                helpers_result_ptr((*pg_stmt).result),
-                i as c_int,
-            )
-        };
+    for i in 0..nc {
+        let table_oid = crate::db_interpose_helpers::rust_pg_result_col_table_oid(
+            helpers_result_ptr(pg_stmt_ref.result),
+            i as c_int,
+        );
         if table_oid == INVALID_OID {
             continue;
         }
@@ -65,7 +63,7 @@ pub(super) fn resolve_column_tables_impl(
         if !cached_name.is_null() {
             let dup = unsafe { libc::strdup(cached_name) };
             if !dup.is_null() {
-                unsafe { (*pg_stmt).col_table_names[i] = dup };
+                pg_stmt_ref.col_table_names[i] = dup;
                 cache_hits += 1;
             }
             continue;
@@ -87,7 +85,7 @@ pub(super) fn resolve_column_tables_impl(
     }
 
     if num_uncached == 0 {
-        unsafe { (*pg_stmt).col_tables_resolved = 1 };
+        pg_stmt_ref.col_tables_resolved = 1;
         if cache_hits > 0 {
             log_debug_lazy!(
                 "RESOLVE_TABLES: All {} columns resolved from cache (0 queries)",
@@ -97,14 +95,20 @@ pub(super) fn resolve_column_tables_impl(
         return 0;
     }
 
-    if pg_conn.is_null() || unsafe { (*pg_conn).conn.is_null() } {
+    if pg_conn.is_null() {
         log_debug("RESOLVE_TABLES: No connection available");
-        unsafe { (*pg_stmt).col_tables_resolved = 1 };
+        pg_stmt_ref.col_tables_resolved = 1;
+        return -1;
+    }
+    let pc = unsafe { &*pg_conn };
+    if pc.conn.is_null() {
+        log_debug("RESOLVE_TABLES: No connection available");
+        pg_stmt_ref.col_tables_resolved = 1;
         return -1;
     }
 
     let mut resolve_conn = pg_conn;
-    if unsafe { (*pg_conn).streaming_active.load(Ordering::SeqCst) != 0 } {
+    if pc.streaming_active.load(Ordering::SeqCst) != 0 {
         log_debug_lazy!(
             "RESOLVE_TABLES: Connection {:p} is streaming_active",
             pg_conn
@@ -113,26 +117,26 @@ pub(super) fn resolve_column_tables_impl(
             log_debug(
                 "RESOLVE_TABLES: skipping OID lookup while streaming to avoid reentrant alternate connection acquisition",
             );
-            unsafe { (*pg_stmt).col_tables_resolved = 1 };
+            pg_stmt_ref.col_tables_resolved = 1;
             return 0;
         }
 
         log_debug("RESOLVE_TABLES: alternate connection lookup explicitly enabled");
         let alt_conn = unsafe {
             pg_get_thread_connection_excluding(
-                (*pg_conn).db_path.as_ptr(),
+                pc.db_path.as_ptr(),
                 pg_conn as *const c_void,
             )
         };
         if alt_conn.is_null()
-            || unsafe { (*alt_conn).conn.is_null() }
+            || unsafe { (&*alt_conn).conn.is_null() }
             || alt_conn == pg_conn
-            || unsafe { (*alt_conn).streaming_active.load(Ordering::SeqCst) != 0 }
+            || unsafe { (&*alt_conn).streaming_active.load(Ordering::SeqCst) != 0 }
         {
             log_debug(
                 "RESOLVE_TABLES: No alternate connection, skipping OID lookup to protect streaming",
             );
-            unsafe { (*pg_stmt).col_tables_resolved = 1 };
+            pg_stmt_ref.col_tables_resolved = 1;
             return 0;
         }
 
@@ -155,14 +159,15 @@ pub(super) fn resolve_column_tables_impl(
         Ok(cs) => cs,
         Err(_) => {
             log_error("RESOLVE_TABLES: failed to build OID query");
-            unsafe { (*pg_stmt).col_tables_resolved = 1 };
+            pg_stmt_ref.col_tables_resolved = 1;
             return -1;
         }
     };
 
-    let _conn_guard = unsafe { PthreadMutexGuard::lock(&mut (*resolve_conn).mutex as *mut _) };
+    let rc = unsafe { &mut *resolve_conn };
+    let _conn_guard = unsafe { PthreadMutexGuard::lock(&mut rc.mutex as *mut _) };
     let res =
-        unsafe { crate::libpq_helpers::rust_pq_exec((*resolve_conn).conn, query_cs.as_ptr()) };
+        unsafe { crate::libpq_helpers::rust_pq_exec(rc.conn, query_cs.as_ptr()) };
 
     if res.is_null() || crate::libpq_helpers::rust_pq_result_status(res) != PGRES_TUPLES_OK {
         log_error(&format!(
@@ -171,7 +176,7 @@ pub(super) fn resolve_column_tables_impl(
                 "NULL result".to_string()
             } else {
                 cstr_to_string_or(
-                    unsafe { crate::libpq_helpers::rust_pq_error_message((*resolve_conn).conn) },
+                    unsafe { crate::libpq_helpers::rust_pq_error_message(rc.conn) },
                     "?",
                 )
             }
@@ -179,7 +184,7 @@ pub(super) fn resolve_column_tables_impl(
         if !res.is_null() {
             crate::libpq_helpers::rust_pq_clear(res);
         }
-        unsafe { (*pg_stmt).col_tables_resolved = 1 };
+        pg_stmt_ref.col_tables_resolved = 1;
         return -1;
     }
 
@@ -221,13 +226,11 @@ pub(super) fn resolve_column_tables_impl(
     crate::libpq_helpers::rust_pq_clear(res);
 
     for i in 0..nc {
-        if unsafe { (*pg_stmt).col_table_names[i] }.is_null() {
-            let table_oid = unsafe {
-                crate::db_interpose_helpers::rust_pg_result_col_table_oid(
-                    helpers_result_ptr((*pg_stmt).result),
-                    i as c_int,
-                )
-            };
+        if pg_stmt_ref.col_table_names[i].is_null() {
+            let table_oid = crate::db_interpose_helpers::rust_pg_result_col_table_oid(
+                helpers_result_ptr(pg_stmt_ref.result),
+                i as c_int,
+            );
             if table_oid == INVALID_OID {
                 continue;
             }
@@ -235,17 +238,15 @@ pub(super) fn resolve_column_tables_impl(
                 if result_oids[j] == table_oid {
                     let dup = unsafe { libc::strdup(result_names[j].as_ptr()) };
                     if !dup.is_null() {
-                        unsafe { (*pg_stmt).col_table_names[i] = dup };
+                        pg_stmt_ref.col_table_names[i] = dup;
                         log_debug_lazy!(
                             "RESOLVE_TABLES: col[{}] '{}' -> table '{}'",
                             i,
                             cstr_to_string_or(
-                                unsafe {
-                                    crate::db_interpose_helpers::rust_pg_result_col_name(
-                                        helpers_result_ptr((*pg_stmt).result),
-                                        i as c_int,
-                                    )
-                                },
+                                crate::db_interpose_helpers::rust_pg_result_col_name(
+                                    helpers_result_ptr(pg_stmt_ref.result),
+                                    i as c_int,
+                                ),
                                 "?",
                             ),
                             cstr_to_string_or(result_names[j].as_ptr(), "?")
@@ -257,7 +258,7 @@ pub(super) fn resolve_column_tables_impl(
         }
     }
 
-    unsafe { (*pg_stmt).col_tables_resolved = 1 };
+    pg_stmt_ref.col_tables_resolved = 1;
     log_info_lazy!(
         "RESOLVE_TABLES: Resolved {} columns ({} from cache, {} from query)",
         num_cols, cache_hits, num_unique_tables

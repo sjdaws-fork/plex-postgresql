@@ -25,20 +25,17 @@ pub(super) fn value_type_impl(p_val: *mut sqlite3_value) -> c_int {
     }
 
     let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_TYPE") }) else {
-        return unsafe {
-            orig_sqlite3_value_type
-                .map(|f| f(p_val))
-                .unwrap_or(SQLITE_NULL)
-        };
+        return get_orig_sqlite3_value_type().map(|f| unsafe { f(p_val) }).unwrap_or(SQLITE_NULL);
     };
 
     let call_num = VALUE_TYPE_CALLS.fetch_add(1, Ordering::Relaxed);
     unsafe {
         let tls_query = tls_last_query_ptr();
-        *tls_query = (*ctx.pg_stmt).pg_sql;
+        *tls_query = (*ctx.pg_stmt).pg_sql;  // accessed before mutex lock, must use raw ptr
     }
 
-    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    let pg_stmt_ref = unsafe { &mut *ctx.pg_stmt };
+    let _guard = unsafe { PgStmt::lock_mutex(ctx.pg_stmt) };
     if unsafe { !fake_value_has_result(&ctx) } {
         log_info_lazy!(
             "VALUE_TYPE[{}]: FAKE VALUE but no result (row={} col={})",
@@ -47,7 +44,7 @@ pub(super) fn value_type_impl(p_val: *mut sqlite3_value) -> c_int {
         return SQLITE_NULL;
     }
 
-    let result_ptr = unsafe { (*ctx.pg_stmt).result };
+    let result_ptr = pg_stmt_ref.result;
     let mut is_null = 0;
     let mut oid = 0u32;
     let mut sqlite_type = SQLITE_NULL;
@@ -100,7 +97,7 @@ pub(super) fn value_type_impl(p_val: *mut sqlite3_value) -> c_int {
             oid,
             is_null,
             sqlite_type_name(result),
-            cstr_prefix(unsafe { (*ctx.pg_stmt).pg_sql }, 60, "?")
+            cstr_prefix(pg_stmt_ref.pg_sql, 60, "?")
         );
     }
     result
@@ -121,20 +118,17 @@ pub(super) fn value_text_impl(p_val: *mut sqlite3_value) -> *const c_uchar {
     }
 
     let Some(ctx) = (unsafe { load_fake_value_context(p_val, "VALUE_TEXT") }) else {
-        return unsafe {
-            orig_sqlite3_value_text
-                .map(|f| f(p_val))
-                .unwrap_or(ptr::null())
-        };
+        return get_orig_sqlite3_value_text().map(|f| unsafe { f(p_val) }).unwrap_or(ptr::null());
     };
 
     let call_num = VALUE_TEXT_CALLS.fetch_add(1, Ordering::Relaxed);
-    let _guard = unsafe { PthreadMutexGuard::lock(&mut (*ctx.pg_stmt).mutex as *mut _) };
+    let pg_stmt_ref = unsafe { &mut *ctx.pg_stmt };
+    let _guard = unsafe { PgStmt::lock_mutex(ctx.pg_stmt) };
     if unsafe { !fake_value_has_result(&ctx) } {
         return ptr::null();
     }
 
-    let result_ptr = unsafe { (*ctx.pg_stmt).result };
+    let result_ptr = pg_stmt_ref.result;
     let buf = VALUE_TEXT_IDX.fetch_add(1, Ordering::Relaxed) & 0xFF;
     let len = unsafe {
         crate::db_interpose_helpers::rust_pg_result_text_copy(
