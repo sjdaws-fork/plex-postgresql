@@ -1,7 +1,6 @@
 use super::*;
 
-#[no_mangle]
-pub extern "C" fn rust_pg_exception_note_query(sql: *const c_char) {
+pub fn rust_pg_exception_note_query(sql: *const c_char) {
     if sql.is_null() {
         return;
     }
@@ -21,8 +20,7 @@ pub extern "C" fn rust_pg_exception_note_query(sql: *const c_char) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_exception_dump_recent_queries() {
+pub fn rust_pg_exception_dump_recent_queries() {
     unsafe {
         let mut ring_guard = PthreadMutexGuard::lock(ptr::addr_of_mut!(EXC_QUERY_RING_MUTEX));
         libc::fprintf(
@@ -46,8 +44,7 @@ pub extern "C" fn rust_pg_exception_dump_recent_queries() {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_exception_note_phase(
+pub fn rust_pg_exception_note_phase(
     phase: *const c_char,
     sql: *const c_char,
     stmt: *const c_void,
@@ -166,8 +163,7 @@ pub extern "C" fn rust_pg_exception_note_phase(
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_exception_dump_recent_phases() {
+pub fn rust_pg_exception_dump_recent_phases() {
     unsafe {
         let mut phase_guard = PthreadMutexGuard::lock(ptr::addr_of_mut!(EXC_PHASE_RING_MUTEX));
 

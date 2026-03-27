@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use crate::db_interpose_conn_utils::log_error;
 use crate::ffi_types::PgConnection;
 
-use super::connection_helpers::conn_is_streaming_active;
+use super::connection_helpers::conn_is_streaming_active_ptr;
 use super::connection_lifecycle::{check_conn_ok, get_txn_status, reconnect_conn, reset_conn};
 use super::session::{exec_simple, PQTRANS_INERROR, PQTRANS_INTRANS};
 use super::threading::{current_thread_id, threads_equal};
@@ -29,7 +29,7 @@ pub(super) fn pool_release_for_db_inner(db_handle: usize) {
                 if state == SLOT_READY {
                     let conn = slot.conn.load(Ordering::Acquire);
                     if !conn.is_null() {
-                        if conn_is_streaming_active(conn as *mut PgConnection) {
+                        if conn_is_streaming_active_ptr(conn as *mut PgConnection) {
                             let scope = CString::new("POOL RELEASE").unwrap();
                             log_error(&format!(
                                 "Pool: releasing slot {} while streaming_active=1, forcing cancel/drain",
@@ -39,11 +39,9 @@ pub(super) fn pool_release_for_db_inner(db_handle: usize) {
                                 conn as *mut PgConnection,
                                 scope.as_ptr(),
                             );
-                            unsafe {
-                                (*(conn as *mut PgConnection))
-                                    .streaming_active
-                                    .store(0, Ordering::Release);
-                            }
+                            // SAFETY: conn is non-null (checked above).
+                            let conn_ref = unsafe { &*(conn as *mut PgConnection) };
+                            conn_ref.streaming_active.store(0, Ordering::Release);
                         }
 
                         let txn = get_txn_status(conn);

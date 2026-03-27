@@ -101,7 +101,7 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
             *pg_conn_error_out = 0;
         }
         if exec_conn.is_null()
-            || (*exec_conn).conn.is_null()
+            || (&*exec_conn).conn.is_null()
             || orig_sql.is_null()
             || exec_sql.is_null()
         {
@@ -120,9 +120,10 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
         }
 
         crate::pg_client::rust_pool_touch_connection(exec_conn as *const c_void);
-        let mut conn_guard = PthreadMutexGuard::lock(&mut (*exec_conn).mutex as *mut _);
+        let ec = &mut *exec_conn;
+        let mut conn_guard = PthreadMutexGuard::lock(&mut ec.mutex as *mut _);
 
-        if (*exec_conn).conn.is_null() {
+        if ec.conn.is_null() {
             log_error("CACHED EXEC: conn became NULL after lock (TOCTOU race)");
             conn_guard.unlock();
             if !pg_conn_error_out.is_null() {
@@ -152,7 +153,7 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
         ) != 0
         {
             crate::libpq_helpers::rust_pq_exec_prepared(
-                (*exec_conn).conn,
+                ec.conn,
                 cached_stmt_name,
                 0,
                 std::ptr::null(),
@@ -162,7 +163,7 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
             )
         } else {
             let prep_res = crate::libpq_helpers::rust_pq_prepare(
-                (*exec_conn).conn,
+                ec.conn,
                 stmt_name_buf.as_ptr(),
                 exec_sql,
                 0,
@@ -177,7 +178,7 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
                 );
                 crate::libpq_helpers::rust_pq_clear(prep_res);
                 crate::libpq_helpers::rust_pq_exec_prepared(
-                    (*exec_conn).conn,
+                    ec.conn,
                     stmt_name_buf.as_ptr(),
                     0,
                     std::ptr::null(),
@@ -194,7 +195,7 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
                 );
                 crate::libpq_helpers::rust_pq_clear(prep_res);
                 crate::libpq_helpers::rust_pq_exec_prepared(
-                    (*exec_conn).conn,
+                    ec.conn,
                     stmt_name_buf.as_ptr(),
                     0,
                     std::ptr::null(),
@@ -206,12 +207,12 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
                 log_debug_lazy!(
                     "CACHED EXEC prepare failed, using PQexec: {}",
                     cstr_to_string_or(
-                        crate::libpq_helpers::rust_pq_error_message((*exec_conn).conn),
+                        crate::libpq_helpers::rust_pq_error_message(ec.conn),
                         "(null)"
                     )
                 );
                 crate::libpq_helpers::rust_pq_clear(prep_res);
-                crate::libpq_helpers::rust_pq_exec((*exec_conn).conn, exec_sql)
+                crate::libpq_helpers::rust_pq_exec(ec.conn, exec_sql)
             }
         };
         conn_guard.unlock();
@@ -219,13 +220,14 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
         let status = crate::libpq_helpers::rust_pq_result_status(res);
         if status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK {
             if !changes_conn.is_null() {
+                let cc = &mut *changes_conn;
                 let cmd_tuples = crate::libpq_helpers::rust_pq_cmd_tuples(res);
                 let tuples_ptr = if cmd_tuples.is_null() {
                     b"1\0".as_ptr() as *const c_char
                 } else {
                     cmd_tuples
                 };
-                (*changes_conn).last_changes =
+                cc.last_changes =
                     crate::db_interpose_helpers::rust_pg_text_to_int(tuples_ptr);
             }
 
@@ -253,8 +255,8 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
                 }
             }
         } else {
-            let err = if !changes_conn.is_null() && !(*changes_conn).conn.is_null() {
-                crate::libpq_helpers::rust_pq_error_message((*changes_conn).conn)
+            let err = if !changes_conn.is_null() && !(&*changes_conn).conn.is_null() {
+                crate::libpq_helpers::rust_pq_error_message((&*changes_conn).conn)
             } else {
                 b"NULL connection\0".as_ptr() as *const c_char
             };
@@ -287,16 +289,18 @@ pub extern "C" fn rust_step_cached_write_execute_and_finalize(
         if cached.is_null() {
             cached = crate::pg_statement::rust_stmt_create(exec_conn, orig_sql, p_stmt);
             if !cached.is_null() {
-                (*cached).is_pg = 1;
-                (*cached).is_cached = 1;
-                (*cached).write_executed = 1;
+                let c = &mut *cached;
+                c.is_pg = 1;
+                c.is_cached = 1;
+                c.write_executed = 1;
                 crate::pg_statement::rust_cached_stmt_register(p_stmt as usize, cached as usize);
             }
             if !cached_io.is_null() {
                 *cached_io = cached;
             }
         } else {
-            (*cached).write_executed = 1;
+            let c = &mut *cached;
+            c.write_executed = 1;
         }
 
         STEP_RESULT_DONE

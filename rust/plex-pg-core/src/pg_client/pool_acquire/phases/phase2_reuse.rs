@@ -1,6 +1,6 @@
 use crate::ffi_types::PgConnection;
 
-use super::super::super::connection_helpers::{conn_is_pg_active, conn_is_streaming_active};
+use super::super::super::connection_helpers::{conn_is_pg_active_ptr, conn_is_streaming_active_ptr};
 use super::super::super::connection_lifecycle::{get_txn_status, reconnect_conn, reset_conn};
 use super::super::super::rust_stmt_cache_clear;
 use super::super::super::session::{exec_simple, PQTRANS_INERROR, PQTRANS_INTRANS};
@@ -16,7 +16,7 @@ pub(crate) fn phase2_reuse_existing(ctx: &AcquireCtx<'_>) -> AcquireDecision {
         if conn.is_null() || conn == ctx.exclude_conn as *mut _ {
             continue;
         }
-        if conn_is_streaming_active(conn as *mut PgConnection) {
+        if conn_is_streaming_active_ptr(conn as *mut PgConnection) {
             continue;
         }
         if !slot.try_claim_free() {
@@ -46,7 +46,7 @@ pub(crate) fn phase2_reuse_existing(ctx: &AcquireCtx<'_>) -> AcquireDecision {
         }
 
         rust_stmt_cache_clear(conn);
-        if reconnect_conn(conn) && conn_is_pg_active(conn as *mut PgConnection) {
+        if reconnect_conn(conn) && conn_is_pg_active_ptr(conn as *mut PgConnection) {
             return mark_ready_and_cache_slot(i, slot, conn);
         }
 

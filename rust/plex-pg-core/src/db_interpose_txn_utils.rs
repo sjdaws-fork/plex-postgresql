@@ -94,14 +94,15 @@ pub extern "C" fn rust_txn_terminator_should_noop(
         if !txn_state_out.is_null() {
             *txn_state_out = PQTRANS_IDLE;
         }
-        if conn.is_null() || (*conn).conn.is_null() || rust_is_txn_terminator_sql(sql) == 0 {
+        if conn.is_null() || (&*conn).conn.is_null() || rust_is_txn_terminator_sql(sql) == 0 {
             return 0;
         }
 
+        let c = &mut *conn;
         let mut txn_state = PQTRANS_IDLE;
-        let _guard = PthreadMutexGuard::lock(&mut (*conn).mutex as *mut _);
-        if !(*conn).conn.is_null() {
-            txn_state = crate::libpq_helpers::rust_pq_transaction_status((*conn).conn);
+        let _guard = PthreadMutexGuard::lock(&mut c.mutex as *mut _);
+        if !c.conn.is_null() {
+            txn_state = crate::libpq_helpers::rust_pq_transaction_status(c.conn);
         }
 
         if !txn_state_out.is_null() {

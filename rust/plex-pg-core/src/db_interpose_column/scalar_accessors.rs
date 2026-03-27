@@ -28,9 +28,9 @@ impl LiveScalarState {
     }
 }
 
-unsafe fn load_cached_scalar_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<CachedScalarState> {
-    let cached = &*(*pg_stmt).cached_result;
-    let row = (*pg_stmt).current_row;
+unsafe fn load_cached_scalar_state(pg_stmt: &mut PgStmt, idx: c_int) -> Option<CachedScalarState> {
+    let cached = &*pg_stmt.cached_result;
+    let row = pg_stmt.current_row;
     if idx < 0 || idx >= cached.num_cols || row < 0 || row >= cached.num_rows {
         return None;
     }
@@ -56,22 +56,22 @@ unsafe fn load_cached_scalar_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<C
 }
 
 unsafe fn load_live_scalar_state(
-    pg_stmt: *mut PgStmt,
+    pg_stmt: &mut PgStmt,
     idx: c_int,
     _bounds_label: &str,
     _row_bounds_label: &str,
 ) -> Option<LiveScalarState> {
-    if (*pg_stmt).result.is_null() {
+    if pg_stmt.result.is_null() {
         return None;
     }
-    if idx < 0 || idx >= (*pg_stmt).num_cols {
+    if idx < 0 || idx >= pg_stmt.num_cols {
         // NOTE: no log_debug here -- this runs under pg_stmt.mutex and
         // log_debug acquires the LOGGER mutex, creating an ABBA deadlock.
         return None;
     }
 
-    let row = (*pg_stmt).current_row;
-    if row < 0 || row >= (*pg_stmt).num_rows {
+    let row = pg_stmt.current_row;
+    if row < 0 || row >= pg_stmt.num_rows {
         return None;
     }
 
@@ -79,7 +79,7 @@ unsafe fn load_live_scalar_state(
     let mut oid_u: c_uint = 0;
     let mut sqlite_type = SQLITE_NULL;
     crate::db_interpose_helpers::rust_pg_result_type_info(
-        helpers_result_ptr((*pg_stmt).result),
+        helpers_result_ptr(pg_stmt.result),
         row,
         idx,
         &mut oid_u as *mut c_uint,
@@ -87,14 +87,14 @@ unsafe fn load_live_scalar_state(
         &mut sqlite_type as *mut c_int,
     );
     let col_name = crate::db_interpose_helpers::rust_pg_result_col_name(
-        helpers_result_ptr((*pg_stmt).result),
+        helpers_result_ptr(pg_stmt.result),
         idx,
     );
     let mut state = LiveScalarState::new(row, oid_u as u32, col_name, is_null != 0);
 
     if !state.is_null {
         let val_len = crate::db_interpose_helpers::rust_pg_result_text_copy(
-            helpers_result_ptr((*pg_stmt).result),
+            helpers_result_ptr(pg_stmt.result),
             row,
             idx,
             state.value_buf.as_mut_ptr(),
@@ -110,14 +110,15 @@ unsafe fn load_live_scalar_state(
 
 pub(super) fn column_int_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
     validate_type_consistency(p_stmt, idx, "column_int");
-    let pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
 
-    if !pg_stmt.is_null() && unsafe { (*pg_stmt).is_pg != 0 } {
+    if !raw_pg_stmt.is_null() && unsafe { (*raw_pg_stmt).is_pg != 0 } {
+        let pg_stmt = unsafe { &mut *raw_pg_stmt };
         let result_val;
         {
-            let _guard = unsafe { PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _) };
+            let _guard = unsafe { PgStmt::lock_mutex(raw_pg_stmt) };
 
-            if !unsafe { (*pg_stmt).cached_result }.is_null() {
+            if !pg_stmt.cached_result.is_null() {
                 return unsafe {
                     if let Some(state) = load_cached_scalar_state(pg_stmt, idx) {
                         pg_text_to_int_impl(state.value_ptr)
@@ -155,19 +156,20 @@ pub(super) fn column_int_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
         return result_val;
     }
 
-    unsafe { orig_sqlite3_column_int.map(|f| f(p_stmt, idx)).unwrap_or(0) }
+    get_orig_sqlite3_column_int().map(|f| unsafe { f(p_stmt, idx) }).unwrap_or(0)
 }
 
 pub(super) fn column_int64_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> i64 {
     validate_type_consistency(p_stmt, idx, "column_int64");
-    let pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
 
-    if !pg_stmt.is_null() && unsafe { (*pg_stmt).is_pg != 0 } {
+    if !raw_pg_stmt.is_null() && unsafe { (*raw_pg_stmt).is_pg != 0 } {
+        let pg_stmt = unsafe { &mut *raw_pg_stmt };
         let result_val;
         {
-            let _guard = unsafe { PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _) };
+            let _guard = unsafe { PgStmt::lock_mutex(raw_pg_stmt) };
 
-            if !unsafe { (*pg_stmt).cached_result }.is_null() {
+            if !pg_stmt.cached_result.is_null() {
                 return unsafe {
                     if let Some(state) = load_cached_scalar_state(pg_stmt, idx) {
                         let mut rv = pg_text_to_int64_impl(state.value_ptr);
@@ -210,23 +212,20 @@ pub(super) fn column_int64_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> i64 {
         return result_val;
     }
 
-    unsafe {
-        orig_sqlite3_column_int64
-            .map(|f| f(p_stmt, idx))
-            .unwrap_or(0)
-    }
+    get_orig_sqlite3_column_int64().map(|f| unsafe { f(p_stmt, idx) }).unwrap_or(0)
 }
 
 pub(super) fn column_double_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> f64 {
     validate_type_consistency(p_stmt, idx, "column_double");
-    let pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
 
-    if !pg_stmt.is_null() && unsafe { (*pg_stmt).is_pg != 0 } {
+    if !raw_pg_stmt.is_null() && unsafe { (*raw_pg_stmt).is_pg != 0 } {
+        let pg_stmt = unsafe { &mut *raw_pg_stmt };
         let result_val;
         {
-            let _guard = unsafe { PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _) };
+            let _guard = unsafe { PgStmt::lock_mutex(raw_pg_stmt) };
 
-            if !unsafe { (*pg_stmt).cached_result }.is_null() {
+            if !pg_stmt.cached_result.is_null() {
                 return unsafe {
                     if let Some(state) = load_cached_scalar_state(pg_stmt, idx) {
                         pg_text_to_double_impl(state.value_ptr)
@@ -254,9 +253,5 @@ pub(super) fn column_double_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> f64 {
         return result_val;
     }
 
-    unsafe {
-        orig_sqlite3_column_double
-            .map(|f| f(p_stmt, idx))
-            .unwrap_or(0.0)
-    }
+    get_orig_sqlite3_column_double().map(|f| unsafe { f(p_stmt, idx) }).unwrap_or(0.0)
 }

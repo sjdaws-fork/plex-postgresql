@@ -11,7 +11,11 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
     if DECLTYPE_CACHE_LOADED.load(Ordering::Acquire) {
         return;
     }
-    if pg_conn.is_null() || unsafe { (*pg_conn).conn.is_null() } {
+    if pg_conn.is_null() {
+        return;
+    }
+    let pc = unsafe { &*pg_conn };
+    if pc.conn.is_null() {
         return;
     }
 
@@ -27,7 +31,7 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
     log_info("DECLTYPE_CACHE: Loading column types from PostgreSQL information_schema...");
 
     let mut cache_conn = pg_conn;
-    let streaming_active = unsafe { (*pg_conn).streaming_active.load(Ordering::SeqCst) != 0 };
+    let streaming_active = pc.streaming_active.load(Ordering::SeqCst) != 0;
     if streaming_active {
         log_debug_lazy!(
             "DECLTYPE_CACHE: Connection {:p} is streaming_active, getting alternate",
@@ -35,14 +39,14 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
         );
         let alt = unsafe {
             crate::pg_client::pg_get_thread_connection_excluding(
-                (*pg_conn).db_path.as_ptr(),
+                pc.db_path.as_ptr(),
                 pg_conn as *const c_void,
             )
         };
         if !alt.is_null()
-            && unsafe { !(*alt).conn.is_null() }
+            && unsafe { !(&*alt).conn.is_null() }
             && alt != pg_conn
-            && unsafe { (*alt).streaming_active.load(Ordering::SeqCst) == 0 }
+            && unsafe { (&*alt).streaming_active.load(Ordering::SeqCst) == 0 }
         {
             cache_conn = alt;
             log_debug_lazy!(
@@ -55,10 +59,11 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
         }
     }
 
-    let _conn_guard = unsafe { PthreadMutexGuard::lock(&mut (*cache_conn).mutex as *mut _) };
+    let cc = unsafe { &mut *cache_conn };
+    let _conn_guard = unsafe { PthreadMutexGuard::lock(&mut cc.mutex as *mut _) };
     let res = unsafe {
         crate::libpq_helpers::rust_pq_exec(
-            (*cache_conn).conn,
+            cc.conn,
             b"SELECT table_name, column_name, udt_name FROM information_schema.columns WHERE table_schema = 'plex' AND table_name NOT IN ('sqlite_column_types', 'sqlite_sequence') ORDER BY table_name, ordinal_position\0"
                 .as_ptr() as *const c_char,
         )
@@ -71,7 +76,7 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
                 "NULL result".to_string()
             } else {
                 cstr_to_string_or(
-                    unsafe { crate::libpq_helpers::rust_pq_error_message((*cache_conn).conn) },
+                    unsafe { crate::libpq_helpers::rust_pq_error_message(cc.conn) },
                     "?",
                 )
             }

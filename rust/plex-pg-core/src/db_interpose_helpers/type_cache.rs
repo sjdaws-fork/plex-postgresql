@@ -12,8 +12,7 @@ static DECLTYPE_CACHE: LazyLock<RwLock<HashMap<String, CString>>> =
 static OID_TABLE_CACHE: LazyLock<RwLock<HashMap<u32, CString>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-#[no_mangle]
-pub extern "C" fn rust_decltype_hash(ptr: *const c_char) -> u32 {
+pub fn rust_decltype_hash(ptr: *const c_char) -> u32 {
     let mut hash: u32 = 5381;
     let s = cstr_to_str(ptr).unwrap_or("");
     for b in s.as_bytes() {
@@ -22,8 +21,7 @@ pub extern "C" fn rust_decltype_hash(ptr: *const c_char) -> u32 {
     hash
 }
 
-#[no_mangle]
-pub extern "C" fn rust_decltype_cache_insert(
+pub fn rust_decltype_cache_insert(
     key: *const c_char,
     decltype_val: *const c_char,
 ) -> c_int {
@@ -49,8 +47,7 @@ pub extern "C" fn rust_decltype_cache_insert(
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_decltype_cache_lookup(key: *const c_char) -> *const c_char {
+pub fn rust_decltype_cache_lookup(key: *const c_char) -> *const c_char {
     let key_str = match cstr_to_str(key) {
         Some(s) if !s.is_empty() => s,
         _ => return std::ptr::null(),
@@ -65,8 +62,7 @@ pub extern "C" fn rust_decltype_cache_lookup(key: *const c_char) -> *const c_cha
         .unwrap_or(std::ptr::null())
 }
 
-#[no_mangle]
-pub extern "C" fn rust_oid_table_cache_insert(oid: c_uint, name: *const c_char) -> c_int {
+pub fn rust_oid_table_cache_insert(oid: c_uint, name: *const c_char) -> c_int {
     let name_str = match cstr_to_str(name) {
         Some(s) if !s.is_empty() => s,
         _ => return 0,
@@ -84,8 +80,7 @@ pub extern "C" fn rust_oid_table_cache_insert(oid: c_uint, name: *const c_char) 
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_oid_table_cache_lookup(oid: c_uint) -> *const c_char {
+pub fn rust_oid_table_cache_lookup(oid: c_uint) -> *const c_char {
     let cache = match OID_TABLE_CACHE.read() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -96,8 +91,7 @@ pub extern "C" fn rust_oid_table_cache_lookup(oid: c_uint) -> *const c_char {
         .unwrap_or(std::ptr::null())
 }
 
-#[no_mangle]
-pub extern "C" fn rust_expected_sqlite_type_for_decltype(decl: *const c_char) -> c_int {
+pub fn rust_expected_sqlite_type_for_decltype(decl: *const c_char) -> c_int {
     let t = match cstr_to_str(decl) {
         Some(s) if !s.trim().is_empty() => s.trim(),
         _ => return -1,
@@ -146,8 +140,7 @@ pub extern "C" fn rust_expected_sqlite_type_for_decltype(decl: *const c_char) ->
     -1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_decltype_cache_lookup_alias(alias: *const c_char) -> *const c_char {
+pub fn rust_decltype_cache_lookup_alias(alias: *const c_char) -> *const c_char {
     let alias_str = match cstr_to_str(alias) {
         Some(s) if !s.is_empty() => s,
         _ => return std::ptr::null(),

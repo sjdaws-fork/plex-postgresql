@@ -2,8 +2,7 @@ use super::{stmt_cache_disabled, with_tls_cache};
 
 /// Register a cached statement in the TLS cache.
 /// Increments ref_count.
-#[no_mangle]
-pub extern "C" fn rust_cached_stmt_register(sqlite_stmt: usize, pg_stmt: usize) {
+pub fn rust_cached_stmt_register(sqlite_stmt: usize, pg_stmt: usize) {
     if sqlite_stmt == 0 || pg_stmt == 0 {
         return;
     }
@@ -17,8 +16,7 @@ pub extern "C" fn rust_cached_stmt_register(sqlite_stmt: usize, pg_stmt: usize) 
 
 /// Find a cached statement in the TLS cache.
 /// Returns 0 if not found.
-#[no_mangle]
-pub extern "C" fn rust_cached_stmt_find(sqlite_stmt: usize) -> usize {
+pub fn rust_cached_stmt_find(sqlite_stmt: usize) -> usize {
     if sqlite_stmt == 0 {
         return 0;
     }
@@ -29,8 +27,7 @@ pub extern "C" fn rust_cached_stmt_find(sqlite_stmt: usize) -> usize {
 }
 
 /// Remove a cached statement from the TLS cache with unref.
-#[no_mangle]
-pub extern "C" fn rust_cached_stmt_clear(sqlite_stmt: usize) {
+pub fn rust_cached_stmt_clear(sqlite_stmt: usize) {
     if sqlite_stmt == 0 {
         return;
     }
@@ -44,8 +41,7 @@ pub extern "C" fn rust_cached_stmt_clear(sqlite_stmt: usize) {
 
 /// Remove a cached statement from the TLS cache WITHOUT unref (weak clear).
 /// Used by finalize() because the global registry owns the reference.
-#[no_mangle]
-pub extern "C" fn rust_cached_stmt_clear_weak(sqlite_stmt: usize) {
+pub fn rust_cached_stmt_clear_weak(sqlite_stmt: usize) {
     if sqlite_stmt == 0 {
         return;
     }
@@ -64,8 +60,7 @@ pub extern "C" fn rust_cached_stmt_clear_weak(sqlite_stmt: usize) {
 /// # Safety
 /// The returned array is heap-allocated and must be freed by the caller.
 /// `count_out` must point to a valid i32.
-#[no_mangle]
-pub extern "C" fn rust_cached_stmt_drain_all(count_out: *mut i32) -> *mut usize {
+pub fn rust_cached_stmt_drain_all(count_out: *mut i32) -> *mut usize {
     if stmt_cache_disabled() {
         if !count_out.is_null() {
             unsafe {

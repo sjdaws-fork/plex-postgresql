@@ -4,14 +4,12 @@ use crate::db_interpose_bind::support::{begin_bind, mapped_param_index, retry_on
 pub(super) fn bind_int_impl(p_stmt: *mut sqlite3_stmt, idx: c_int, val: c_int) -> c_int {
     let (pg_stmt, guard) = unsafe { begin_bind(PHASE_BIND_INT, p_stmt) };
 
-    let mut rc = unsafe {
-        orig_sqlite3_bind_int
-            .map(|f| f(p_stmt, idx, val))
-            .unwrap_or(SQLITE_ERROR)
-    };
+    let mut rc = get_orig_sqlite3_bind_int()
+        .map(|f| unsafe { f(p_stmt, idx, val) })
+        .unwrap_or(SQLITE_ERROR);
     unsafe {
         rc = retry_on_misuse(rc, p_stmt, pg_stmt, || {
-            orig_sqlite3_bind_int
+            get_orig_sqlite3_bind_int()
                 .map(|f| f(p_stmt, idx, val))
                 .unwrap_or(SQLITE_ERROR)
         });
@@ -37,14 +35,12 @@ pub(super) fn bind_int_impl(p_stmt: *mut sqlite3_stmt, idx: c_int, val: c_int) -
 pub(super) fn bind_int64_impl(p_stmt: *mut sqlite3_stmt, idx: c_int, val: i64) -> c_int {
     let (pg_stmt, guard) = unsafe { begin_bind(PHASE_BIND_INT64, p_stmt) };
 
-    let mut rc = unsafe {
-        orig_sqlite3_bind_int64
-            .map(|f| f(p_stmt, idx, val))
-            .unwrap_or(SQLITE_ERROR)
-    };
+    let mut rc = get_orig_sqlite3_bind_int64()
+        .map(|f| unsafe { f(p_stmt, idx, val) })
+        .unwrap_or(SQLITE_ERROR);
     unsafe {
         rc = retry_on_misuse(rc, p_stmt, pg_stmt, || {
-            orig_sqlite3_bind_int64
+            get_orig_sqlite3_bind_int64()
                 .map(|f| f(p_stmt, idx, val))
                 .unwrap_or(SQLITE_ERROR)
         });
@@ -70,14 +66,12 @@ pub(super) fn bind_int64_impl(p_stmt: *mut sqlite3_stmt, idx: c_int, val: i64) -
 pub(super) fn bind_double_impl(p_stmt: *mut sqlite3_stmt, idx: c_int, val: f64) -> c_int {
     let (pg_stmt, guard) = unsafe { begin_bind(PHASE_BIND_DOUBLE, p_stmt) };
 
-    let mut rc = unsafe {
-        orig_sqlite3_bind_double
-            .map(|f| f(p_stmt, idx, val))
-            .unwrap_or(SQLITE_ERROR)
-    };
+    let mut rc = get_orig_sqlite3_bind_double()
+        .map(|f| unsafe { f(p_stmt, idx, val) })
+        .unwrap_or(SQLITE_ERROR);
     unsafe {
         rc = retry_on_misuse(rc, p_stmt, pg_stmt, || {
-            orig_sqlite3_bind_double
+            get_orig_sqlite3_bind_double()
                 .map(|f| f(p_stmt, idx, val))
                 .unwrap_or(SQLITE_ERROR)
         });

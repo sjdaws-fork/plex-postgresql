@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 use crate::ffi_types::PgConnection;
 
-use super::super::connection_helpers::conn_is_streaming_active;
+use super::super::connection_helpers::conn_is_streaming_active_ptr;
 use super::super::connection_lifecycle::destroy_pool_connection;
 use super::super::threading::check_thread_alive;
 use super::super::SLOT_READY;
@@ -29,7 +29,7 @@ pub(super) fn reclaim_zombies_and_reap(ctx: &AcquireCtx<'_>) {
         }
 
         let conn = slot.conn.load(Ordering::Acquire);
-        if !conn.is_null() && conn_is_streaming_active(conn as *mut PgConnection) {
+        if !conn.is_null() && conn_is_streaming_active_ptr(conn as *mut PgConnection) {
             log_info_lazy!(
                 "Pool PHASE 0: slot {} owner dead but streaming_active, skipping reclaim",
                 i

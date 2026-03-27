@@ -28,10 +28,12 @@ unsafe fn clear_streaming_state(stmt_ptr: *mut PgStmt, stmt: &mut PgStmt, op_nam
         return;
     }
 
-    let sconn = stmt.streaming_conn;
-    let _conn_guard = PthreadMutexGuard::lock(&mut (*sconn).mutex as *mut _);
-    if !(*sconn).conn.is_null() {
-        let cancel = crate::libpq_helpers::rust_pq_get_cancel((*sconn).conn);
+    // SAFETY: streaming_conn is non-null (checked above) and validated by
+    // pg_pool_validate_connection.
+    let sconn = &mut *stmt.streaming_conn;
+    let _conn_guard = PthreadMutexGuard::lock(&mut sconn.mutex as *mut _);
+    if !sconn.conn.is_null() {
+        let cancel = crate::libpq_helpers::rust_pq_get_cancel(sconn.conn);
         if !cancel.is_null() {
             let mut errbuf = [0 as c_char; 256];
             if crate::libpq_helpers::rust_pq_cancel(
@@ -47,7 +49,7 @@ unsafe fn clear_streaming_state(stmt_ptr: *mut PgStmt, stmt: &mut PgStmt, op_nam
         }
         let mut drain_count = 0;
         loop {
-            let drain = crate::libpq_helpers::rust_pq_get_result((*sconn).conn);
+            let drain = crate::libpq_helpers::rust_pq_get_result(sconn.conn);
             if drain.is_null() {
                 break;
             }
@@ -56,7 +58,7 @@ unsafe fn clear_streaming_state(stmt_ptr: *mut PgStmt, stmt: &mut PgStmt, op_nam
             if drain_count > 1000 {
                 log_info_lazy!(
                     "{}: drain after cancel exceeded 1000 on {:p}",
-                    op_name, sconn
+                    op_name, stmt.streaming_conn
                 );
                 break;
             }
@@ -82,7 +84,7 @@ unsafe fn clear_streaming_state(stmt_ptr: *mut PgStmt, stmt: &mut PgStmt, op_nam
     }
 
     stmt.streaming_mode = 0;
-    (*sconn).streaming_active.store(0, Ordering::Release);
+    sconn.streaming_active.store(0, Ordering::Release);
     stmt.streaming_conn = std::ptr::null_mut();
 }
 
@@ -118,8 +120,7 @@ unsafe fn free_col_names(stmt: &mut PgStmt) {
     stmt.num_col_names = 0;
 }
 
-#[no_mangle]
-pub extern "C" fn rust_stmt_free(stmt_ptr: *mut PgStmt) {
+pub fn rust_stmt_free(stmt_ptr: *mut PgStmt) {
     if stmt_ptr.is_null() {
         return;
     }
@@ -284,14 +285,13 @@ pub extern "C" fn rust_stmt_free(stmt_ptr: *mut PgStmt) {
             "pg_stmt_free: destroying mutex and freeing stmt={:p}",
             stmt_ptr
         );
-        libc::pthread_mutex_destroy(&mut stmt.mutex as *mut _);
+        // std::sync::Mutex is cleaned up automatically by drop(Box::from_raw) below.
         drop(Box::from_raw(stmt_ptr));
         log_debug("pg_stmt_free: DONE");
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_stmt_clear_result(stmt_ptr: *mut PgStmt) {
+pub fn rust_stmt_clear_result(stmt_ptr: *mut PgStmt) {
     if stmt_ptr.is_null() {
         return;
     }

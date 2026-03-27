@@ -14,15 +14,16 @@ pub(super) unsafe fn pg_map_param_index(
         );
         return sqlite_idx - 1;
     }
+    let s = &*pg_stmt;
 
-    if !(*pg_stmt).param_names.is_null() && (*pg_stmt).param_count > 0 {
+    if !s.param_names.is_null() && s.param_count > 0 {
         let param_name =
             crate::db_interpose_metadata::rust_my_sqlite3_bind_parameter_name(p_stmt, sqlite_idx);
         log_debug_lazy!(
             "pg_map_param_index: sqlite_idx={}, param_name={}, param_count={}",
             sqlite_idx,
             cstr_to_string_or(param_name, "NULL"),
-            (*pg_stmt).param_count
+            s.param_count
         );
 
         if !param_name.is_null() {
@@ -31,10 +32,10 @@ pub(super) unsafe fn pg_map_param_index(
                 clean_name = param_name.add(1);
             }
 
-            let param_count = (*pg_stmt).param_count as usize;
+            let param_count = s.param_count as usize;
             let max_debug = param_count.min(5);
             for i in 0..max_debug {
-                let cur = *(*pg_stmt).param_names.add(i);
+                let cur = *s.param_names.add(i);
                 log_debug_lazy!(
                     "  param_names[{}] = {}",
                     i,
@@ -43,7 +44,7 @@ pub(super) unsafe fn pg_map_param_index(
             }
 
             for i in 0..param_count {
-                let cur = *(*pg_stmt).param_names.add(i);
+                let cur = *s.param_names.add(i);
                 if !cur.is_null() && libc::strcmp(cur, clean_name) == 0 {
                     log_debug_lazy!("  -> Found match at pg_idx={}", i);
                     return i as c_int;
@@ -60,7 +61,7 @@ pub(super) unsafe fn pg_map_param_index(
     } else {
         log_debug_lazy!(
             "pg_map_param_index: no param_names (count={}), using direct mapping idx={} -> {}",
-            (*pg_stmt).param_count,
+            s.param_count,
             sqlite_idx,
             sqlite_idx - 1
         );
@@ -74,27 +75,24 @@ pub(super) fn note_bind_phase(phase: &[u8], p_stmt: *mut sqlite3_stmt, pg_stmt: 
     let mut db: *mut sqlite3 = ptr::null_mut();
 
     if !pg_stmt.is_null() {
-        unsafe {
-            sql = if !(*pg_stmt).pg_sql.is_null() {
-                (*pg_stmt).pg_sql
-            } else {
-                (*pg_stmt).sql
-            };
-        }
+        let s = unsafe { &*pg_stmt };
+        sql = if !s.pg_sql.is_null() {
+            s.pg_sql
+        } else {
+            s.sql
+        };
     }
 
     if sql.is_null() {
-        unsafe {
-            if let Some(f) = orig_sqlite3_sql {
-                sql = f(p_stmt);
-            }
+        if let Some(f) = get_orig_sqlite3_sql() {
+            sql = unsafe { f(p_stmt) };
         }
     }
 
+    if let Some(f) = get_orig_sqlite3_db_handle() {
+        db = unsafe { f(p_stmt) };
+    }
     unsafe {
-        if let Some(f) = orig_sqlite3_db_handle {
-            db = f(p_stmt);
-        }
         pg_exception_note_phase(phase.as_ptr() as *const c_char, sql, p_stmt, db);
     }
 }
@@ -139,12 +137,13 @@ pub(super) fn should_reset_stmt(pg_stmt: *mut PgStmt) -> bool {
     if bind_reset_disabled() || pg_stmt.is_null() {
         return false;
     }
-    unsafe { (*pg_stmt).is_pg != 0 }
+    let s = unsafe { &*pg_stmt };
+    s.is_pg != 0
 }
 
 pub(super) unsafe fn wait_for_stmt_ready(p_stmt: *mut sqlite3_stmt, pg_stmt: *mut PgStmt) -> bool {
     if should_reset_stmt(pg_stmt) {
-        if let Some(f) = orig_sqlite3_reset {
+        if let Some(f) = get_orig_sqlite3_reset() {
             f(p_stmt);
         }
     }
@@ -154,7 +153,7 @@ pub(super) unsafe fn wait_for_stmt_ready(p_stmt: *mut sqlite3_stmt, pg_stmt: *mu
 
 pub(super) unsafe fn ensure_stmt_not_busy(p_stmt: *mut sqlite3_stmt, pg_stmt: *mut PgStmt) {
     if should_reset_stmt(pg_stmt) {
-        if let Some(f) = orig_sqlite3_reset {
+        if let Some(f) = get_orig_sqlite3_reset() {
             f(p_stmt);
         }
     }
@@ -164,9 +163,10 @@ pub(super) unsafe fn clear_metadata_result_if_needed(pg_stmt: *mut PgStmt) {
     if pg_stmt.is_null() {
         return;
     }
-    if (*pg_stmt).metadata_only_result != 0 && !(*pg_stmt).result.is_null() {
+    let s = &mut *pg_stmt;
+    if s.metadata_only_result != 0 && !s.result.is_null() {
         log_debug("BIND: Marking metadata-only result for re-execution with bound params");
-        (*pg_stmt).metadata_only_result = 2;
+        s.metadata_only_result = 2;
     }
 }
 
@@ -174,7 +174,7 @@ pub(super) unsafe fn is_preallocated_buffer(stmt: *mut PgStmt, idx: usize) -> bo
     if stmt.is_null() {
         return false;
     }
-    (*stmt).is_preallocated_buffer(idx)
+    (&*stmt).is_preallocated_buffer(idx)
 }
 
 pub(super) unsafe fn retry_on_misuse<F>(
@@ -206,12 +206,12 @@ where
 pub(super) unsafe fn begin_bind(
     phase: &[u8],
     p_stmt: *mut sqlite3_stmt,
-) -> (*mut PgStmt, Option<PthreadMutexGuard>) {
+) -> (*mut PgStmt, Option<StmtGuard>) {
     let pg_stmt = pg_find_any_stmt(p_stmt);
     note_bind_phase(phase, p_stmt, pg_stmt);
 
     let guard = if !pg_stmt.is_null() {
-        Some(PthreadMutexGuard::lock(&raw mut (*pg_stmt).mutex))
+        Some(PgStmt::lock_mutex(pg_stmt))
     } else {
         None
     };

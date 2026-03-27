@@ -13,7 +13,6 @@
 ///   rust_logging_is_known_limitation(error_msg: *const c_char) -> i32
 ///   rust_logging_reset_after_fork()
 ///   rust_logging_cleanup()
-use std::ffi::CStr;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::raw::c_char;
@@ -22,6 +21,7 @@ use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::db_interpose_conn_utils::{cstr_to_option, cstr_to_str_safe};
 use crate::env_utils;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -308,8 +308,7 @@ fn now_secs() -> i64 {
 ///   `PLEX_PG_LOG_TRUNCATE_ON_START` → "1"/"true"/"yes" to truncate on init
 ///
 /// Opens the log file and sets it unbuffered. Thread-safe; call once.
-#[no_mangle]
-pub extern "C" fn rust_logging_init() {
+pub fn rust_logging_init() {
     // Ensure we only initialise once.
     INITIALIZED.get_or_init(|| {
         // Parse env vars.
@@ -425,9 +424,7 @@ pub extern "C" fn rust_logging_write(level: i32, message: *const c_char) {
         return;
     }
 
-    let msg = unsafe { CStr::from_ptr(message) }
-        .to_str()
-        .unwrap_or("<invalid utf-8>");
+    let msg = cstr_to_str_safe(message);
 
     // Throttle check (ERROR bypasses completely).
     if level != LEVEL_ERROR {
@@ -495,21 +492,14 @@ pub extern "C" fn rust_logging_write(level: i32, message: *const c_char) {
 /// Write to the fallback log file and also to the main log.
 ///
 /// Used for SQL fallback tracking. Arguments are pre-formatted C strings.
-#[no_mangle]
-pub extern "C" fn rust_logging_fallback(
+pub fn rust_logging_fallback(
     original_sql: *const c_char,
     translated_sql: *const c_char,
     error_msg: *const c_char,
     context: *const c_char,
 ) {
     let c_to_str = |ptr: *const c_char| -> &str {
-        if ptr.is_null() {
-            return "<null>";
-        }
-        match unsafe { CStr::from_ptr(ptr) }.to_str() {
-            Ok(s) => s,
-            Err(_) => "<invalid utf-8>",
-        }
+        cstr_to_option(ptr).unwrap_or("<null>")
     };
 
     let original = c_to_str(original_sql);
@@ -549,14 +539,10 @@ pub extern "C" fn rust_logging_fallback(
 ///
 /// Returns 1 if it's a known limitation (caller should suppress logging),
 /// 0 otherwise.
-#[no_mangle]
-pub extern "C" fn rust_logging_is_known_limitation(error_msg: *const c_char) -> i32 {
-    if error_msg.is_null() {
-        return 0;
-    }
-    let msg = match unsafe { CStr::from_ptr(error_msg) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return 0,
+pub fn rust_logging_is_known_limitation(error_msg: *const c_char) -> i32 {
+    let msg = match cstr_to_option(error_msg) {
+        Some(s) => s,
+        None => return 0,
     };
     if is_known_limitation_str(msg) {
         1
@@ -570,8 +556,7 @@ pub extern "C" fn rust_logging_is_known_limitation(error_msg: *const c_char) -> 
 /// Clears the file handle (child will reopen on next write) and resets
 /// all atomic counters. The `Mutex` is reinitialised by replacing the
 /// inner state through a fresh lock acquisition.
-#[no_mangle]
-pub extern "C" fn rust_logging_reset_after_fork() {
+pub fn rust_logging_reset_after_fork() {
     // Reset atomics.
     WRITE_COUNT.store(0, Ordering::Relaxed);
     THROTTLE_WINDOW_COUNT.store(0, Ordering::Relaxed);
@@ -590,8 +575,7 @@ pub extern "C" fn rust_logging_reset_after_fork() {
 }
 
 /// Flush and close all log files.
-#[no_mangle]
-pub extern "C" fn rust_logging_cleanup() {
+pub fn rust_logging_cleanup() {
     let mut state = logger().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut f) = state.file {
         let _ = f.flush();

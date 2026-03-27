@@ -9,26 +9,27 @@ pub(crate) fn exec_via_postgres(
     pg_conn: *mut crate::ffi_types::PgConnection,
     sql: *const c_char,
 ) -> c_int {
+    let pg = unsafe { &mut *pg_conn };
     unsafe {
-        if (*pg_conn).conn.is_null()
-            || crate::libpq_helpers::rust_pq_status((*pg_conn).conn) != CONNECTION_OK
+        if pg.conn.is_null()
+            || crate::libpq_helpers::rust_pq_status(pg.conn) != CONNECTION_OK
         {
             log_error(&format!(
                 "EXEC: CONNECTION_BAD pre-flight, attempting reconnect (thread {:p})",
                 libc::pthread_self() as *mut c_void
             ));
-            let mut conn_guard = PthreadMutexGuard::lock(&mut (*pg_conn).mutex as *mut _);
-            if !(*pg_conn).conn.is_null() {
-                crate::libpq_helpers::rust_pq_reset((*pg_conn).conn);
-                if crate::libpq_helpers::rust_pq_status((*pg_conn).conn) != CONNECTION_OK {
+            let mut conn_guard = PthreadMutexGuard::lock(&mut pg.mutex as *mut _);
+            if !pg.conn.is_null() {
+                crate::libpq_helpers::rust_pq_reset(pg.conn);
+                if crate::libpq_helpers::rust_pq_status(pg.conn) != CONNECTION_OK {
                     log_error("EXEC: PQreset failed, trying fresh PQconnectdb...");
                     crate::pg_client::rust_stmt_cache_clear(pg_conn as *mut c_void);
-                    crate::libpq_helpers::rust_pq_finish((*pg_conn).conn);
-                    (*pg_conn).conn = std::ptr::null_mut();
+                    crate::libpq_helpers::rust_pq_finish(pg.conn);
+                    pg.conn = std::ptr::null_mut();
 
                     let rcfg = pg_config_get();
                     if rcfg.is_null() {
-                        (*pg_conn).is_pg_active = 0;
+                        pg.is_pg_active = 0;
                         conn_guard.unlock();
                         EXEC_PG_CONN_ERROR.with(|c| c.set(1));
                         return SQLITE_ERROR;
@@ -36,10 +37,10 @@ pub(crate) fn exec_via_postgres(
                     let cfg = &*rcfg;
                     let new_conn = connect_new(cfg);
                     if crate::libpq_helpers::rust_pq_status(new_conn) == CONNECTION_OK {
-                        (*pg_conn).conn = new_conn;
-                        (*pg_conn).is_pg_active = 1;
+                        pg.conn = new_conn;
+                        pg.is_pg_active = 1;
                         log_info("EXEC: fresh connection succeeded (reconnected)");
-                        apply_pg_session_settings((*pg_conn).conn, cfg);
+                        apply_pg_session_settings(pg.conn, cfg);
                     } else {
                         log_error(&format!(
                             "EXEC: fresh connection also failed: {}",
@@ -49,7 +50,7 @@ pub(crate) fn exec_via_postgres(
                             )
                         ));
                         crate::libpq_helpers::rust_pq_finish(new_conn);
-                        (*pg_conn).is_pg_active = 0;
+                        pg.is_pg_active = 0;
                         conn_guard.unlock();
                         EXEC_PG_CONN_ERROR.with(|c| c.set(1));
                         return SQLITE_ERROR;
@@ -59,12 +60,12 @@ pub(crate) fn exec_via_postgres(
                 }
                 let cfg = pg_config_get();
                 if !cfg.is_null() {
-                    apply_pg_session_settings((*pg_conn).conn, &*cfg);
+                    apply_pg_session_settings(pg.conn, &*cfg);
                 }
             } else {
                 let rcfg = pg_config_get();
                 if rcfg.is_null() {
-                    (*pg_conn).is_pg_active = 0;
+                    pg.is_pg_active = 0;
                     conn_guard.unlock();
                     EXEC_PG_CONN_ERROR.with(|c| c.set(1));
                     return SQLITE_ERROR;
@@ -72,12 +73,12 @@ pub(crate) fn exec_via_postgres(
                 let cfg = &*rcfg;
                 let new_conn = connect_new(cfg);
                 if crate::libpq_helpers::rust_pq_status(new_conn) == CONNECTION_OK {
-                    (*pg_conn).conn = new_conn;
-                    (*pg_conn).is_pg_active = 1;
+                    pg.conn = new_conn;
+                    pg.is_pg_active = 1;
                     log_error("EXEC: fresh connection from NULL succeeded");
                     let cfg2 = pg_config_get();
                     if !cfg2.is_null() {
-                        apply_pg_session_settings((*pg_conn).conn, &*cfg2);
+                        apply_pg_session_settings(pg.conn, &*cfg2);
                     }
                 } else {
                     log_error(&format!(
@@ -88,7 +89,7 @@ pub(crate) fn exec_via_postgres(
                         )
                     ));
                     crate::libpq_helpers::rust_pq_finish(new_conn);
-                    (*pg_conn).is_pg_active = 0;
+                    pg.is_pg_active = 0;
                     conn_guard.unlock();
                     EXEC_PG_CONN_ERROR.with(|c| c.set(1));
                     return SQLITE_ERROR;
@@ -98,7 +99,7 @@ pub(crate) fn exec_via_postgres(
         }
 
         let mut exec_sql = sql;
-        let blobs_rewrite = rewrite_blobs_schema_migrations(sql, (*pg_conn).db_path.as_ptr());
+        let blobs_rewrite = rewrite_blobs_schema_migrations(sql, pg.db_path.as_ptr());
         if !blobs_rewrite.is_null() {
             exec_sql = blobs_rewrite;
         }
@@ -137,7 +138,7 @@ pub(crate) fn exec_via_postgres(
                     }
                 }
 
-                let mut conn_guard = PthreadMutexGuard::lock(&mut (*pg_conn).mutex as *mut _);
+                let mut conn_guard = PthreadMutexGuard::lock(&mut pg.mutex as *mut _);
 
                 let normalized =
                     crate::db_interpose_helpers::rust_normalize_sql_literals(exec_pg_sql);
@@ -153,7 +154,7 @@ pub(crate) fn exec_via_postgres(
                     ) != 0
                     {
                         crate::libpq_helpers::rust_pq_exec_prepared(
-                            (*pg_conn).conn,
+                            pg.conn,
                             cached_stmt_name,
                             norm.param_count,
                             norm.param_values as *const *const c_char,
@@ -166,7 +167,7 @@ pub(crate) fn exec_via_postgres(
                         let stmt_name_c =
                             CString::new(stmt_name).unwrap_or_else(|_| CString::new("").unwrap());
                         let prep_res = crate::libpq_helpers::rust_pq_prepare(
-                            (*pg_conn).conn,
+                            pg.conn,
                             stmt_name_c.as_ptr(),
                             norm.normalized_sql,
                             0,
@@ -184,7 +185,7 @@ pub(crate) fn exec_via_postgres(
                             );
                             crate::libpq_helpers::rust_pq_clear(prep_res);
                             crate::libpq_helpers::rust_pq_exec_prepared(
-                                (*pg_conn).conn,
+                                pg.conn,
                                 stmt_name_c.as_ptr(),
                                 norm.param_count,
                                 norm.param_values as *const *const c_char,
@@ -194,7 +195,7 @@ pub(crate) fn exec_via_postgres(
                             )
                         } else {
                             crate::libpq_helpers::rust_pq_clear(prep_res);
-                            crate::libpq_helpers::rust_pq_exec((*pg_conn).conn, exec_pg_sql)
+                            crate::libpq_helpers::rust_pq_exec(pg.conn, exec_pg_sql)
                         }
                     }
                 } else {
@@ -207,7 +208,7 @@ pub(crate) fn exec_via_postgres(
                     ) != 0
                     {
                         crate::libpq_helpers::rust_pq_exec_prepared(
-                            (*pg_conn).conn,
+                            pg.conn,
                             cached_stmt_name,
                             0,
                             std::ptr::null(),
@@ -216,7 +217,7 @@ pub(crate) fn exec_via_postgres(
                             0,
                         )
                     } else {
-                        crate::libpq_helpers::rust_pq_exec((*pg_conn).conn, exec_pg_sql)
+                        crate::libpq_helpers::rust_pq_exec(pg.conn, exec_pg_sql)
                     }
                 };
 
@@ -232,7 +233,7 @@ pub(crate) fn exec_via_postgres(
                     } else {
                         cmd_tuples
                     };
-                    (*pg_conn).last_changes =
+                    pg.last_changes =
                         crate::db_interpose_helpers::rust_pg_text_to_int(tuples_ptr);
 
                     if starts_with_icase_bytes(sql_bytes, b"INSERT")
@@ -253,7 +254,7 @@ pub(crate) fn exec_via_postgres(
                         }
                         if !id_str.is_null() && !CStr::from_ptr(id_str).to_bytes().is_empty() {
                             if let Some(rowid) = parse_positive_returning_rowid(id_str) {
-                                (*pg_conn).last_insert_rowid = rowid;
+                                pg.last_insert_rowid = rowid;
                                 crate::pg_client::rust_set_global_last_insert_rowid(rowid);
                             }
                             if contains_bytes(sql_bytes, b"play_queue_generators") {
@@ -269,17 +270,17 @@ pub(crate) fn exec_via_postgres(
                         }
                     }
                 } else {
-                    let err = if (*pg_conn).conn.is_null() {
+                    let err = if pg.conn.is_null() {
                         c"NULL connection".as_ptr()
                     } else {
-                        crate::libpq_helpers::rust_pq_error_message((*pg_conn).conn)
+                        crate::libpq_helpers::rust_pq_error_message(pg.conn)
                     };
                     log_error(&format!(
                         "PostgreSQL exec error: {}",
                         cstr_to_string_or(err, "NULL connection")
                     ));
-                    let is_conn_error = (*pg_conn).conn.is_null()
-                        || crate::libpq_helpers::rust_pq_status((*pg_conn).conn) != CONNECTION_OK;
+                    let is_conn_error = pg.conn.is_null()
+                        || crate::libpq_helpers::rust_pq_status(pg.conn) != CONNECTION_OK;
                     let is_stale_stmt = is_stale_prepared_stmt(res);
                     if is_stale_stmt {
                         crate::pg_client::rust_stmt_cache_clear_local(pg_conn as *mut c_void);

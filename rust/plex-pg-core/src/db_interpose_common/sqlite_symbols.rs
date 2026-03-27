@@ -16,8 +16,7 @@ pub(super) unsafe fn read_option<T: Copy>(slot: *const Option<T>) -> Option<T> {
     ptr::read(slot)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_common_load_sqlite_symbols(handle: *mut c_void) {
+pub fn rust_common_load_sqlite_symbols(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
@@ -428,8 +427,7 @@ pub extern "C" fn rust_common_load_sqlite_symbols(handle: *mut c_void) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_shim_ensure_ready() -> c_int {
+pub fn rust_shim_ensure_ready() -> c_int {
     if SYMBOLS_VERIFIED.load(Ordering::Acquire) != 0 {
         return 1;
     }
@@ -520,7 +518,6 @@ pub extern "C" fn rust_shim_ensure_ready() -> c_int {
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_reset_symbol_verification() {
+pub fn rust_reset_symbol_verification() {
     SYMBOLS_VERIFIED.store(0, Ordering::SeqCst);
 }

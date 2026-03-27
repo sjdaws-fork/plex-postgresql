@@ -180,8 +180,7 @@ pub(crate) fn get_retry_delays_vec() -> Vec<i32> {
 ///
 /// Returns 0 if `filename` is NULL, empty, or doesn't match.
 /// Also returns 0 if `passthrough_only` is non-zero.
-#[no_mangle]
-pub extern "C" fn pg_config_should_redirect(filename: *const c_char, passthrough_only: i32) -> i32 {
+pub fn pg_config_should_redirect(filename: *const c_char, passthrough_only: i32) -> i32 {
     let s = unsafe { cstr_to_str_or_empty(filename) };
     i32::from(should_redirect_str(s, passthrough_only != 0))
 }
@@ -196,24 +195,21 @@ pub extern "C" fn pg_config_should_redirect(filename: *const c_char, passthrough
 /// Skipped via ANYWHERE match (case-insensitive substring):
 ///   `sqlite_schema`, `sqlite_master`, `fts3_tokenizer`, `spellfix`,
 ///   `icu_load_collation`, `SET $2=$2`, `SET $1=$1`, `SET :2=:2`, `SET :1=:1`, `:col=:col`
-#[no_mangle]
-pub extern "C" fn pg_config_should_skip_sql(sql: *const c_char) -> i32 {
+pub fn pg_config_should_skip_sql(sql: *const c_char) -> i32 {
     let s = unsafe { cstr_to_str_or_empty(sql) };
     i32::from(should_skip_sql_str(s))
 }
 
 /// Returns 1 if the SQL is a write operation (INSERT, UPDATE, DELETE, REPLACE).
 /// Case-insensitive, skips leading whitespace.  Returns 0 for NULL input.
-#[no_mangle]
-pub extern "C" fn pg_config_is_write_operation(sql: *const c_char) -> i32 {
+pub fn pg_config_is_write_operation(sql: *const c_char) -> i32 {
     let s = unsafe { cstr_to_str_or_empty(sql) };
     i32::from(is_write_operation_str(s))
 }
 
 /// Returns 1 if the SQL is a read operation (SELECT).
 /// Case-insensitive, skips leading whitespace.  Returns 0 for NULL input.
-#[no_mangle]
-pub extern "C" fn pg_config_is_read_operation(sql: *const c_char) -> i32 {
+pub fn pg_config_is_read_operation(sql: *const c_char) -> i32 {
     let s = unsafe { cstr_to_str_or_empty(sql) };
     i32::from(is_read_operation_str(s))
 }
@@ -227,8 +223,7 @@ pub extern "C" fn pg_config_is_read_operation(sql: *const c_char) -> i32 {
 /// # Safety
 /// `delays_out` must point to an array of at least 10 `i32` values.
 /// `count_out` must be a valid non-null pointer to an `i32`.
-#[no_mangle]
-pub extern "C" fn pg_config_get_retry_delays(delays_out: *mut i32, count_out: *mut i32) {
+pub fn pg_config_get_retry_delays(delays_out: *mut i32, count_out: *mut i32) {
     if delays_out.is_null() || count_out.is_null() {
         return;
     }
@@ -404,8 +399,7 @@ fn write_str_to_buf(buf: &mut [u8], src: &str) {
 ///
 /// # Safety
 /// `config` must be a valid non-null pointer to a `PgConnConfig`.
-#[no_mangle]
-pub extern "C" fn pg_config_load(config: *mut PgConnConfig) -> i32 {
+pub fn pg_config_load(config: *mut PgConnConfig) -> i32 {
     if config.is_null() {
         return 0;
     }

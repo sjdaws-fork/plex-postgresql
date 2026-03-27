@@ -724,7 +724,8 @@ pub extern "C" fn shim_strdup_tracked(
     if s.is_null() {
         return ptr::null_mut();
     }
-    let len = unsafe { libc::strlen(s) } + 1;
+    // Safety: s is non-null and NUL-terminated (checked above)
+    let len = unsafe { std::ffi::CStr::from_ptr(s) }.to_bytes_with_nul().len();
     let dst = shim_malloc_tracked(len, file, line) as *mut c_char;
     if dst.is_null() {
         return ptr::null_mut();

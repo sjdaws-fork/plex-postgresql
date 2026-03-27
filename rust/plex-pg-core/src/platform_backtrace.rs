@@ -3,6 +3,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 
 use crate::db_interpose_common::CXA_DEMANGLE_FN;
+use crate::db_interpose_conn_utils::cstr_to_lossy_or;
 
 const MAX_FRAMES: usize = 64;
 const MAX_DISPLAY: usize = 25;
@@ -346,13 +347,7 @@ pub extern "C" fn platform_print_backtrace(reason: *const c_char, skip_frames: c
         return;
     }
 
-    let reason_str = unsafe {
-        if reason.is_null() {
-            "Unknown".to_string()
-        } else {
-            CStr::from_ptr(reason).to_string_lossy().into_owned()
-        }
-    };
+    let reason_str = cstr_to_lossy_or(reason, "Unknown");
 
     write_stderr("\n");
     write_stderr(

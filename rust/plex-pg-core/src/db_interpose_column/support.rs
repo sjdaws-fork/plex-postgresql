@@ -35,33 +35,31 @@ pub(crate) fn validate_type_consistency(
         return;
     }
 
-    let pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
-    if pg_stmt.is_null() || unsafe { (*pg_stmt).is_pg == 0 } {
+    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    if raw_pg_stmt.is_null() || unsafe { (*raw_pg_stmt).is_pg == 0 } {
         return;
     }
+
+    let pg_stmt = unsafe { &mut *raw_pg_stmt };
 
     let col_type = rust_my_sqlite3_column_type(p_stmt, idx);
     let col_decltype = rust_my_sqlite3_column_decltype(p_stmt, idx);
 
     // Acquire mutex only to extract data; all logging happens after release.
     let mismatch_ctx = {
-        let _guard = unsafe { PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _) };
-        if unsafe { (*pg_stmt).result.is_null() } {
+        let _guard = unsafe { PgStmt::lock_mutex(raw_pg_stmt) };
+        if pg_stmt.result.is_null() {
             return;
         }
 
-        let oid = unsafe {
-            crate::db_interpose_helpers::rust_pg_result_col_oid(
-                helpers_result_ptr((*pg_stmt).result),
-                idx,
-            )
-        };
-        let col_name = unsafe {
-            crate::db_interpose_helpers::rust_pg_result_col_name(
-                helpers_result_ptr((*pg_stmt).result),
-                idx,
-            )
-        };
+        let oid = crate::db_interpose_helpers::rust_pg_result_col_oid(
+            helpers_result_ptr(pg_stmt.result),
+            idx,
+        );
+        let col_name = crate::db_interpose_helpers::rust_pg_result_col_name(
+            helpers_result_ptr(pg_stmt.result),
+            idx,
+        );
 
         if col_decltype.is_null() {
             return;
@@ -72,9 +70,9 @@ pub(crate) fn validate_type_consistency(
             return;
         }
 
-        let current_row = unsafe { (*pg_stmt).current_row };
-        let pg_sql = unsafe { (*pg_stmt).pg_sql };
-        let should_trace = trace_badcast_should_log(pg_stmt, idx);
+        let current_row = pg_stmt.current_row;
+        let pg_sql = pg_stmt.pg_sql;
+        let should_trace = trace_badcast_should_log(raw_pg_stmt, idx);
         (oid, col_name, expected, current_row, pg_sql, should_trace)
     };
 
@@ -93,7 +91,7 @@ pub(crate) fn validate_type_consistency(
 
     if should_trace {
         trace_badcast_log_ctx(
-            pg_stmt,
+            raw_pg_stmt,
             p_stmt,
             idx,
             accessor_name,

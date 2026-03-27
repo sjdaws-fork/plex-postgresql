@@ -3,9 +3,15 @@ use std::os::raw::{c_char, c_int, c_uchar, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
-use crate::db_interpose_common::{tls_last_query_ptr, tls_value_type_calls_ptr, GLOBAL_VALUE_TYPE_CALLS};
+use crate::db_interpose_common::{
+    tls_last_query_ptr, tls_value_type_calls_ptr, GLOBAL_VALUE_TYPE_CALLS,
+    get_orig_sqlite3_value_type, get_orig_sqlite3_value_text,
+    get_orig_sqlite3_value_int, get_orig_sqlite3_value_int64,
+    get_orig_sqlite3_value_double, get_orig_sqlite3_value_bytes,
+    get_orig_sqlite3_value_blob,
+};
 use crate::db_interpose_conn_utils::{
-    cstr_prefix, cstr_to_string_or, log_error, PthreadMutexGuard,
+    cstr_prefix, cstr_to_string_or, log_error,
 };
 use crate::db_interpose_helpers::PGresult as PgResultHelpers;
 use crate::ffi_types::{sqlite3, sqlite3_stmt, sqlite3_value, PgStmt};
@@ -55,16 +61,6 @@ struct PgFakeValue {
 }
 
 extern "C" {
-    static mut orig_sqlite3_value_type: Option<unsafe extern "C" fn(*mut sqlite3_value) -> c_int>;
-    static mut orig_sqlite3_value_text:
-        Option<unsafe extern "C" fn(*mut sqlite3_value) -> *const c_uchar>;
-    static mut orig_sqlite3_value_int: Option<unsafe extern "C" fn(*mut sqlite3_value) -> c_int>;
-    static mut orig_sqlite3_value_int64: Option<unsafe extern "C" fn(*mut sqlite3_value) -> i64>;
-    static mut orig_sqlite3_value_double: Option<unsafe extern "C" fn(*mut sqlite3_value) -> f64>;
-    static mut orig_sqlite3_value_bytes: Option<unsafe extern "C" fn(*mut sqlite3_value) -> c_int>;
-    static mut orig_sqlite3_value_blob:
-        Option<unsafe extern "C" fn(*mut sqlite3_value) -> *const c_void>;
-
     fn pg_check_fake_value(p_val: *mut sqlite3_value) -> *mut PgFakeValue;
     fn pg_exception_note_phase(
         phase: *const c_char,

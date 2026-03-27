@@ -69,14 +69,18 @@ pub extern "C" fn rust_step_cached_read_finalize_advance(
         if !step_rc_out.is_null() {
             *step_rc_out = STEP_RESULT_DONE;
         }
-        if cached.is_null() || (*cached).result.is_null() {
+        if cached.is_null() {
+            return 0;
+        }
+        let c = &mut *cached;
+        if c.result.is_null() {
             return 0;
         }
 
-        (*cached).current_row += 1;
-        if (*cached).current_row >= (*cached).num_rows {
-            crate::libpq_helpers::rust_pq_clear((*cached).result);
-            (*cached).result = std::ptr::null_mut();
+        c.current_row += 1;
+        if c.current_row >= c.num_rows {
+            crate::libpq_helpers::rust_pq_clear(c.result);
+            c.result = std::ptr::null_mut();
             if !expanded_sql.is_null() {
                 sqlite3_free(expanded_sql as *mut c_void);
             }
@@ -139,11 +143,13 @@ pub extern "C" fn rust_step_cached_read_execute(
         if stmt.is_null() || conn.is_null() || (*conn).conn.is_null() || translated_sql.is_null() {
             return STEP_RESULT_FALLBACK;
         }
+        let s = &mut *stmt;
+        let c = &mut *conn;
 
         crate::pg_client::rust_pool_touch_connection(conn as *const c_void);
-        let mut conn_guard = PthreadMutexGuard::lock(&mut (*conn).mutex as *mut _);
+        let mut conn_guard = PthreadMutexGuard::lock(&mut c.mutex as *mut _);
 
-        if (*conn).conn.is_null() {
+        if c.conn.is_null() {
             log_error("CACHED READ: conn became NULL after lock (TOCTOU race)");
             conn_guard.unlock();
             if !pg_conn_error_out.is_null() {
@@ -178,8 +184,8 @@ pub extern "C" fn rust_step_cached_read_execute(
                 cstr_to_str(cached_read_stmt_name),
                 translated_str
             );
-            (*stmt).result = crate::libpq_helpers::rust_pq_exec_prepared(
-                (*conn).conn,
+            s.result = crate::libpq_helpers::rust_pq_exec_prepared(
+                c.conn,
                 cached_read_stmt_name,
                 0,
                 std::ptr::null(),
@@ -191,7 +197,7 @@ pub extern "C" fn rust_step_cached_read_execute(
             let c_read_stmt_name =
                 CString::new(read_stmt_name).unwrap_or_else(|_| CString::new("cr").unwrap());
             let prep_res = crate::libpq_helpers::rust_pq_prepare(
-                (*conn).conn,
+                c.conn,
                 c_read_stmt_name.as_ptr(),
                 translated_sql,
                 0,
@@ -210,8 +216,8 @@ pub extern "C" fn rust_step_cached_read_execute(
                     cstr_to_str(c_read_stmt_name.as_ptr()),
                     translated_str
                 );
-                (*stmt).result = crate::libpq_helpers::rust_pq_exec_prepared(
-                    (*conn).conn,
+                s.result = crate::libpq_helpers::rust_pq_exec_prepared(
+                    c.conn,
                     c_read_stmt_name.as_ptr(),
                     0,
                     std::ptr::null(),
@@ -227,8 +233,8 @@ pub extern "C" fn rust_step_cached_read_execute(
                     0,
                 );
                 crate::libpq_helpers::rust_pq_clear(prep_res);
-                (*stmt).result = crate::libpq_helpers::rust_pq_exec_prepared(
-                    (*conn).conn,
+                s.result = crate::libpq_helpers::rust_pq_exec_prepared(
+                    c.conn,
                     c_read_stmt_name.as_ptr(),
                     0,
                     std::ptr::null(),
@@ -237,26 +243,26 @@ pub extern "C" fn rust_step_cached_read_execute(
                     0,
                 );
             } else {
-                let err = cstr_to_str(crate::libpq_helpers::rust_pq_error_message((*conn).conn));
+                let err = cstr_to_str(crate::libpq_helpers::rust_pq_error_message(c.conn));
                 log_debug_lazy!(
                     "CACHED READ prepare failed, using PQexec: {}",
                     err
                 );
                 crate::libpq_helpers::rust_pq_clear(prep_res);
-                (*stmt).result = crate::libpq_helpers::rust_pq_exec((*conn).conn, translated_sql);
+                s.result = crate::libpq_helpers::rust_pq_exec(c.conn, translated_sql);
             }
         }
-        if crate::libpq_helpers::rust_pq_result_status((*stmt).result) == PGRES_TUPLES_OK {
-            (*stmt).num_rows = crate::libpq_helpers::rust_pq_ntuples((*stmt).result);
-            (*stmt).num_cols = crate::libpq_helpers::rust_pq_nfields((*stmt).result);
-            (*stmt).ensure_column_capacity((*stmt).num_cols as usize);
-            (*stmt).current_row = 0;
-            (*stmt).result_conn = conn;
+        if crate::libpq_helpers::rust_pq_result_status(s.result) == PGRES_TUPLES_OK {
+            s.num_rows = crate::libpq_helpers::rust_pq_ntuples(s.result);
+            s.num_cols = crate::libpq_helpers::rust_pq_nfields(s.result);
+            s.ensure_column_capacity(s.num_cols as usize);
+            s.current_row = 0;
+            s.result_conn = conn;
 
             if resolve_column_tables(stmt, conn) < 0 {
                 log_error("Failed to resolve column tables, cleaning up");
             }
-            return if (*stmt).num_rows > 0 {
+            return if s.num_rows > 0 {
                 STEP_RESULT_ROW
             } else {
                 STEP_RESULT_DONE
@@ -264,25 +270,25 @@ pub extern "C" fn rust_step_cached_read_execute(
         }
 
         let ctx = CString::new("CACHED READ").unwrap();
-        if !conn.is_null() && !(*conn).conn.is_null() {
-            let err = crate::libpq_helpers::rust_pq_error_message((*conn).conn);
+        if !conn.is_null() && !c.conn.is_null() {
+            let err = crate::libpq_helpers::rust_pq_error_message(c.conn);
             log_sql_fallback(orig_sql, translated_sql, err, ctx.as_ptr());
         } else {
             let err = CString::new("NULL connection").unwrap();
             log_sql_fallback(orig_sql, translated_sql, err.as_ptr(), ctx.as_ptr());
         }
 
-        if is_stale_prepared_stmt((*stmt).result) {
+        if is_stale_prepared_stmt(s.result) {
             crate::pg_client::rust_stmt_cache_clear_local(conn as *mut c_void);
-            crate::libpq_helpers::rust_pq_clear((*stmt).result);
-            (*stmt).result = std::ptr::null_mut();
+            crate::libpq_helpers::rust_pq_clear(s.result);
+            s.result = std::ptr::null_mut();
             if !pg_conn_error_out.is_null() {
                 *pg_conn_error_out = 1;
             }
             return STEP_RESULT_ERROR;
         }
-        crate::libpq_helpers::rust_pq_clear((*stmt).result);
-        (*stmt).result = std::ptr::null_mut();
+        crate::libpq_helpers::rust_pq_clear(s.result);
+        s.result = std::ptr::null_mut();
         crate::pg_client::rust_pool_check_health(conn as *mut c_void);
         STEP_RESULT_FALLBACK
     }

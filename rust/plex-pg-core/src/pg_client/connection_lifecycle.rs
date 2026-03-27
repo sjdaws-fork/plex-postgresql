@@ -114,6 +114,8 @@ pub(super) fn create_pool_connection(db_path: *const c_char) -> *mut c_void {
     if conn_ptr.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: conn_ptr was just allocated and is non-null.
+    let conn = unsafe { &mut *conn_ptr };
 
     let conninfo = build_conninfo(cfg, true);
     let conninfo_c = match CString::new(conninfo) {
@@ -124,79 +126,79 @@ pub(super) fn create_pool_connection(db_path: *const c_char) -> *mut c_void {
         }
     };
 
-    unsafe {
-        (*conn_ptr).conn = rust_pq_connectdb(conninfo_c.as_ptr());
-        if rust_pq_status((*conn_ptr).conn) != CONNECTION_OK {
-            log_error(&format!(
-                "Pool connection failed: {}",
-                conn_error_string((*conn_ptr).conn)
-            ));
-            if !(*conn_ptr).conn.is_null() {
-                rust_pq_finish((*conn_ptr).conn);
-            }
-            (*conn_ptr).conn = std::ptr::null_mut();
-        } else {
-            pg_set_socket_timeout((*conn_ptr).conn);
-            apply_session_settings((*conn_ptr).conn, &cfg.schema, true);
-            (*conn_ptr).is_pg_active = 1;
-            // Only publish the pointer after libpq connect + session setup has
-            // succeeded. During startup Plex opens many DB handles in parallel;
-            // exposing a half-initialized pool connection widens races for
-            // cleanup/invariant code that only needs to reason about fully
-            // usable live connections.
-            pool().note_live_pool_connection(conn_ptr as *const c_void);
+    conn.conn = rust_pq_connectdb(conninfo_c.as_ptr());
+    if rust_pq_status(conn.conn) != CONNECTION_OK {
+        log_error(&format!(
+            "Pool connection failed: {}",
+            conn_error_string(conn.conn)
+        ));
+        if !conn.conn.is_null() {
+            rust_pq_finish(conn.conn);
         }
+        conn.conn = std::ptr::null_mut();
+    } else {
+        pg_set_socket_timeout(conn.conn);
+        apply_session_settings(conn.conn, &cfg.schema, true);
+        conn.is_pg_active = 1;
+        // Only publish the pointer after libpq connect + session setup has
+        // succeeded. During startup Plex opens many DB handles in parallel;
+        // exposing a half-initialized pool connection widens races for
+        // cleanup/invariant code that only needs to reason about fully
+        // usable live connections.
+        pool().note_live_pool_connection(conn_ptr as *const c_void);
     }
 
     conn_ptr as *mut c_void
 }
 
 pub(super) fn destroy_pool_connection(conn: *mut c_void) {
-    let conn = conn as *mut PgConnection;
-    if conn.is_null() {
+    let conn_ptr = conn as *mut PgConnection;
+    if conn_ptr.is_null() {
         return;
     }
-    pool().forget_live_pool_connection(conn as *const c_void);
-    rust_stmt_cache_drop(conn as *mut c_void);
-    unsafe {
-        if !(*conn).conn.is_null() {
-            rust_pq_finish((*conn).conn);
-        }
+    pool().forget_live_pool_connection(conn_ptr as *const c_void);
+    rust_stmt_cache_drop(conn_ptr as *mut c_void);
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &mut *conn_ptr };
+    if !conn.conn.is_null() {
+        rust_pq_finish(conn.conn);
     }
-    destroy_connection_struct(conn);
+    destroy_connection_struct(conn_ptr);
 }
 
 pub(super) fn check_conn_ok(conn: *mut c_void) -> bool {
-    let conn = conn as *mut PgConnection;
-    if conn.is_null() {
+    let conn_ptr = conn as *mut PgConnection;
+    if conn_ptr.is_null() {
         return false;
     }
-    unsafe { !(*conn).conn.is_null() && rust_pq_status((*conn).conn) == CONNECTION_OK }
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &*conn_ptr };
+    !conn.conn.is_null() && rust_pq_status(conn.conn) == CONNECTION_OK
 }
 
 pub(super) fn reset_conn(conn: *mut c_void) -> bool {
-    let conn = conn as *mut PgConnection;
-    if conn.is_null() {
+    let conn_ptr = conn as *mut PgConnection;
+    if conn_ptr.is_null() {
         return false;
     }
-    unsafe {
-        if (*conn).conn.is_null() {
-            return false;
-        }
-        rust_pq_reset((*conn).conn);
-        if rust_pq_status((*conn).conn) != CONNECTION_OK {
-            return false;
-        }
-        pg_set_socket_timeout((*conn).conn);
-        let cfg = conn_config();
-        apply_session_settings((*conn).conn, &cfg.schema, false);
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &mut *conn_ptr };
+    if conn.conn.is_null() {
+        return false;
     }
+    rust_pq_reset(conn.conn);
+    if rust_pq_status(conn.conn) != CONNECTION_OK {
+        return false;
+    }
+    pg_set_socket_timeout(conn.conn);
+    let cfg = conn_config();
+    apply_session_settings(conn.conn, &cfg.schema, false);
     true
 }
 
-pub(super) fn reconnect_conn(conn: *mut c_void) -> bool {
-    let conn = conn as *mut PgConnection;
-    if conn.is_null() {
+pub(super) fn reconnect_conn(raw_conn: *mut c_void) -> bool {
+    let conn_ptr = raw_conn as *mut PgConnection;
+    if conn_ptr.is_null() {
         return false;
     }
     let cfg = conn_config();
@@ -205,62 +207,63 @@ pub(super) fn reconnect_conn(conn: *mut c_void) -> bool {
         Ok(s) => s,
         Err(_) => return false,
     };
-    unsafe {
-        let _conn_guard = PthreadMutexGuard::lock(&mut (*conn).mutex as *mut _);
-        if !(*conn).conn.is_null() {
-            rust_pq_finish((*conn).conn);
-            (*conn).conn = std::ptr::null_mut();
-        }
-
-        let new_pg = rust_pq_connectdb(conninfo_c.as_ptr());
-        if rust_pq_status(new_pg) == CONNECTION_OK {
-            pg_set_socket_timeout(new_pg);
-            apply_session_settings(new_pg, &cfg.schema, false);
-            (*conn).conn = new_pg;
-            (*conn).is_pg_active = 1;
-            return true;
-        }
-
-        log_error(&format!(
-            "Pool: reconnect failed: {}",
-            conn_error_string(new_pg)
-        ));
-        if !new_pg.is_null() {
-            rust_pq_finish(new_pg);
-        }
-        (*conn).conn = std::ptr::null_mut();
-        (*conn).is_pg_active = 0;
-        false
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &mut *conn_ptr };
+    let _conn_guard = unsafe { PthreadMutexGuard::lock(&mut conn.mutex as *mut _) };
+    if !conn.conn.is_null() {
+        rust_pq_finish(conn.conn);
+        conn.conn = std::ptr::null_mut();
     }
+
+    let new_pg = rust_pq_connectdb(conninfo_c.as_ptr());
+    if rust_pq_status(new_pg) == CONNECTION_OK {
+        pg_set_socket_timeout(new_pg);
+        apply_session_settings(new_pg, &cfg.schema, false);
+        conn.conn = new_pg;
+        conn.is_pg_active = 1;
+        return true;
+    }
+
+    log_error(&format!(
+        "Pool: reconnect failed: {}",
+        conn_error_string(new_pg)
+    ));
+    if !new_pg.is_null() {
+        rust_pq_finish(new_pg);
+    }
+    conn.conn = std::ptr::null_mut();
+    conn.is_pg_active = 0;
+    false
 }
 
 pub(super) fn get_txn_status(conn: *mut c_void) -> i32 {
-    let conn = conn as *mut PgConnection;
-    if conn.is_null() {
+    let conn_ptr = conn as *mut PgConnection;
+    if conn_ptr.is_null() {
         return 0;
     }
-    unsafe {
-        if (*conn).conn.is_null() {
-            return 0;
-        }
-        rust_pq_transaction_status((*conn).conn)
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &*conn_ptr };
+    if conn.conn.is_null() {
+        return 0;
     }
+    rust_pq_transaction_status(conn.conn)
 }
 
-pub(super) fn close_handle_connection(conn: *mut PgConnection) {
-    if conn.is_null() {
+pub(super) fn close_handle_connection(conn_ptr: *mut PgConnection) {
+    if conn_ptr.is_null() {
         return;
     }
-    rust_stmt_cache_clear(conn as *mut c_void);
-    rust_stmt_cache_drop(conn as *mut c_void);
-    unsafe {
-        let _conn_guard = PthreadMutexGuard::lock(&mut (*conn).mutex as *mut _);
-        if !(*conn).conn.is_null() {
-            rust_pq_finish((*conn).conn);
-            (*conn).conn = std::ptr::null_mut();
-        }
+    rust_stmt_cache_clear(conn_ptr as *mut c_void);
+    rust_stmt_cache_drop(conn_ptr as *mut c_void);
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &mut *conn_ptr };
+    let _conn_guard = unsafe { PthreadMutexGuard::lock(&mut conn.mutex as *mut _) };
+    if !conn.conn.is_null() {
+        rust_pq_finish(conn.conn);
+        conn.conn = std::ptr::null_mut();
     }
-    destroy_connection_struct(conn);
+    drop(_conn_guard);
+    destroy_connection_struct(conn_ptr);
 }
 
 #[no_mangle]
@@ -279,11 +282,12 @@ pub extern "C" fn rust_pg_connect(
         return std::ptr::null_mut();
     }
 
+    // SAFETY: conn_ptr was just allocated and is non-null.
+    let conn = unsafe { &mut *conn_ptr };
+
     if is_library_db(db_path_str) {
-        unsafe {
-            (*conn_ptr).conn = std::ptr::null_mut();
-            (*conn_ptr).is_pg_active = 1;
-        }
+        conn.conn = std::ptr::null_mut();
+        conn.is_pg_active = 1;
         log_info_lazy!(
             "PostgreSQL pool-only connection for: {}",
             db_path_str
@@ -298,83 +302,82 @@ pub extern "C" fn rust_pg_connect(
         Err(_) => return conn_ptr,
     };
 
-    unsafe {
-        (*conn_ptr).conn = rust_pq_connectdb(conninfo_c.as_ptr());
-        if rust_pq_status((*conn_ptr).conn) != CONNECTION_OK {
-            log_error(&format!(
-                "PostgreSQL connection failed: {}",
-                conn_error_string((*conn_ptr).conn)
-            ));
-            if !(*conn_ptr).conn.is_null() {
-                rust_pq_finish((*conn_ptr).conn);
-            }
-            (*conn_ptr).conn = std::ptr::null_mut();
-        } else {
-            log_info_lazy!("PostgreSQL connected for: {}", db_path_str);
-            pg_set_socket_timeout((*conn_ptr).conn);
-            apply_session_settings((*conn_ptr).conn, &cfg.schema, false);
-            (*conn_ptr).is_pg_active = 1;
+    conn.conn = rust_pq_connectdb(conninfo_c.as_ptr());
+    if rust_pq_status(conn.conn) != CONNECTION_OK {
+        log_error(&format!(
+            "PostgreSQL connection failed: {}",
+            conn_error_string(conn.conn)
+        ));
+        if !conn.conn.is_null() {
+            rust_pq_finish(conn.conn);
         }
+        conn.conn = std::ptr::null_mut();
+    } else {
+        log_info_lazy!("PostgreSQL connected for: {}", db_path_str);
+        pg_set_socket_timeout(conn.conn);
+        apply_session_settings(conn.conn, &cfg.schema, false);
+        conn.is_pg_active = 1;
     }
 
     conn_ptr
 }
 
 #[no_mangle]
-pub extern "C" fn rust_pg_ensure_connection(conn: *mut PgConnection) -> i32 {
-    if conn.is_null() {
+pub extern "C" fn rust_pg_ensure_connection(conn_ptr: *mut PgConnection) -> i32 {
+    if conn_ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: conn_ptr is non-null after the check above. This is an FFI
+    // entry point so we convert the raw pointer to a safe reference here.
+    let conn = unsafe { &mut *conn_ptr };
+
+    let mut conn_guard = unsafe { PthreadMutexGuard::lock(&mut conn.mutex as *mut _) };
+
+    if !conn.conn.is_null() && rust_pq_status(conn.conn) == CONNECTION_OK {
+        if exec_tuples(conn.conn, "SELECT 1") {
+            unsafe { conn_guard.unlock() };
+            return 1;
+        }
+        log_info("Connection health check failed, will reconnect");
+    }
+
+    if !conn.conn.is_null() {
+        rust_pq_finish(conn.conn);
+        conn.conn = std::ptr::null_mut();
+    }
+
+    let cfg = conn_config();
+    let conninfo = build_conninfo(cfg, false);
+    let conninfo_c = match CString::new(conninfo) {
+        Ok(s) => s,
+        Err(_) => {
+            conn.is_pg_active = 0;
+            unsafe { conn_guard.unlock() };
+            return 0;
+        }
+    };
+
+    conn.conn = rust_pq_connectdb(conninfo_c.as_ptr());
+    if rust_pq_status(conn.conn) != CONNECTION_OK {
+        log_error(&format!(
+            "PostgreSQL reconnection failed: {}",
+            conn_error_string(conn.conn)
+        ));
+        if !conn.conn.is_null() {
+            rust_pq_finish(conn.conn);
+        }
+        conn.conn = std::ptr::null_mut();
+        conn.is_pg_active = 0;
+        unsafe { conn_guard.unlock() };
         return 0;
     }
 
-    unsafe {
-        let mut conn_guard = PthreadMutexGuard::lock(&mut (*conn).mutex as *mut _);
-
-        if !(*conn).conn.is_null() && rust_pq_status((*conn).conn) == CONNECTION_OK {
-            if exec_tuples((*conn).conn, "SELECT 1") {
-                conn_guard.unlock();
-                return 1;
-            }
-            log_info("Connection health check failed, will reconnect");
-        }
-
-        if !(*conn).conn.is_null() {
-            rust_pq_finish((*conn).conn);
-            (*conn).conn = std::ptr::null_mut();
-        }
-
-        let cfg = conn_config();
-        let conninfo = build_conninfo(cfg, false);
-        let conninfo_c = match CString::new(conninfo) {
-            Ok(s) => s,
-            Err(_) => {
-                (*conn).is_pg_active = 0;
-                conn_guard.unlock();
-                return 0;
-            }
-        };
-
-        (*conn).conn = rust_pq_connectdb(conninfo_c.as_ptr());
-        if rust_pq_status((*conn).conn) != CONNECTION_OK {
-            log_error(&format!(
-                "PostgreSQL reconnection failed: {}",
-                conn_error_string((*conn).conn)
-            ));
-            if !(*conn).conn.is_null() {
-                rust_pq_finish((*conn).conn);
-            }
-            (*conn).conn = std::ptr::null_mut();
-            (*conn).is_pg_active = 0;
-            conn_guard.unlock();
-            return 0;
-        }
-
-        log_info("PostgreSQL reconnected successfully");
-        pg_set_socket_timeout((*conn).conn);
-        apply_session_settings((*conn).conn, &cfg.schema, false);
-        (*conn).is_pg_active = 1;
-        conn_guard.unlock();
-        1
-    }
+    log_info("PostgreSQL reconnected successfully");
+    pg_set_socket_timeout(conn.conn);
+    apply_session_settings(conn.conn, &cfg.schema, false);
+    conn.is_pg_active = 1;
+    unsafe { conn_guard.unlock() };
+    1
 }
 
 #[no_mangle]

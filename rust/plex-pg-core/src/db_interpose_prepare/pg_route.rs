@@ -26,7 +26,8 @@ unsafe fn translated_sql_for_pg_stmt(
     z_sql: *const c_char,
     trans: &SqlTranslation,
 ) -> *mut c_char {
-    let blobs_rewrite = rewrite_blobs_schema_migrations(trans.sql, (*pg_conn).db_path.as_ptr());
+    let pg_conn_ref = &*pg_conn;
+    let blobs_rewrite = rewrite_blobs_schema_migrations(trans.sql, pg_conn_ref.db_path.as_ptr());
     let effective_sql = if blobs_rewrite.is_null() {
         trans.sql
     } else {
@@ -56,24 +57,25 @@ unsafe fn translated_sql_for_pg_stmt(
 }
 
 unsafe fn maybe_mark_count_query(pg_stmt: *mut PgStmt) {
-    if (*pg_stmt).pg_sql.is_null() {
+    let s = &mut *pg_stmt;
+    if s.pg_sql.is_null() {
         return;
     }
     if contains_ascii_icase(
-        CStr::from_ptr((*pg_stmt).pg_sql).to_bytes(),
+        CStr::from_ptr(s.pg_sql).to_bytes(),
         b"parents.parent_id,count(*)",
     ) {
-        (*pg_stmt).is_count_query = 1;
+        s.is_count_query = 1;
     }
 }
 
 unsafe fn replace_stmt_sql_with_suffix(
-    pg_stmt: *mut PgStmt,
+    pg_stmt: &mut PgStmt,
     suffix: *const c_char,
     extra_bytes: usize,
     log_label: Option<&str>,
 ) {
-    let len = libc::strlen((*pg_stmt).pg_sql);
+    let len = libc::strlen(pg_stmt.pg_sql);
     let replaced = libc::malloc(len + extra_bytes) as *mut c_char;
     if replaced.is_null() {
         return;
@@ -83,7 +85,7 @@ unsafe fn replace_stmt_sql_with_suffix(
         replaced,
         len + extra_bytes,
         b"%s %s\0".as_ptr() as *const c_char,
-        (*pg_stmt).pg_sql,
+        pg_stmt.pg_sql,
         suffix,
     );
     if let Some(label) = log_label {
@@ -93,20 +95,21 @@ unsafe fn replace_stmt_sql_with_suffix(
             cstr_prefix(replaced, 200, "NULL")
         );
     }
-    libc::free((*pg_stmt).pg_sql as *mut c_void);
-    (*pg_stmt).pg_sql = replaced;
+    libc::free(pg_stmt.pg_sql as *mut c_void);
+    pg_stmt.pg_sql = replaced;
 }
 
 unsafe fn maybe_adjust_insert_sql(pg_stmt: *mut PgStmt, bytes: &[u8], is_write: bool) {
-    if !is_write || !starts_with_ascii_icase(bytes, b"INSERT") || (*pg_stmt).pg_sql.is_null() {
+    let s = &mut *pg_stmt;
+    if !is_write || !starts_with_ascii_icase(bytes, b"INSERT") || s.pg_sql.is_null() {
         return;
     }
 
-    if contains_icase_ptr((*pg_stmt).pg_sql, "schema_migrations")
-        && !contains_icase_ptr((*pg_stmt).pg_sql, "ON CONFLICT")
+    if contains_icase_ptr(s.pg_sql, "schema_migrations")
+        && !contains_icase_ptr(s.pg_sql, "ON CONFLICT")
     {
         replace_stmt_sql_with_suffix(
-            pg_stmt,
+            s,
             c"ON CONFLICT DO NOTHING".as_ptr(),
             40,
             Some("SCHEMA_MIGRATIONS: Added ON CONFLICT DO NOTHING"),
@@ -114,13 +117,13 @@ unsafe fn maybe_adjust_insert_sql(pg_stmt: *mut PgStmt, bytes: &[u8], is_write: 
         return;
     }
 
-    if !contains_icase_ptr((*pg_stmt).pg_sql, "RETURNING") {
-        let label = if contains_icase_ptr((*pg_stmt).pg_sql, "play_queue_generators") {
+    if !contains_icase_ptr(s.pg_sql, "RETURNING") {
+        let label = if contains_icase_ptr(s.pg_sql, "play_queue_generators") {
             Some("PREPARE play_queue_generators INSERT with RETURNING")
         } else {
             None
         };
-        replace_stmt_sql_with_suffix(pg_stmt, c"RETURNING id".as_ptr(), 20, label);
+        replace_stmt_sql_with_suffix(s, c"RETURNING id".as_ptr(), 20, label);
     }
 }
 
@@ -143,14 +146,15 @@ pub(super) unsafe fn maybe_register_pg_stmt(
     if pg_stmt.is_null() {
         return;
     }
+    let s = &mut *pg_stmt;
 
     if crate::pg_config::pg_config_should_skip_sql(z_sql) != 0 {
-        (*pg_stmt).is_pg = 3;
+        s.is_pg = 3;
         pg_register_stmt(*pp_stmt, pg_stmt);
         return;
     }
 
-    (*pg_stmt).is_pg = if is_write { 1 } else { 2 };
+    s.is_pg = if is_write { 1 } else { 2 };
 
     let mut trans = if *have_pre_trans {
         *have_pre_trans = false;
@@ -167,13 +171,13 @@ pub(super) unsafe fn maybe_register_pg_stmt(
         ));
     }
 
-    (*pg_stmt).param_count = trans.param_count;
-    (*pg_stmt).ensure_param_capacity(trans.param_count as usize);
+    s.param_count = trans.param_count;
+    s.ensure_param_capacity(trans.param_count as usize);
     copy_param_names(pg_stmt, &trans);
 
     if trans.success != 0 && !trans.sql.is_null() {
-        (*pg_stmt).pg_sql = translated_sql_for_pg_stmt(pg_conn, z_sql, &trans);
-        trace_prepare_pgsql_if_enabled(z_sql, (*pg_stmt).pg_sql);
+        s.pg_sql = translated_sql_for_pg_stmt(pg_conn, z_sql, &trans);
+        trace_prepare_pgsql_if_enabled(z_sql, s.pg_sql);
         maybe_mark_count_query(pg_stmt);
         maybe_adjust_insert_sql(pg_stmt, bytes, is_write);
         apply_prepared_stmt_settings(pg_stmt);

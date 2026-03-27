@@ -13,26 +13,28 @@ pub(crate) fn pg_decode_bytea_cached_impl(
         return ptr::null();
     }
 
+    let pg = unsafe { &mut *pg_stmt };
+
     unsafe {
-        if (*pg_stmt).decoded_blob_row == row && !(*pg_stmt).decoded_blobs[col as usize].is_null() {
+        if pg.decoded_blob_row == row && !pg.decoded_blobs[col as usize].is_null() {
             if !out_length.is_null() {
-                *out_length = (*pg_stmt).decoded_blob_lens[col as usize];
+                *out_length = pg.decoded_blob_lens[col as usize];
             }
-            return (*pg_stmt).decoded_blobs[col as usize];
+            return pg.decoded_blobs[col as usize];
         }
 
-        if (*pg_stmt).decoded_blob_row != row {
+        if pg.decoded_blob_row != row {
             crate::db_interpose_helpers::rust_step_clear_row_caches(
                 ptr::null_mut(),
                 ptr::null_mut(),
                 ptr::null_mut(),
-                (*pg_stmt).decoded_blobs.as_mut_ptr(),
-                (*pg_stmt).decoded_blob_lens.as_mut_ptr(),
-                (*pg_stmt).decoded_blobs.len() as c_int,
+                pg.decoded_blobs.as_mut_ptr(),
+                pg.decoded_blob_lens.as_mut_ptr(),
+                pg.decoded_blobs.len() as c_int,
                 ptr::null_mut(),
-                &mut (*pg_stmt).decoded_blob_row as *mut c_int,
+                &mut pg.decoded_blob_row as *mut c_int,
             );
-            (*pg_stmt).decoded_blob_row = row;
+            pg.decoded_blob_row = row;
         }
 
         let mut decoded: *mut u8 = ptr::null_mut();
@@ -40,7 +42,7 @@ pub(crate) fn pg_decode_bytea_cached_impl(
         let mut is_hex: c_int = 0;
         let mut is_null: c_int = 0;
         let ok = crate::db_interpose_helpers::rust_pg_decode_bytea(
-            helpers_result_ptr((*pg_stmt).result),
+            helpers_result_ptr(pg.result),
             row,
             col,
             &mut decoded as *mut *mut u8,
@@ -62,8 +64,8 @@ pub(crate) fn pg_decode_bytea_cached_impl(
             return decoded as *const c_void;
         }
 
-        (*pg_stmt).decoded_blobs[col as usize] = decoded as *mut c_void;
-        (*pg_stmt).decoded_blob_lens[col as usize] = len;
+        pg.decoded_blobs[col as usize] = decoded as *mut c_void;
+        pg.decoded_blob_lens[col as usize] = len;
         if !out_length.is_null() {
             *out_length = len;
         }

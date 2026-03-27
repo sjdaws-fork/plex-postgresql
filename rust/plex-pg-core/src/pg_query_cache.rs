@@ -429,8 +429,7 @@ fn compute_cache_key(pg_sql: &[u8], param_values: &[Option<&[u8]>]) -> u64 {
 ///
 /// # Safety
 /// `data` must point to at least `len` readable bytes, or be NULL when `len` is 0.
-#[no_mangle]
-pub extern "C" fn rust_fnv1a_hash(data: *const u8, len: usize) -> u64 {
+pub fn rust_fnv1a_hash(data: *const u8, len: usize) -> u64 {
     if len == 0 {
         return FNV_OFFSET_BASIS;
     }
@@ -439,8 +438,7 @@ pub extern "C" fn rust_fnv1a_hash(data: *const u8, len: usize) -> u64 {
 }
 
 /// Current time in milliseconds (via `SystemTime`).
-#[no_mangle]
-pub extern "C" fn rust_get_time_ms() -> u64 {
+pub fn rust_get_time_ms() -> u64 {
     get_time_ms_impl()
 }
 
@@ -448,8 +446,7 @@ pub extern "C" fn rust_get_time_ms() -> u64 {
 ///
 /// The actual TLS allocation happens lazily on first use, so this just
 /// logs that the cache is ready.
-#[no_mangle]
-pub extern "C" fn rust_query_cache_init() {
+pub fn rust_query_cache_init() {
     if !query_cache_enabled() {
         log_info("QUERY_CACHE disabled via PLEX_PG_DISABLE_QUERY_CACHE");
         return;
@@ -461,8 +458,7 @@ pub extern "C" fn rust_query_cache_init() {
 }
 
 /// Cleanup the query cache. No-op — cleanup happens via TLS Drop.
-#[no_mangle]
-pub extern "C" fn rust_query_cache_cleanup() {
+pub fn rust_query_cache_cleanup() {
     if query_cache_enabled() {
         // Thread-local cleanup happens automatically via Drop
     }
@@ -477,8 +473,7 @@ pub extern "C" fn rust_query_cache_cleanup() {
 /// - `param_values` must point to `param_count` pointers, each either NULL
 ///   or pointing to a null-terminated C string.
 /// - `param_count` must be <= MAX_PARAMS.
-#[no_mangle]
-pub extern "C" fn rust_query_cache_key(
+pub fn rust_query_cache_key(
     pg_sql: *const c_char,
     param_values: *const *const c_char,
     param_count: i32,
@@ -520,8 +515,7 @@ pub extern "C" fn rust_query_cache_key(
 /// when done.
 ///
 /// Returns NULL if not found or expired.
-#[no_mangle]
-pub extern "C" fn rust_query_cache_lookup(cache_key: u64) -> *mut CachedResult {
+pub fn rust_query_cache_lookup(cache_key: u64) -> *mut CachedResult {
     if !query_cache_enabled() {
         return std::ptr::null_mut();
     }
@@ -578,8 +572,7 @@ pub extern "C" fn rust_query_cache_lookup(cache_key: u64) -> *mut CachedResult {
 ///
 /// This function allocates memory via `libc::malloc` for all cached data,
 /// matching the C convention so that `free_data()` can use `libc::free`.
-#[no_mangle]
-pub extern "C" fn rust_query_cache_store(
+pub fn rust_query_cache_store(
     cache_key: u64,
     num_rows: i32,
     num_cols: i32,
@@ -832,8 +825,7 @@ unsafe fn cleanup_partial(entry: &mut CachedResult) {
 /// Invalidate the cache entry matching the given key.
 ///
 /// Frees the entry's data if ref_count is 0.
-#[no_mangle]
-pub extern "C" fn rust_query_cache_invalidate(cache_key: u64) {
+pub fn rust_query_cache_invalidate(cache_key: u64) {
     if !query_cache_enabled() {
         return;
     }
@@ -866,8 +858,7 @@ pub extern "C" fn rust_query_cache_invalidate(cache_key: u64) {
 /// # Safety
 /// `entry` must point to a valid `CachedResult` that was returned by
 /// `rust_query_cache_lookup`.
-#[no_mangle]
-pub extern "C" fn rust_query_cache_release(entry: *mut CachedResult) {
+pub fn rust_query_cache_release(entry: *mut CachedResult) {
     if !query_cache_enabled() {
         return;
     }
@@ -890,8 +881,7 @@ pub extern "C" fn rust_query_cache_release(entry: *mut CachedResult) {
 ///
 /// # Safety
 /// `hits` and `misses` must be valid pointers (or NULL).
-#[no_mangle]
-pub extern "C" fn rust_query_cache_stats(hits: *mut u64, misses: *mut u64) {
+pub fn rust_query_cache_stats(hits: *mut u64, misses: *mut u64) {
     if !query_cache_enabled() {
         if !hits.is_null() {
             unsafe {

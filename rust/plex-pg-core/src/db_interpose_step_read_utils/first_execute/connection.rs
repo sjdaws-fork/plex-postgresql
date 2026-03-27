@@ -4,7 +4,7 @@ use crate::log_info_lazy;
 pub(super) unsafe fn acquire_exec_connection(
     pg_stmt: *mut PgStmt,
     exec_conn_io: *mut *mut PgConnection,
-    stmt_guard: &mut PthreadMutexGuard,
+    stmt_guard: &mut Option<StmtGuard>,
     pg_conn_error_out: *mut c_int,
 ) -> Result<*mut PgConnection, c_int> {
     let mut exec_conn = *exec_conn_io;
@@ -13,9 +13,9 @@ pub(super) unsafe fn acquire_exec_connection(
             "STEP SELECT: NULL connection, retrying in 500ms (exec_conn={:p})",
             exec_conn
         ));
-        stmt_guard.unlock();
+        *stmt_guard = None; // unlock
         libc::usleep(500_000);
-        *stmt_guard = PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _);
+        *stmt_guard = Some(PgStmt::lock_mutex(pg_stmt)); // relock
 
         let retry_db = sqlite3_db_handle((*pg_stmt).shadow_stmt);
         let retry_handle = crate::pg_client::rust_pg_find_connection(retry_db);
@@ -25,7 +25,7 @@ pub(super) unsafe fn acquire_exec_connection(
         }
         if exec_conn.is_null() || (*exec_conn).conn.is_null() {
             log_error("STEP SELECT: NULL connection after retry - giving up");
-            stmt_guard.unlock();
+            *stmt_guard = None; // unlock
             set_pg_conn_error(pg_conn_error_out);
             return Err(STEP_RESULT_ERROR);
         }
@@ -40,7 +40,7 @@ pub(super) unsafe fn acquire_exec_connection(
 
 pub(super) unsafe fn lock_exec_connection(
     exec_conn: &mut *mut PgConnection,
-    stmt_guard: &mut PthreadMutexGuard,
+    stmt_guard: &mut Option<StmtGuard>,
     pg_conn_error_out: *mut c_int,
 ) -> Result<PthreadMutexGuard, c_int> {
     crate::pg_client::rust_pool_touch_connection(*exec_conn as *const c_void);
@@ -49,7 +49,7 @@ pub(super) unsafe fn lock_exec_connection(
     if (**exec_conn).conn.is_null() {
         log_error("STEP SELECT: conn became NULL after lock (TOCTOU race)");
         conn_guard.unlock();
-        stmt_guard.unlock();
+        *stmt_guard = None; // unlock
         set_pg_conn_error(pg_conn_error_out);
         return Err(STEP_RESULT_ERROR);
     }
@@ -63,7 +63,7 @@ pub(super) unsafe fn lock_exec_connection(
         conn_guard.unlock();
         let Some(alt_db_path) = alt_db_path else {
             log_error("STEP SELECT: live db_path unavailable for alternate connection");
-            stmt_guard.unlock();
+            *stmt_guard = None; // unlock
             set_pg_conn_error(pg_conn_error_out);
             return Err(STEP_RESULT_ERROR);
         };
@@ -84,7 +84,7 @@ pub(super) unsafe fn lock_exec_connection(
             {
                 log_error("STEP SELECT: alt conn also unavailable");
                 conn_guard.unlock();
-                stmt_guard.unlock();
+                *stmt_guard = None; // unlock
                 set_pg_conn_error(pg_conn_error_out);
                 return Err(STEP_RESULT_ERROR);
             }
@@ -95,7 +95,7 @@ pub(super) unsafe fn lock_exec_connection(
                 *exec_conn,
                 alt_conn,
             ));
-            stmt_guard.unlock();
+            *stmt_guard = None; // unlock
             set_pg_conn_error(pg_conn_error_out);
             return Err(STEP_RESULT_ERROR);
         }
@@ -107,16 +107,17 @@ pub(super) unsafe fn lock_exec_connection(
 pub(super) unsafe fn ensure_connection_ready(
     pg_stmt: *mut PgStmt,
     exec_conn: *mut PgConnection,
-    stmt_guard: &mut PthreadMutexGuard,
+    stmt_guard: &mut Option<StmtGuard>,
     conn_guard: &mut PthreadMutexGuard,
     pg_conn_error_out: *mut c_int,
 ) -> Result<(), c_int> {
-    let conn_status = crate::libpq_helpers::rust_pq_status((*exec_conn).conn);
+    let ec = &mut *exec_conn;
+    let conn_status = crate::libpq_helpers::rust_pq_status(ec.conn);
     if conn_status == CONNECTION_OK {
         return Ok(());
     }
 
-    let pg_err = crate::libpq_helpers::rust_pq_error_message((*exec_conn).conn);
+    let pg_err = crate::libpq_helpers::rust_pq_error_message(ec.conn);
     log_error("=== CONNECTION_BAD DIAGNOSTIC (READ) ===");
     log_error(&format!(
         "  Status: {}, Thread: {:p}",
@@ -126,7 +127,7 @@ pub(super) unsafe fn ensure_connection_ready(
     log_error(&format!(
         "  Connection: {:p}, PGconn: {:p}",
         exec_conn,
-        (*exec_conn).conn
+        ec.conn
     ));
     log_error(&format!("  PG Error: {}", cstr_to_str(pg_err)));
     log_error(&format!("  SQL: {:.100}", cstr_to_str((*pg_stmt).sql)));
@@ -135,27 +136,27 @@ pub(super) unsafe fn ensure_connection_ready(
     }
     log_error("=== END DIAGNOSTIC ===");
     log_error("STEP READ: Attempting PQreset...");
-    crate::libpq_helpers::rust_pq_reset((*exec_conn).conn);
+    crate::libpq_helpers::rust_pq_reset(ec.conn);
 
-    if crate::libpq_helpers::rust_pq_status((*exec_conn).conn) != CONNECTION_OK {
+    if crate::libpq_helpers::rust_pq_status(ec.conn) != CONNECTION_OK {
         log_error("STEP READ: PQreset failed, trying fresh PQconnectdb...");
         crate::pg_client::rust_stmt_cache_clear(exec_conn as *mut c_void);
-        crate::libpq_helpers::rust_pq_finish((*exec_conn).conn);
-        (*exec_conn).conn = std::ptr::null_mut();
+        crate::libpq_helpers::rust_pq_finish(ec.conn);
+        ec.conn = std::ptr::null_mut();
 
         let rcfg = pg_config_get();
         if rcfg.is_null() {
             log_error("STEP READ: pg_config_get returned NULL");
-            (*exec_conn).is_pg_active = 0;
+            ec.is_pg_active = 0;
             conn_guard.unlock();
-            stmt_guard.unlock();
+            *stmt_guard = None; // unlock
             set_pg_conn_error(pg_conn_error_out);
             return Err(STEP_RESULT_ERROR);
         }
         let new_read_conn = connect_new(&*rcfg);
         if crate::libpq_helpers::rust_pq_status(new_read_conn) == CONNECTION_OK {
-            (*exec_conn).conn = new_read_conn;
-            (*exec_conn).is_pg_active = 1;
+            ec.conn = new_read_conn;
+            ec.is_pg_active = 1;
             log_info("STEP READ: fresh connection succeeded (reconnected)");
         } else {
             let reset_err = crate::libpq_helpers::rust_pq_error_message(new_read_conn);
@@ -164,9 +165,9 @@ pub(super) unsafe fn ensure_connection_ready(
                 cstr_to_str(reset_err)
             ));
             crate::libpq_helpers::rust_pq_finish(new_read_conn);
-            (*exec_conn).is_pg_active = 0;
+            ec.is_pg_active = 0;
             conn_guard.unlock();
-            stmt_guard.unlock();
+            *stmt_guard = None; // unlock
             set_pg_conn_error(pg_conn_error_out);
             return Err(STEP_RESULT_ERROR);
         }
@@ -176,7 +177,7 @@ pub(super) unsafe fn ensure_connection_ready(
 
     let cfg = pg_config_get();
     if !cfg.is_null() {
-        apply_pg_session_settings((*exec_conn).conn, &*cfg);
+        apply_pg_session_settings(ec.conn, &*cfg);
     }
     Ok(())
 }

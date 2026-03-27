@@ -8,18 +8,15 @@ use super::{
     oid_to_sqlite_type, DECLTYPE_CASE_DT_INTEGER_8, DECLTYPE_CASE_NONE, DECLTYPE_CASE_NULL,
 };
 
-#[no_mangle]
-pub extern "C" fn rust_oid_to_sqlite_type(oid: u32) -> i32 {
+pub fn rust_oid_to_sqlite_type(oid: u32) -> i32 {
     oid_to_sqlite_type(oid)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_oid_to_sqlite_decltype(oid: u32) -> *const c_char {
+pub fn rust_oid_to_sqlite_decltype(oid: u32) -> *const c_char {
     oid_to_sqlite_decltype(oid).as_ptr()
 }
 
-#[no_mangle]
-pub extern "C" fn rust_decltype_special_case(
+pub fn rust_decltype_special_case(
     oid: u32,
     col_name: *const c_char,
     pg_sql: *const c_char,
@@ -44,8 +41,7 @@ pub extern "C" fn rust_decltype_special_case(
     DECLTYPE_CASE_NONE
 }
 
-#[no_mangle]
-pub extern "C" fn rust_convert_metadata_settings_upsert(sql: *const c_char) -> *mut c_char {
+pub fn rust_convert_metadata_settings_upsert(sql: *const c_char) -> *mut c_char {
     let s = unsafe { cstr_to_str_or_empty(sql) };
     if s.is_empty() {
         return std::ptr::null_mut();
@@ -58,8 +54,7 @@ pub extern "C" fn rust_convert_metadata_settings_upsert(sql: *const c_char) -> *
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_extract_metadata_id(sql: *const c_char) -> i64 {
+pub fn rust_extract_metadata_id(sql: *const c_char) -> i64 {
     let s = unsafe { cstr_to_str_or_empty(sql) };
     if s.is_empty() {
         return 0;

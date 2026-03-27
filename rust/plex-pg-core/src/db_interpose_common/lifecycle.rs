@@ -2,26 +2,19 @@ use super::*;
 
 extern "C" {
     fn pg_pool_cleanup_after_fork();
-    fn pg_logging_reset_after_fork();
-    fn pg_config_init();
     fn pg_client_init();
     fn pg_statement_init();
-    fn pg_query_cache_init();
     fn sql_translator_init();
     fn pg_statement_cleanup();
     fn pg_client_cleanup();
     fn sql_translator_cleanup();
-    fn pg_logging_cleanup();
 }
 
-#[no_mangle]
-pub extern "C" fn rust_common_atfork_prepare() {}
+pub fn rust_common_atfork_prepare() {}
 
-#[no_mangle]
-pub extern "C" fn rust_common_atfork_parent() {}
+pub fn rust_common_atfork_parent() {}
 
-#[no_mangle]
-pub extern "C" fn rust_common_atfork_child() {
+pub fn rust_common_atfork_child() {
     unsafe {
         libc::fprintf(
             stderr_ptr(),
@@ -42,7 +35,7 @@ pub extern "C" fn rust_common_atfork_child() {
         rust_reset_symbol_verification();
 
         pg_pool_cleanup_after_fork();
-        pg_logging_reset_after_fork();
+        crate::pg_logging::rust_logging_reset_after_fork();
 
         libc::fprintf(
             stderr_ptr(),
@@ -53,8 +46,7 @@ pub extern "C" fn rust_common_atfork_child() {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_common_check_fork() -> c_int {
+pub fn rust_common_check_fork() -> c_int {
     let current_pid = unsafe { libc::getpid() };
     unsafe {
         if shim_init_pid != 0 && shim_init_pid != current_pid {
@@ -82,27 +74,25 @@ pub extern "C" fn rust_common_check_fork() -> c_int {
     0
 }
 
-#[no_mangle]
-pub extern "C" fn rust_common_shim_init_modules() {
+pub fn rust_common_shim_init_modules() {
+    crate::pg_config::pg_config_init();
+    crate::pg_query_cache::rust_query_cache_init();
     unsafe {
-        pg_config_init();
         pg_client_init();
         pg_statement_init();
-        pg_query_cache_init();
         sql_translator_init();
     }
     rust_worker_init();
 }
 
-#[no_mangle]
-pub extern "C" fn rust_common_shim_cleanup() {
+pub fn rust_common_shim_cleanup() {
     rust_worker_cleanup();
     unsafe {
         pg_statement_cleanup();
         pg_client_cleanup();
         sql_translator_cleanup();
-        pg_logging_cleanup();
     }
+    crate::pg_logging::rust_logging_cleanup();
 }
 
 #[no_mangle]

@@ -7,7 +7,7 @@ use crate::ffi_types::PgConnection;
 use crate::sync_utils::mutex_lock;
 
 use super::tls_cache::{tls_pool_cache_get, tls_pool_cache_set};
-use super::{conn_db_path, conn_is_pg_active, pool, pool_get_connection_inner};
+use super::{conn_db_path, conn_is_pg_active_ptr, pool, pool_get_connection_inner};
 use crate::log_debug_lazy;
 
 pub(super) fn is_library_db(path: &str) -> bool {
@@ -59,7 +59,7 @@ pub(super) fn pool_find_connection_for_db(db_handle: usize, db_path: *const c_ch
         return std::ptr::null_mut();
     }
 
-    if !conn_is_pg_active(pool_conn as *mut PgConnection) {
+    if !conn_is_pg_active_ptr(pool_conn as *mut PgConnection) {
         return std::ptr::null_mut();
     }
 
@@ -87,7 +87,7 @@ pub(super) fn find_any_library_connection() -> *mut c_void {
     if let Some(path) = lib_path {
         if let Ok(cs) = CString::new(path) {
             let conn = pool_get_connection_inner(cs.as_ptr());
-            if !conn.is_null() && conn_is_pg_active(conn as *mut PgConnection) {
+            if !conn.is_null() && conn_is_pg_active_ptr(conn as *mut PgConnection) {
                 return conn;
             }
         }
@@ -96,10 +96,11 @@ pub(super) fn find_any_library_connection() -> *mut c_void {
     pm.registry
         .find_any_library(|conn_ptr| {
             let conn = conn_ptr as *mut PgConnection;
-            if !conn_is_pg_active(conn) {
+            if !conn_is_pg_active_ptr(conn) {
                 return false;
             }
-            let path = conn_db_path(conn);
+            let conn_ref = unsafe { &*conn };
+            let path = conn_db_path(conn_ref);
             is_library_db(&path)
         })
         .map(|p| p as *mut c_void)

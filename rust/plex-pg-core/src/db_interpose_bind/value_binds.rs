@@ -75,14 +75,12 @@ pub(super) fn bind_value_impl(
 ) -> c_int {
     let (pg_stmt, guard) = unsafe { begin_bind(PHASE_BIND_VALUE, p_stmt) };
 
-    let mut rc = unsafe {
-        orig_sqlite3_bind_value
-            .map(|f| f(p_stmt, idx, p_value))
-            .unwrap_or(SQLITE_ERROR)
-    };
+    let mut rc = get_orig_sqlite3_bind_value()
+        .map(|f| unsafe { f(p_stmt, idx, p_value) })
+        .unwrap_or(SQLITE_ERROR);
     unsafe {
         rc = retry_on_misuse(rc, p_stmt, pg_stmt, || {
-            orig_sqlite3_bind_value
+            get_orig_sqlite3_bind_value()
                 .map(|f| f(p_stmt, idx, p_value))
                 .unwrap_or(SQLITE_ERROR)
         });
@@ -103,14 +101,12 @@ pub(super) fn bind_value_impl(
 pub(super) fn bind_null_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
     let (pg_stmt, guard) = unsafe { begin_bind(PHASE_BIND_NULL, p_stmt) };
 
-    let mut rc = unsafe {
-        orig_sqlite3_bind_null
-            .map(|f| f(p_stmt, idx))
-            .unwrap_or(SQLITE_ERROR)
-    };
+    let mut rc = get_orig_sqlite3_bind_null()
+        .map(|f| unsafe { f(p_stmt, idx) })
+        .unwrap_or(SQLITE_ERROR);
     unsafe {
         rc = retry_on_misuse(rc, p_stmt, pg_stmt, || {
-            orig_sqlite3_bind_null
+            get_orig_sqlite3_bind_null()
                 .map(|f| f(p_stmt, idx))
                 .unwrap_or(SQLITE_ERROR)
         });

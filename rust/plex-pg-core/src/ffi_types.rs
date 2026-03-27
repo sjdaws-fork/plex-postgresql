@@ -4,6 +4,11 @@ use std::sync::atomic::AtomicI32;
 use crate::libpq_helpers::{PGconn, PGresult};
 use crate::pg_query_cache::CachedResult;
 
+/// Guard type returned by `PgStmt::lock_mutex()`.
+/// Uses `'static` lifetime because the lock is obtained through a raw pointer
+/// (not tracked by the borrow checker), matching the old PthreadMutexGuard semantics.
+pub type StmtGuard = std::sync::MutexGuard<'static, ()>;
+
 pub const DB_PATH_LEN: usize = 1024;
 pub const LAST_ERROR_LEN: usize = 1024;
 pub const STMT_NAME_LEN: usize = 32;
@@ -45,7 +50,7 @@ pub struct PgConnection {
 // Vec fields are empty by default; call ensure_param_capacity() / ensure_column_capacity()
 // before indexing.
 pub struct PgStmt {
-    pub mutex: libc::pthread_mutex_t,
+    pub mutex: std::sync::Mutex<()>,
     pub ref_count: AtomicI32,
     pub conn: *mut PgConnection,
     pub shadow_stmt: *mut sqlite3_stmt,
@@ -94,10 +99,9 @@ pub struct PgStmt {
 
 impl PgStmt {
     /// Create a new PgStmt with all fields zeroed/empty.
-    /// The mutex must be initialized separately after creation.
     pub fn new() -> Self {
         Self {
-            mutex: unsafe { std::mem::zeroed() },
+            mutex: std::sync::Mutex::new(()),
             ref_count: AtomicI32::new(0),
             conn: std::ptr::null_mut(),
             shadow_stmt: std::ptr::null_mut(),
@@ -169,6 +173,22 @@ impl PgStmt {
         if count > self.col_table_names.len() {
             self.col_table_names.resize(count, std::ptr::null_mut());
         }
+    }
+
+    /// Lock the stmt mutex via a raw pointer so the returned guard does not
+    /// participate in Rust's borrow checker.  This mirrors the old
+    /// PthreadMutexGuard::lock() semantics — the caller must ensure the PgStmt
+    /// outlives the guard.
+    ///
+    /// # Safety
+    /// `ptr` must be a valid, non-null pointer to a live PgStmt.
+    #[inline]
+    pub unsafe fn lock_mutex(ptr: *const PgStmt) -> std::sync::MutexGuard<'static, ()> {
+        // Transmute to 'static so the guard doesn't borrow through any Rust reference
+        // the compiler tracks.  This is sound as long as the PgStmt allocation
+        // outlives the guard — exactly the same invariant PthreadMutexGuard relied on.
+        let mutex: &'static std::sync::Mutex<()> = std::mem::transmute(&(*ptr).mutex);
+        mutex.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Check if a param value pointer is into the preallocated param_buffers.

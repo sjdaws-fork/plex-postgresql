@@ -63,8 +63,7 @@ pub use type_cache::{
 
 const SQLITE_NULL_CONST: i32 = 5;
 
-#[no_mangle]
-pub extern "C" fn rust_decode_hex_bytes(
+pub fn rust_decode_hex_bytes(
     hex: *const c_char,
     hex_len: usize,
     out: *mut u8,
@@ -106,29 +105,24 @@ pub extern "C" fn rust_decode_hex_bytes(
     expected as c_int
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_udt_to_sqlite_decltype(ptr: *const c_char) -> *const c_char {
+pub fn rust_pg_udt_to_sqlite_decltype(ptr: *const c_char) -> *const c_char {
     pg_udt_to_sqlite_decltype_impl(cstr_to_str(ptr))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_normalize_sqlite_decltype(ptr: *const c_char) -> *const c_char {
+pub fn rust_normalize_sqlite_decltype(ptr: *const c_char) -> *const c_char {
     normalize_sqlite_decltype_impl(cstr_to_str(ptr))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_prepare_simple_hash(ptr: *const c_char, max_len: i32) -> u32 {
+pub fn rust_prepare_simple_hash(ptr: *const c_char, max_len: i32) -> u32 {
     let s = cstr_to_str(ptr).unwrap_or("");
     prepare_simple_hash(s, max_len)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_prepare_time_ms() -> u64 {
+pub fn rust_prepare_time_ms() -> u64 {
     prepare_time_ms()
 }
 
-#[no_mangle]
-pub extern "C" fn rust_prepare_query_loop_tick(
+pub fn rust_prepare_query_loop_tick(
     sql: *const c_char,
     count_out: *mut c_int,
     elapsed_ms_out: *mut u64,
@@ -155,8 +149,7 @@ pub extern "C" fn rust_prepare_query_loop_tick(
     detected
 }
 
-#[no_mangle]
-pub extern "C" fn rust_maybe_alias_collection_sync_aggregates(
+pub fn rust_maybe_alias_collection_sync_aggregates(
     sqlite_sql: *const c_char,
     pg_sql: *const c_char,
 ) -> *mut c_char {
@@ -181,8 +174,7 @@ pub extern "C" fn rust_maybe_alias_collection_sync_aggregates(
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_strip_collate_icu_root(sql: *const c_char) -> *mut c_char {
+pub fn rust_strip_collate_icu_root(sql: *const c_char) -> *mut c_char {
     if sql.is_null() {
         return std::ptr::null_mut();
     }
@@ -199,8 +191,7 @@ pub extern "C" fn rust_strip_collate_icu_root(sql: *const c_char) -> *mut c_char
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_is_junk_metadata_insert(sql: *const c_char) -> c_int {
+pub fn rust_is_junk_metadata_insert(sql: *const c_char) -> c_int {
     if sql.is_null() {
         return 0;
     }
@@ -211,8 +202,7 @@ pub extern "C" fn rust_is_junk_metadata_insert(sql: *const c_char) -> c_int {
     i32::from(is_junk_metadata_insert_impl(sql))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_is_library_db_path(path: *const c_char) -> c_int {
+pub fn rust_is_library_db_path(path: *const c_char) -> c_int {
     if path.is_null() {
         return 0;
     }
@@ -223,8 +213,7 @@ pub extern "C" fn rust_is_library_db_path(path: *const c_char) -> c_int {
     i32::from(is_library_db_path_impl(path))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_is_library_or_blobs_db_path(path: *const c_char) -> c_int {
+pub fn rust_is_library_or_blobs_db_path(path: *const c_char) -> c_int {
     if path.is_null() {
         return 0;
     }
@@ -235,8 +224,7 @@ pub extern "C" fn rust_is_library_or_blobs_db_path(path: *const c_char) -> c_int
     i32::from(is_library_or_blobs_db_path_impl(path))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_is_blobs_db_path(path: *const c_char) -> c_int {
+pub fn rust_is_blobs_db_path(path: *const c_char) -> c_int {
     if path.is_null() {
         return 0;
     }
@@ -247,8 +235,7 @@ pub extern "C" fn rust_is_blobs_db_path(path: *const c_char) -> c_int {
     i32::from(is_blobs_db_path_impl(path))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_trace_list_contains_idx(list: *const c_char, idx: c_int) -> c_int {
+pub fn rust_trace_list_contains_idx(list: *const c_char, idx: c_int) -> c_int {
     if list.is_null() {
         return 0;
     }
@@ -259,8 +246,7 @@ pub extern "C" fn rust_trace_list_contains_idx(list: *const c_char, idx: c_int) 
     i32::from(list_contains_idx(list, idx))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_trace_list_any_token_in_haystack(
+pub fn rust_trace_list_any_token_in_haystack(
     list: *const c_char,
     haystack: *const c_char,
 ) -> c_int {
@@ -278,8 +264,7 @@ pub extern "C" fn rust_trace_list_any_token_in_haystack(
     i32::from(list_any_token_in_haystack(list, haystack))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_simplify_fts_for_sqlite(sql: *const c_char) -> *mut c_char {
+pub fn rust_simplify_fts_for_sqlite(sql: *const c_char) -> *mut c_char {
     if sql.is_null() {
         return std::ptr::null_mut();
     }
@@ -296,8 +281,7 @@ pub extern "C" fn rust_simplify_fts_for_sqlite(sql: *const c_char) -> *mut c_cha
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_add_if_not_exists_for_sqlite_ddl(sql: *const c_char) -> *mut c_char {
+pub fn rust_add_if_not_exists_for_sqlite_ddl(sql: *const c_char) -> *mut c_char {
     if sql.is_null() {
         return std::ptr::null_mut();
     }
@@ -314,8 +298,7 @@ pub extern "C" fn rust_add_if_not_exists_for_sqlite_ddl(sql: *const c_char) -> *
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_format_epoch_to_datetime_utc(
+pub fn rust_format_epoch_to_datetime_utc(
     epoch: i64,
     out: *mut c_char,
     out_len: usize,
@@ -323,8 +306,7 @@ pub extern "C" fn rust_format_epoch_to_datetime_utc(
     format_epoch_to_datetime_utc_impl(epoch, out, out_len)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_contains_binary_bytes(data: *const u8, len: usize) -> c_int {
+pub fn rust_contains_binary_bytes(data: *const u8, len: usize) -> c_int {
     if data.is_null() || len == 0 {
         return 0;
     }
@@ -332,8 +314,7 @@ pub extern "C" fn rust_contains_binary_bytes(data: *const u8, len: usize) -> c_i
     i32::from(contains_binary_bytes_impl(bytes))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_bytes_to_pg_hex(data: *const u8, len: usize) -> *mut c_char {
+pub fn rust_bytes_to_pg_hex(data: *const u8, len: usize) -> *mut c_char {
     if data.is_null() || len == 0 {
         return match std::ffi::CString::new("") {
             Ok(s) => s.into_raw(),
@@ -347,8 +328,7 @@ pub extern "C" fn rust_bytes_to_pg_hex(data: *const u8, len: usize) -> *mut c_ch
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_is_related_items_query(pg_sql: *const c_char) -> c_int {
+pub fn rust_is_related_items_query(pg_sql: *const c_char) -> c_int {
     if pg_sql.is_null() {
         return 0;
     }
@@ -359,8 +339,7 @@ pub extern "C" fn rust_is_related_items_query(pg_sql: *const c_char) -> c_int {
     i32::from(is_related_items_query_impl(pg_sql))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_should_mask_collection_metadata_type(
+pub fn rust_should_mask_collection_metadata_type(
     pg_sql: *const c_char,
     col_name: *const c_char,
     raw_val: i64,
@@ -381,8 +360,7 @@ pub extern "C" fn rust_should_mask_collection_metadata_type(
     ))
 }
 
-#[no_mangle]
-pub extern "C" fn rust_find_insert_column_index(
+pub fn rust_find_insert_column_index(
     sql: *const c_char,
     column_name: *const c_char,
 ) -> c_int {
@@ -400,23 +378,19 @@ pub extern "C" fn rust_find_insert_column_index(
     find_insert_column_index_impl(sql, column_name)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_oid_to_sqlite_type(oid: c_uint) -> c_int {
+pub fn rust_pg_oid_to_sqlite_type(oid: c_uint) -> c_int {
     pg_oid_to_sqlite_type_impl(oid)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_text_to_int(value: *const c_char) -> c_int {
+pub fn rust_pg_text_to_int(value: *const c_char) -> c_int {
     pg_text_to_int_impl(value)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_text_to_int64(value: *const c_char) -> i64 {
+pub fn rust_pg_text_to_int64(value: *const c_char) -> i64 {
     pg_text_to_int64_impl(value)
 }
 
-#[no_mangle]
-pub extern "C" fn rust_pg_text_to_double(value: *const c_char) -> f64 {
+pub fn rust_pg_text_to_double(value: *const c_char) -> f64 {
     pg_text_to_double_impl(value)
 }
 

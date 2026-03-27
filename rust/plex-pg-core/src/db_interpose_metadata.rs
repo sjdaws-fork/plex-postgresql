@@ -2,7 +2,20 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
 
 use crate::byte_utils::contains_icase_bytes;
-use crate::db_interpose_common::tls_in_interpose_call_ptr;
+use crate::db_interpose_common::{
+    tls_in_interpose_call_ptr,
+    get_orig_sqlite3_get_table, get_orig_sqlite3_errmsg, get_orig_sqlite3_errcode,
+    get_orig_sqlite3_extended_errcode,
+    get_orig_sqlite3_create_collation, get_orig_sqlite3_create_collation_v2,
+    get_orig_sqlite3_free, get_orig_sqlite3_malloc,
+    get_orig_sqlite3_db_handle, get_orig_sqlite3_sql,
+    get_orig_sqlite3_bind_parameter_count,
+    get_orig_sqlite3_stmt_readonly, get_orig_sqlite3_stmt_busy,
+    get_orig_sqlite3_stmt_status,
+    get_orig_sqlite3_bind_parameter_name, get_orig_sqlite3_bind_parameter_index,
+    get_orig_sqlite3_expanded_sql,
+    get_shim_sqlite3_errmsg, get_shim_sqlite3_errcode,
+};
 use crate::db_interpose_conn_utils::{cstr_to_string_or, log_debug, PthreadMutexGuard};
 use crate::ffi_types::{sqlite3, sqlite3_stmt, PgStmt};
 
@@ -42,63 +55,6 @@ struct SqlTranslation {
 }
 
 extern "C" {
-    static mut orig_sqlite3_get_table: Option<
-        unsafe extern "C" fn(
-            *mut sqlite3,
-            *const c_char,
-            *mut *mut *mut c_char,
-            *mut c_int,
-            *mut c_int,
-            *mut *mut c_char,
-        ) -> c_int,
-    >;
-
-    static mut orig_sqlite3_errmsg: Option<unsafe extern "C" fn(*mut sqlite3) -> *const c_char>;
-    static mut orig_sqlite3_errcode: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int>;
-    static mut orig_sqlite3_extended_errcode: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int>;
-
-    static mut orig_sqlite3_create_collation: Option<
-        unsafe extern "C" fn(
-            *mut sqlite3,
-            *const c_char,
-            c_int,
-            *mut c_void,
-            CollationCompare,
-        ) -> c_int,
-    >;
-    static mut orig_sqlite3_create_collation_v2: Option<
-        unsafe extern "C" fn(
-            *mut sqlite3,
-            *const c_char,
-            c_int,
-            *mut c_void,
-            CollationCompare,
-            CollationDestroy,
-        ) -> c_int,
-    >;
-
-    static mut orig_sqlite3_free: Option<unsafe extern "C" fn(*mut c_void)>;
-    static mut orig_sqlite3_malloc: Option<unsafe extern "C" fn(c_int) -> *mut c_void>;
-
-    static mut orig_sqlite3_db_handle:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut sqlite3>;
-    static mut orig_sqlite3_sql: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *const c_char>;
-    static mut orig_sqlite3_bind_parameter_count:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
-    static mut orig_sqlite3_stmt_readonly: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
-    static mut orig_sqlite3_stmt_busy: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
-    static mut orig_sqlite3_stmt_status:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, c_int) -> c_int>;
-    static mut orig_sqlite3_bind_parameter_name:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char>;
-    static mut orig_sqlite3_bind_parameter_index:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt, *const c_char) -> c_int>;
-    static mut orig_sqlite3_expanded_sql:
-        Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *mut c_char>;
-
-    static mut shim_sqlite3_errmsg: Option<unsafe extern "C" fn(*mut sqlite3) -> *const c_char>;
-    static mut shim_sqlite3_errcode: Option<unsafe extern "C" fn(*mut sqlite3) -> c_int>;
-
     fn sql_translate(sql: *const c_char) -> SqlTranslation;
     fn sql_translation_free(result: *mut SqlTranslation);
 }

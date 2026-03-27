@@ -77,46 +77,48 @@ pub(super) unsafe fn maybe_handle_ondeck_low_stack(
     );
 
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
-    if !pg_conn.is_null()
-        && (*pg_conn).is_pg_active != 0
-        && !(*pg_conn).conn.is_null()
-        && crate::db_interpose_helpers::rust_is_library_db_path((*pg_conn).db_path.as_ptr()) != 0
-    {
-        let rc = prepare_shadow_stmt(db, c"SELECT 1".as_ptr(), pp_stmt, pz_tail);
+    if !pg_conn.is_null() {
+        let pc = &*pg_conn;
+        if pc.is_pg_active != 0 && !pc.conn.is_null()
+            && crate::db_interpose_helpers::rust_is_library_db_path(pc.db_path.as_ptr()) != 0
+        {
+            let rc = prepare_shadow_stmt(db, c"SELECT 1".as_ptr(), pp_stmt, pz_tail);
 
-        if rc == SQLITE_OK && !pp_stmt.is_null() && !(*pp_stmt).is_null() {
-            let pg_stmt = pg_stmt_create(pg_conn, z_sql, *pp_stmt);
-            if !pg_stmt.is_null() {
-                (*pg_stmt).is_pg = 2;
-                let mut trans = sql_translate(z_sql);
-                if trans.success != 0 && !trans.sql.is_null() {
-                    let aliased =
-                        crate::db_interpose_prepare_helpers::alias_collection_sync_aggregates(
-                            &cstr_to_string_or(z_sql, ""),
-                            &cstr_to_string_or(trans.sql, ""),
+            if rc == SQLITE_OK && !pp_stmt.is_null() && !(*pp_stmt).is_null() {
+                let pg_stmt = pg_stmt_create(pg_conn, z_sql, *pp_stmt);
+                if !pg_stmt.is_null() {
+                    let s = &mut *pg_stmt;
+                    s.is_pg = 2;
+                    let mut trans = sql_translate(z_sql);
+                    if trans.success != 0 && !trans.sql.is_null() {
+                        let aliased =
+                            crate::db_interpose_prepare_helpers::alias_collection_sync_aggregates(
+                                &cstr_to_string_or(z_sql, ""),
+                                &cstr_to_string_or(trans.sql, ""),
+                            );
+                        let pg_sql_src = match aliased {
+                            Some(ref a) => CString::new(a.as_str()).ok(),
+                            None => None,
+                        };
+                        let pg_sql_ptr = if let Some(cs) = pg_sql_src.as_ref() {
+                            libc::strdup(cs.as_ptr())
+                        } else {
+                            libc::strdup(trans.sql)
+                        };
+                        s.pg_sql = pg_sql_ptr;
+                        s.param_count = trans.param_count;
+                        s.ensure_param_capacity(trans.param_count as usize);
+                        trace_prepare_pgsql_if_enabled(z_sql, s.pg_sql);
+                        log_info_lazy!(
+                            "STACK LOW OnDeck: routed to PG: {}",
+                            cstr_prefix(trans.sql, 100, "NULL")
                         );
-                    let pg_sql_src = match aliased {
-                        Some(ref s) => CString::new(s.as_str()).ok(),
-                        None => None,
-                    };
-                    let pg_sql_ptr = if let Some(cs) = pg_sql_src.as_ref() {
-                        libc::strdup(cs.as_ptr())
-                    } else {
-                        libc::strdup(trans.sql)
-                    };
-                    (*pg_stmt).pg_sql = pg_sql_ptr;
-                    (*pg_stmt).param_count = trans.param_count;
-                    (*pg_stmt).ensure_param_capacity(trans.param_count as usize);
-                    trace_prepare_pgsql_if_enabled(z_sql, (*pg_stmt).pg_sql);
-                    log_info_lazy!(
-                        "STACK LOW OnDeck: routed to PG: {}",
-                        cstr_prefix(trans.sql, 100, "NULL")
-                    );
+                    }
+                    sql_translation_free(&mut trans as *mut SqlTranslation);
                 }
-                sql_translation_free(&mut trans as *mut SqlTranslation);
             }
+            return Some(rc);
         }
-        return Some(rc);
     }
 
     log_error("STACK CRITICAL OnDeck: no PG connection, returning empty");
@@ -145,13 +147,16 @@ pub(super) unsafe fn maybe_handle_low_stack_prepare_path(
     }
 
     let pg_conn_check = crate::pg_client::rust_pg_find_connection(db);
-    let is_pg_read = !pg_conn_check.is_null()
-        && (*pg_conn_check).is_pg_active != 0
-        && !(*pg_conn_check).conn.is_null()
-        && !z_sql.is_null()
-        && crate::pg_config::pg_config_is_read_operation(z_sql) != 0
-        && crate::db_interpose_helpers::rust_is_library_db_path((*pg_conn_check).db_path.as_ptr())
-            != 0;
+    let is_pg_read = if pg_conn_check.is_null() {
+        false
+    } else {
+        let pcc = &*pg_conn_check;
+        pcc.is_pg_active != 0
+            && !pcc.conn.is_null()
+            && !z_sql.is_null()
+            && crate::pg_config::pg_config_is_read_operation(z_sql) != 0
+            && crate::db_interpose_helpers::rust_is_library_db_path(pcc.db_path.as_ptr()) != 0
+    };
 
     if is_pg_read {
         log_info_lazy!(
@@ -165,7 +170,8 @@ pub(super) unsafe fn maybe_handle_low_stack_prepare_path(
         if rc == SQLITE_OK && !pp_stmt.is_null() && !(*pp_stmt).is_null() {
             let pg_stmt = pg_stmt_create(pg_conn_check, z_sql, *pp_stmt);
             if !pg_stmt.is_null() {
-                (*pg_stmt).is_pg = 2;
+                let s = &mut *pg_stmt;
+                s.is_pg = 2;
 
                 let mut trans = sql_translate(z_sql);
                 if trans.success != 0 && !trans.sql.is_null() {
@@ -174,8 +180,8 @@ pub(super) unsafe fn maybe_handle_low_stack_prepare_path(
                             &cstr_to_string_or(z_sql, ""),
                             &cstr_to_string_or(trans.sql, ""),
                         );
-                    let pg_sql_ptr = if let Some(s) = aliased {
-                        let cs = CString::new(s).ok();
+                    let pg_sql_ptr = if let Some(a) = aliased {
+                        let cs = CString::new(a).ok();
                         if let Some(cs) = cs.as_ref() {
                             libc::strdup(cs.as_ptr())
                         } else {
@@ -185,10 +191,10 @@ pub(super) unsafe fn maybe_handle_low_stack_prepare_path(
                         libc::strdup(trans.sql)
                     };
 
-                    (*pg_stmt).pg_sql = pg_sql_ptr;
-                    (*pg_stmt).param_count = trans.param_count;
-                    (*pg_stmt).ensure_param_capacity(trans.param_count as usize);
-                    trace_prepare_pgsql_if_enabled(z_sql, (*pg_stmt).pg_sql);
+                    s.pg_sql = pg_sql_ptr;
+                    s.param_count = trans.param_count;
+                    s.ensure_param_capacity(trans.param_count as usize);
+                    trace_prepare_pgsql_if_enabled(z_sql, s.pg_sql);
 
                     copy_param_names(pg_stmt, &trans);
                     apply_prepared_stmt_settings(pg_stmt);
@@ -211,10 +217,11 @@ pub(super) unsafe fn maybe_handle_low_stack_prepare_path(
 
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
     if !pg_conn.is_null() {
-        (*pg_conn).last_error_code = SQLITE_NOMEM;
+        let pc = &mut *pg_conn;
+        pc.last_error_code = SQLITE_NOMEM;
         libc::snprintf(
-            (*pg_conn).last_error.as_mut_ptr(),
-            (*pg_conn).last_error.len(),
+            pc.last_error.as_mut_ptr(),
+            pc.last_error.len(),
             c"Stack protection: insufficient stack space (remaining=%ld).".as_ptr(),
             stack_remaining as libc::c_long,
         );

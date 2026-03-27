@@ -27,8 +27,7 @@ static PG_VALUES: LazyLock<Vec<Mutex<PgValue>>> = LazyLock::new(|| {
     v
 });
 
-#[no_mangle]
-pub extern "C" fn rust_create_column_value(
+pub fn rust_create_column_value(
     stmt: usize,
     col_idx: i32,
     sqlite_type: i32,
@@ -43,8 +42,7 @@ pub extern "C" fn rust_create_column_value(
     &mut *pv as *mut PgValue
 }
 
-#[no_mangle]
-pub extern "C" fn rust_is_our_value(val: *const PgValue) -> i32 {
+pub fn rust_is_our_value(val: *const PgValue) -> i32 {
     if val.is_null() {
         return 0;
     }

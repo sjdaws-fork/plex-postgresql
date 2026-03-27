@@ -104,15 +104,10 @@ pub(super) fn write_i64_to_buf(out: *mut c_char, out_len: usize, val: i64) -> bo
     if out.is_null() || out_len == 0 {
         return false;
     }
-    let fmt = b"%lld\0";
-    unsafe {
-        libc::snprintf(
-            out,
-            out_len,
-            fmt.as_ptr() as *const c_char,
-            val as libc::c_longlong,
-        );
-    }
+    use std::io::Write;
+    let buf = unsafe { std::slice::from_raw_parts_mut(out as *mut u8, out_len) };
+    let mut cursor = std::io::Cursor::new(buf);
+    let _ = write!(cursor, "{}\0", val);
     true
 }
 
@@ -120,15 +115,10 @@ pub(super) fn write_i32_to_buf(out: *mut c_char, out_len: usize, val: i32) -> bo
     if out.is_null() || out_len == 0 {
         return false;
     }
-    let fmt = b"%d\0";
-    unsafe {
-        libc::snprintf(
-            out,
-            out_len,
-            fmt.as_ptr() as *const c_char,
-            val as libc::c_int,
-        );
-    }
+    use std::io::Write;
+    let buf = unsafe { std::slice::from_raw_parts_mut(out as *mut u8, out_len) };
+    let mut cursor = std::io::Cursor::new(buf);
+    let _ = write!(cursor, "{}\0", val);
     true
 }
 

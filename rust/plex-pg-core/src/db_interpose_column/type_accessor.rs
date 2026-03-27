@@ -51,15 +51,13 @@ unsafe fn column_type_debug_sql(pg_stmt: *mut PgStmt) -> *const c_char {
     }
 }
 
-unsafe fn passthrough_column_type(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
-    orig_sqlite3_column_type
-        .map(|f| f(p_stmt, idx))
-        .unwrap_or(SQLITE_NULL)
+fn passthrough_column_type(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
+    get_orig_sqlite3_column_type().map(|f| unsafe { f(p_stmt, idx) }).unwrap_or(SQLITE_NULL)
 }
 
-unsafe fn load_cached_type_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<CachedTypeState> {
-    let cached = &*(*pg_stmt).cached_result;
-    let row = (*pg_stmt).current_row;
+unsafe fn load_cached_type_state(pg_stmt: &mut PgStmt, idx: c_int) -> Option<CachedTypeState> {
+    let cached = &*pg_stmt.cached_result;
+    let row = pg_stmt.current_row;
     if idx < 0 || idx >= cached.num_cols || row < 0 || row >= cached.num_rows {
         return None;
     }
@@ -108,17 +106,17 @@ struct ColumnTypeLogCtx {
 }
 
 unsafe fn resolve_cached_column_type(
-    pg_stmt: *mut PgStmt,
+    pg_stmt: &mut PgStmt,
     _p_stmt: *mut sqlite3_stmt,
     idx: c_int,
 ) -> (c_int, ColumnTypeLogCtx) {
     let mut ctx = ColumnTypeLogCtx {
         idx,
-        row: (*pg_stmt).current_row,
+        row: pg_stmt.current_row,
         oid: 0,
         result: SQLITE_NULL,
         col_name: ptr::null(),
-        pg_sql: (*pg_stmt).pg_sql,
+        pg_sql: pg_stmt.pg_sql,
         trace_col: false,
         phase: "cached",
         is_null: false,
@@ -134,7 +132,8 @@ unsafe fn resolve_cached_column_type(
     ctx.oid = state.oid;
     ctx.col_name = state.col_name;
 
-    let trace_col = trace_badcast_should_log_col(pg_stmt, idx, state.col_name);
+    let raw_pg_stmt = pg_stmt as *mut PgStmt;
+    let trace_col = trace_badcast_should_log_col(raw_pg_stmt, idx, state.col_name);
     ctx.trace_col = trace_col;
 
     if state.is_null {
@@ -155,19 +154,19 @@ unsafe fn resolve_cached_column_type(
     (result, ctx)
 }
 
-unsafe fn load_live_type_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveTypeState> {
+unsafe fn load_live_type_state(pg_stmt: &mut PgStmt, idx: c_int) -> Option<LiveTypeState> {
     // NOTE: all logging removed from this function because it is called
     // while pg_stmt.mutex is held; logging is done by the caller after
     // releasing the mutex.
-    if (*pg_stmt).result.is_null() {
+    if pg_stmt.result.is_null() {
         return None;
     }
-    if idx < 0 || idx >= (*pg_stmt).num_cols {
+    if idx < 0 || idx >= pg_stmt.num_cols {
         return None;
     }
 
-    let row = (*pg_stmt).current_row;
-    if row < 0 || row >= (*pg_stmt).num_rows {
+    let row = pg_stmt.current_row;
+    if row < 0 || row >= pg_stmt.num_rows {
         return None;
     }
 
@@ -175,7 +174,7 @@ unsafe fn load_live_type_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveT
     let mut oid_u: c_uint = 0;
     let mut sqlite_type = SQLITE_NULL;
     crate::db_interpose_helpers::rust_pg_result_type_info(
-        helpers_result_ptr((*pg_stmt).result),
+        helpers_result_ptr(pg_stmt.result),
         row,
         idx,
         &mut oid_u as *mut c_uint,
@@ -183,7 +182,7 @@ unsafe fn load_live_type_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveT
         &mut sqlite_type as *mut c_int,
     );
     let col_name = crate::db_interpose_helpers::rust_pg_result_col_name(
-        helpers_result_ptr((*pg_stmt).result),
+        helpers_result_ptr(pg_stmt.result),
         idx,
     );
 
@@ -199,7 +198,7 @@ unsafe fn load_live_type_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveT
 
     if !state.is_null {
         state.value_len = crate::db_interpose_helpers::rust_pg_result_text_copy(
-            helpers_result_ptr((*pg_stmt).result),
+            helpers_result_ptr(pg_stmt.result),
             row,
             idx,
             state.value_buf.as_mut_ptr(),
@@ -211,17 +210,17 @@ unsafe fn load_live_type_state(pg_stmt: *mut PgStmt, idx: c_int) -> Option<LiveT
 }
 
 unsafe fn resolve_live_column_type(
-    pg_stmt: *mut PgStmt,
+    pg_stmt: &mut PgStmt,
     _p_stmt: *mut sqlite3_stmt,
     idx: c_int,
 ) -> (c_int, ColumnTypeLogCtx) {
     let mut ctx = ColumnTypeLogCtx {
         idx,
-        row: (*pg_stmt).current_row,
+        row: pg_stmt.current_row,
         oid: 0,
         result: SQLITE_NULL,
         col_name: ptr::null(),
-        pg_sql: (*pg_stmt).pg_sql,
+        pg_sql: pg_stmt.pg_sql,
         trace_col: false,
         phase: "live",
         is_null: false,
@@ -237,7 +236,8 @@ unsafe fn resolve_live_column_type(
     ctx.oid = state.oid;
     ctx.col_name = state.col_name;
 
-    let trace_col = trace_badcast_should_log_col(pg_stmt, idx, state.col_name);
+    let raw_pg_stmt = pg_stmt as *mut PgStmt;
+    let trace_col = trace_badcast_should_log_col(raw_pg_stmt, idx, state.col_name);
     ctx.trace_col = trace_col;
     // --- seqlock: begin CRASH_LAST_COLUMN write ---
     {
@@ -289,13 +289,9 @@ pub(super) fn column_type_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
     unsafe { bump_column_type_counters() };
 
     log_debug_lazy!("COLUMN_TYPE: stmt={:p} idx={}", p_stmt, idx);
-    let pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
-    let dbg_sql = unsafe { column_type_debug_sql(pg_stmt) };
-    let dbg_db = unsafe {
-        orig_sqlite3_db_handle
-            .map(|f| f(p_stmt))
-            .unwrap_or(ptr::null_mut())
-    };
+    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let dbg_sql = unsafe { column_type_debug_sql(raw_pg_stmt) };
+    let dbg_db = get_orig_sqlite3_db_handle().map(|f| unsafe { f(p_stmt) }).unwrap_or(ptr::null_mut());
     unsafe {
         pg_exception_note_phase(
             b"column_type\0".as_ptr() as *const c_char,
@@ -305,15 +301,16 @@ pub(super) fn column_type_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
         );
     }
 
-    if !pg_stmt.is_null() && unsafe { (*pg_stmt).is_pg != 0 } {
+    if !raw_pg_stmt.is_null() && unsafe { (*raw_pg_stmt).is_pg != 0 } {
+        let pg_stmt = unsafe { &mut *raw_pg_stmt };
         unsafe {
             let tls_query = tls_last_query_ptr();
-            *tls_query = (*pg_stmt).pg_sql;
+            *tls_query = pg_stmt.pg_sql;
         }
 
         let (result, ctx) = {
-            let _guard = unsafe { PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _) };
-            if !unsafe { (*pg_stmt).cached_result }.is_null() {
+            let _guard = unsafe { PgStmt::lock_mutex(raw_pg_stmt) };
+            if !pg_stmt.cached_result.is_null() {
                 unsafe { resolve_cached_column_type(pg_stmt, p_stmt, idx) }
             } else {
                 unsafe { resolve_live_column_type(pg_stmt, p_stmt, idx) }
@@ -321,11 +318,11 @@ pub(super) fn column_type_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
         };
         // All logging happens AFTER releasing pg_stmt.mutex to avoid
         // ABBA deadlock with the LOGGER mutex.
-        column_type_emit_log(pg_stmt, p_stmt, &ctx);
+        column_type_emit_log(raw_pg_stmt, p_stmt, &ctx);
         return result;
     }
 
-    unsafe { passthrough_column_type(p_stmt, idx) }
+    passthrough_column_type(p_stmt, idx)
 }
 
 /// Emit all diagnostic / trace logging for a column_type call.

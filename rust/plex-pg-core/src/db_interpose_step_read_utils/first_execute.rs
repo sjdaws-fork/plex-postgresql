@@ -29,7 +29,7 @@ pub(super) fn first_execute_impl(
         if pg_stmt.is_null() || exec_conn_io.is_null() {
             return STEP_RESULT_ERROR;
         }
-        let mut stmt_guard = PthreadMutexGuard::lock(&mut (*pg_stmt).mutex as *mut _);
+        let mut stmt_guard = Some(PgStmt::lock_mutex(pg_stmt));
         (*pg_stmt).executing_thread = libc::pthread_self();
 
         let mut exec_conn = match acquire_exec_connection(

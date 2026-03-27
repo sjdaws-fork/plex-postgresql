@@ -64,8 +64,7 @@ extern "C" fn worker_thread_func(_arg: *mut c_void) -> *mut c_void {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_worker_init() -> c_int {
+pub fn rust_worker_init() -> c_int {
     unsafe {
         let mut attr = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
         if libc::pthread_attr_init(attr.as_mut_ptr()) != 0 {
@@ -121,8 +120,7 @@ pub(crate) unsafe fn fast_mark_fork_child_passthrough() {
     rust_reset_symbol_verification();
 }
 
-#[no_mangle]
-pub extern "C" fn rust_worker_cleanup() {
+pub fn rust_worker_cleanup() {
     unsafe {
         if worker_running == 0 {
             return;
@@ -141,8 +139,7 @@ pub extern "C" fn rust_worker_cleanup() {
     log_info("WORKER: Cleaned up");
 }
 
-#[no_mangle]
-pub extern "C" fn rust_delegate_prepare_to_worker(
+pub fn rust_delegate_prepare_to_worker(
     db: *mut sqlite3,
     z_sql: *const c_char,
     n_byte: c_int,
@@ -158,13 +155,7 @@ pub extern "C" fn rust_delegate_prepare_to_worker(
             }
         }
 
-        let preview = if z_sql.is_null() {
-            "NULL".to_string()
-        } else {
-            let bytes = CStr::from_ptr(z_sql).to_bytes();
-            let slice = &bytes[..bytes.len().min(100)];
-            String::from_utf8_lossy(slice).into_owned()
-        };
+        let preview = crate::db_interpose_conn_utils::cstr_prefix(z_sql, 100, "NULL");
         log_debug_lazy!("WORKER: Delegating query ({})", preview);
 
         let mut worker_guard = PthreadMutexGuard::lock(ptr::addr_of_mut!(worker_mutex));

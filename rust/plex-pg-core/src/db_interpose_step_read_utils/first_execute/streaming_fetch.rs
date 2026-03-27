@@ -1,25 +1,24 @@
 use super::*;
 use crate::log_debug_lazy;
 
-unsafe fn clear_streaming_state(pg_stmt: *mut PgStmt) {
-    (*pg_stmt).streaming_mode = 0;
-    if !(*pg_stmt).streaming_conn.is_null() {
-        (*(*pg_stmt).streaming_conn)
-            .streaming_active
-            .store(0, Ordering::SeqCst);
+unsafe fn clear_streaming_state(s: &mut PgStmt) {
+    s.streaming_mode = 0;
+    if !s.streaming_conn.is_null() {
+        let sc = &*s.streaming_conn;
+        sc.streaming_active.store(0, Ordering::SeqCst);
     }
-    (*pg_stmt).streaming_conn = std::ptr::null_mut();
+    s.streaming_conn = std::ptr::null_mut();
 }
 
 unsafe fn finish_streaming_done(
-    pg_stmt: *mut PgStmt,
+    s: &mut PgStmt,
     exec_conn_io: *mut *mut PgConnection,
     exec_conn: *mut PgConnection,
-    stmt_guard: &mut PthreadMutexGuard,
+    stmt_guard: &mut Option<StmtGuard>,
 ) -> c_int {
-    (*pg_stmt).read_done = 1;
+    s.read_done = 1;
     *exec_conn_io = exec_conn;
-    stmt_guard.unlock();
+    *stmt_guard = None; // unlock
     STEP_RESULT_DONE
 }
 
@@ -27,77 +26,79 @@ pub(super) unsafe fn streaming_fetch_result(
     pg_stmt: *mut PgStmt,
     exec_conn_io: *mut *mut PgConnection,
     exec_conn: *mut PgConnection,
-    stmt_guard: &mut PthreadMutexGuard,
+    stmt_guard: &mut Option<StmtGuard>,
     conn_guard: &mut PthreadMutexGuard,
     pg_conn_error_out: *mut c_int,
 ) -> c_int {
-    (*pg_stmt).streaming_mode = 1;
-    (*pg_stmt).streaming_conn = exec_conn;
-    (*pg_stmt).result_conn = exec_conn;
-    (*exec_conn).streaming_active.store(1, Ordering::SeqCst);
-    (*pg_stmt).metadata_only_result = 0;
+    let s = &mut *pg_stmt;
+    let ec = &mut *exec_conn;
+    s.streaming_mode = 1;
+    s.streaming_conn = exec_conn;
+    s.result_conn = exec_conn;
+    ec.streaming_active.store(1, Ordering::SeqCst);
+    s.metadata_only_result = 0;
     conn_guard.unlock();
 
-    let first_res = crate::libpq_helpers::rust_pq_get_result((*exec_conn).conn);
+    let first_res = crate::libpq_helpers::rust_pq_get_result(ec.conn);
     if first_res.is_null() {
-        clear_streaming_state(pg_stmt);
-        return finish_streaming_done(pg_stmt, exec_conn_io, exec_conn, stmt_guard);
+        clear_streaming_state(s);
+        return finish_streaming_done(s, exec_conn_io, exec_conn, stmt_guard);
     }
 
     let first_status = crate::libpq_helpers::rust_pq_result_status(first_res);
     if first_status == PGRES_SINGLE_TUPLE {
         // Clear any pre-existing result (e.g. from metadata-only fetch) to prevent leak
-        if !(*pg_stmt).result.is_null() {
-            crate::libpq_helpers::rust_pq_clear((*pg_stmt).result);
+        if !s.result.is_null() {
+            crate::libpq_helpers::rust_pq_clear(s.result);
         }
-        (*pg_stmt).result = first_res;
-        (*pg_stmt).current_row = 0;
-        (*pg_stmt).num_rows = 1;
-        (*pg_stmt).num_cols = crate::libpq_helpers::rust_pq_nfields(first_res);
-        (*pg_stmt).ensure_column_capacity((*pg_stmt).num_cols as usize);
+        s.result = first_res;
+        s.current_row = 0;
+        s.num_rows = 1;
+        s.num_cols = crate::libpq_helpers::rust_pq_nfields(first_res);
+        s.ensure_column_capacity(s.num_cols as usize);
         resolve_column_tables(pg_stmt, exec_conn);
         trace_play_queue_result(pg_stmt, first_res, "STREAM FIRST");
         *exec_conn_io = exec_conn;
-        stmt_guard.unlock();
+        *stmt_guard = None; // unlock
         return STEP_RESULT_ROW;
     }
 
     if first_status == PGRES_TUPLES_OK {
         log_debug_lazy!(
             "STREAM: zero rows returned for sql={:.200}",
-            cstr_to_str((*pg_stmt).pg_sql)
+            cstr_to_str(s.pg_sql)
         );
         crate::libpq_helpers::rust_pq_clear(first_res);
-        let final_null = crate::libpq_helpers::rust_pq_get_result((*exec_conn).conn);
+        let final_null = crate::libpq_helpers::rust_pq_get_result(ec.conn);
         if !final_null.is_null() {
             crate::libpq_helpers::rust_pq_clear(final_null);
         }
-        clear_streaming_state(pg_stmt);
-        (*pg_stmt).num_cols = 0;
-        (*pg_stmt).num_rows = 0;
-        return finish_streaming_done(pg_stmt, exec_conn_io, exec_conn, stmt_guard);
+        clear_streaming_state(s);
+        s.num_cols = 0;
+        s.num_rows = 0;
+        return finish_streaming_done(s, exec_conn_io, exec_conn, stmt_guard);
     }
 
-    let err = crate::libpq_helpers::rust_pq_error_message((*exec_conn).conn);
+    let err = crate::libpq_helpers::rust_pq_error_message(ec.conn);
     log_error(&format!(
         "STREAM first fetch error: {} (status={}) sql={:.200}",
         cstr_to_str(err),
         first_status,
-        cstr_to_str((*pg_stmt).pg_sql)
+        cstr_to_str(s.pg_sql)
     ));
     if is_stale_prepared_stmt(first_res) {
         crate::pg_client::rust_stmt_cache_clear_local(exec_conn as *mut c_void);
     }
     crate::libpq_helpers::rust_pq_clear(first_res);
-    let mut drain = crate::libpq_helpers::rust_pq_get_result((*exec_conn).conn);
+    let mut drain = crate::libpq_helpers::rust_pq_get_result(ec.conn);
     while !drain.is_null() {
         crate::libpq_helpers::rust_pq_clear(drain);
-        drain = crate::libpq_helpers::rust_pq_get_result((*exec_conn).conn);
+        drain = crate::libpq_helpers::rust_pq_get_result(ec.conn);
     }
-    clear_streaming_state(pg_stmt);
+    clear_streaming_state(s);
     crate::pg_client::rust_pool_check_health(exec_conn as *mut c_void);
     *exec_conn_io = exec_conn;
-    stmt_guard.unlock();
+    *stmt_guard = None; // unlock
     set_pg_conn_error(pg_conn_error_out);
     STEP_RESULT_ERROR
 }

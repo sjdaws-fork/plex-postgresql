@@ -6,8 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::os::raw::{c_char, c_int};
 
-#[no_mangle]
-pub extern "C" fn rust_env_truthy(value: *const c_char) -> c_int {
+pub fn rust_env_truthy(value: *const c_char) -> c_int {
     let s = unsafe { cstr_to_str_or_empty(value) };
     if s.is_empty() {
         return 0;
@@ -15,8 +14,7 @@ pub extern "C" fn rust_env_truthy(value: *const c_char) -> c_int {
     matches!(s.as_bytes()[0], b'1' | b'y' | b'Y' | b't' | b'T') as c_int
 }
 
-#[no_mangle]
-pub extern "C" fn rust_read_first_line_trim_to_buf(
+pub fn rust_read_first_line_trim_to_buf(
     path: *const c_char,
     out: *mut c_char,
     out_len: usize,
@@ -55,13 +53,11 @@ pub extern "C" fn rust_read_first_line_trim_to_buf(
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_trace_prepare_sql_ok(_sql: *const c_char) -> c_int {
+pub fn rust_trace_prepare_sql_ok(_sql: *const c_char) -> c_int {
     1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_load_badcast_config(
+pub fn rust_load_badcast_config(
     enabled_out: *mut c_int,
     idx_out: *mut c_char,
     idx_len: usize,

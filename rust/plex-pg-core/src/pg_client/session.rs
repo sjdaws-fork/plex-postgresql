@@ -130,22 +130,22 @@ pub(super) fn apply_session_settings(pg_conn: *mut PGconn, schema: &str, dealloc
     }
 }
 
-pub(super) fn exec_simple(conn: *mut c_void, sql: *const c_char) -> bool {
-    let conn = conn as *mut PgConnection;
-    if conn.is_null() || sql.is_null() {
+pub(super) fn exec_simple(raw_conn: *mut c_void, sql: *const c_char) -> bool {
+    let conn_ptr = raw_conn as *mut PgConnection;
+    if conn_ptr.is_null() || sql.is_null() {
         return false;
     }
+    // SAFETY: conn_ptr is non-null after the check above.
+    let conn = unsafe { &*conn_ptr };
     let s = unsafe { cstr_to_str_or_empty(sql) };
     let trimmed = s.trim_start();
     let lower = trimmed.to_ascii_lowercase();
 
     if lower.starts_with("commit") || lower.starts_with("rollback") || lower.starts_with("end") {
-        let txn = unsafe {
-            if (*conn).conn.is_null() {
-                0
-            } else {
-                rust_pq_transaction_status((*conn).conn)
-            }
+        let txn = if conn.conn.is_null() {
+            0
+        } else {
+            rust_pq_transaction_status(conn.conn)
         };
         if txn != PQTRANS_INTRANS && txn != PQTRANS_INERROR {
             log_debug_lazy!(
@@ -160,15 +160,13 @@ pub(super) fn exec_simple(conn: *mut c_void, sql: *const c_char) -> bool {
         Ok(s) => s,
         Err(_) => return false,
     };
-    unsafe {
-        if (*conn).conn.is_null() {
-            return false;
-        }
-        let res = rust_pq_exec((*conn).conn, cmd.as_ptr());
-        let ok = !res.is_null() && rust_pq_result_status(res) == PGRES_COMMAND_OK;
-        if !res.is_null() {
-            rust_pq_clear(res);
-        }
-        ok
+    if conn.conn.is_null() {
+        return false;
     }
+    let res = rust_pq_exec(conn.conn, cmd.as_ptr());
+    let ok = !res.is_null() && rust_pq_result_status(res) == PGRES_COMMAND_OK;
+    if !res.is_null() {
+        rust_pq_clear(res);
+    }
+    ok
 }

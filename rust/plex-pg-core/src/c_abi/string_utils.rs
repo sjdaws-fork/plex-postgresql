@@ -1,3 +1,4 @@
+use std::ffi::CStr;
 use std::os::raw::c_char;
 
 #[no_mangle]
@@ -5,17 +6,13 @@ pub extern "C" fn safe_strcasestr(haystack: *const c_char, needle: *const c_char
     if haystack.is_null() || needle.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        if *needle == 0 {
-            return haystack as *mut c_char;
-        }
-    }
-
-    let needle_len = unsafe { libc::strlen(needle) };
-    if needle_len == 0 {
+    // Safety: caller guarantees valid NUL-terminated strings
+    let needle_bytes = unsafe { CStr::from_ptr(needle) }.to_bytes();
+    if needle_bytes.is_empty() {
         return haystack as *mut c_char;
     }
 
+    let needle_len = needle_bytes.len();
     let mut p = haystack;
     unsafe {
         while *p != 0 {
@@ -38,7 +35,8 @@ pub extern "C" fn str_replace_nocase(
         return std::ptr::null_mut();
     }
 
-    let old_len = unsafe { libc::strlen(old_ptr) };
+    // Safety: caller guarantees valid NUL-terminated strings
+    let old_len = unsafe { CStr::from_ptr(old_ptr) }.to_bytes().len();
     if old_len == 0 {
         return unsafe { libc::strdup(str_ptr) };
     }
@@ -48,9 +46,9 @@ pub extern "C" fn str_replace_nocase(
     loop {
         let match_ptr = safe_strcasestr(p, old_ptr);
         if match_ptr.is_null() {
-            let tail_len = unsafe { libc::strlen(p) };
-            if tail_len > 0 {
-                let tail = unsafe { std::slice::from_raw_parts(p as *const u8, tail_len) };
+            // Safety: p points to a valid NUL-terminated C string
+            let tail = unsafe { CStr::from_ptr(p) }.to_bytes();
+            if !tail.is_empty() {
                 out.extend_from_slice(tail);
             }
             break;
@@ -62,9 +60,9 @@ pub extern "C" fn str_replace_nocase(
             out.extend_from_slice(prefix);
         }
 
-        let new_len = unsafe { libc::strlen(new_ptr) };
-        if new_len > 0 {
-            let new_bytes = unsafe { std::slice::from_raw_parts(new_ptr as *const u8, new_len) };
+        // Safety: new_ptr is a valid NUL-terminated C string
+        let new_bytes = unsafe { CStr::from_ptr(new_ptr) }.to_bytes();
+        if !new_bytes.is_empty() {
             out.extend_from_slice(new_bytes);
         }
 

@@ -14,10 +14,14 @@ pub(super) fn malloc_cstring(value: &str) -> *mut c_char {
 }
 
 pub(super) unsafe fn owned_db_path(conn: *mut PgConnection) -> Option<CString> {
-    if conn.is_null() || (*conn).db_path[0] == 0 {
+    if conn.is_null() {
         return None;
     }
-    Some(CStr::from_ptr((*conn).db_path.as_ptr()).to_owned())
+    let c = &*conn;
+    if c.db_path[0] == 0 {
+        return None;
+    }
+    Some(CStr::from_ptr(c.db_path.as_ptr()).to_owned())
 }
 
 pub(super) fn is_duplicate_prepared_stmt(res: *mut PGresult) -> bool {

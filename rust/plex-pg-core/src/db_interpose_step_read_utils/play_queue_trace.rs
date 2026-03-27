@@ -20,8 +20,9 @@ unsafe fn is_play_queue_stmt(pg_stmt: *mut PgStmt) -> bool {
     if pg_stmt.is_null() {
         return false;
     }
-    let sql_bytes = cstr_bytes((*pg_stmt).sql);
-    let pg_sql_bytes = cstr_bytes((*pg_stmt).pg_sql);
+    let s = &*pg_stmt;
+    let sql_bytes = cstr_bytes(s.sql);
+    let pg_sql_bytes = cstr_bytes(s.pg_sql);
     contains_icase_bytes(sql_bytes, b"play_queue")
         || contains_icase_bytes(pg_sql_bytes, b"play_queue")
 }
@@ -34,7 +35,8 @@ pub(crate) unsafe fn trace_play_queue_params(
     if !trace_play_queue_enabled() || !is_play_queue_stmt(pg_stmt) {
         return;
     }
-    let param_count = (*pg_stmt).param_count;
+    let s = &*pg_stmt;
+    let param_count = s.param_count;
     let count = if param_count > 0 {
         param_count as usize
     } else {
@@ -46,13 +48,13 @@ pub(crate) unsafe fn trace_play_queue_params(
         "PLAY_QUEUE TRACE {}: param_count={} sql={:.200}",
         phase,
         param_count,
-        cstr_to_str((*pg_stmt).pg_sql)
+        cstr_to_str(s.pg_sql)
     );
-    if !(*pg_stmt).sql.is_null() && (*pg_stmt).sql != (*pg_stmt).pg_sql {
+    if !s.sql.is_null() && s.sql != s.pg_sql {
         log_info_lazy!(
             "PLAY_QUEUE TRACE {}: sqlite_sql={:.200}",
             phase,
-            cstr_to_str((*pg_stmt).sql)
+            cstr_to_str(s.sql)
         );
     }
     if count == 0 {
