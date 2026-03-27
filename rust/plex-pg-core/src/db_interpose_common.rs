@@ -47,9 +47,7 @@ use exception_support::{
 use exception_tracker::{
     get_exception_tracker_impl, reset_exception_tracking_impl, ExceptionTypeTracker,
 };
-pub(crate) use fake_values::{
-    fake_value_mutex, fake_value_next, fake_value_pool, MAX_FAKE_VALUES, PG_FAKE_VALUE_MAGIC,
-};
+pub(crate) use fake_values::{FAKE_VALUES, MAX_FAKE_VALUES, PG_FAKE_VALUE_MAGIC};
 pub use fake_values::{rust_pg_check_fake_value, PgFakeValue};
 pub use ffi_exports::{
     common_load_sqlite_symbols, delegate_prepare_to_worker, get_exception_tracker,

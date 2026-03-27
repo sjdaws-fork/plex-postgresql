@@ -122,9 +122,10 @@ pub extern "C" fn rust_my_sqlite3_open_v2(
 pub extern "C" fn rust_my_sqlite3_close(db: *mut sqlite3) -> c_int {
     let handle_conn = crate::pg_client::rust_pg_find_handle_connection(db);
     if !handle_conn.is_null() {
-        log_info_lazy!("CLOSE: PostgreSQL connection for {}", unsafe {
-            cstr_to_string_or((*handle_conn).db_path.as_ptr(), "(null)")
-        });
+        let hc = unsafe { &*handle_conn };
+        log_info_lazy!("CLOSE: PostgreSQL connection for {}",
+            cstr_to_string_or(hc.db_path.as_ptr(), "(null)")
+        );
 
         unsafe {
             if handle_conn_path_contains(handle_conn, NEEDLE_LIBRARY_DB) {

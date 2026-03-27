@@ -4,11 +4,11 @@ unsafe fn column_value_debug_sql(dbg_stmt: *mut PgStmt) -> *const c_char {
     if dbg_stmt.is_null() {
         return ptr::null();
     }
-
-    if !(*dbg_stmt).pg_sql.is_null() {
-        (*dbg_stmt).pg_sql
+    let s = &*dbg_stmt;
+    if !s.pg_sql.is_null() {
+        s.pg_sql
     } else {
-        (*dbg_stmt).sql
+        s.sql
     }
 }
 
@@ -29,7 +29,7 @@ pub(super) fn column_value_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *mut s
         );
     }
 
-    if raw_pg_stmt.is_null() || unsafe { (*raw_pg_stmt).is_pg == 0 } {
+    if raw_pg_stmt.is_null() || unsafe { (&*raw_pg_stmt).is_pg == 0 } {
         return passthrough_column_value(p_stmt, idx);
     }
 

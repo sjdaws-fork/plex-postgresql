@@ -277,6 +277,4 @@ pub(super) static mut shim_init_pid: libc::pid_t = 0;
 
 #[no_mangle]
 pub(super) static total_exception_count: AtomicI32 = AtomicI32::new(0);
-#[no_mangle]
-pub(super) static mut exception_tracker_mutex: libc::pthread_mutex_t =
-    libc::PTHREAD_MUTEX_INITIALIZER;
+// exception_tracker_mutex removed — replaced by Mutex<ExceptionTrackerState> in exception_tracker.rs

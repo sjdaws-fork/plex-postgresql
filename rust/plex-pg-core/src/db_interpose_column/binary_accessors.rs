@@ -151,7 +151,7 @@ unsafe fn materialize_live_blob(pg_stmt: &mut PgStmt, idx: c_int, row: c_int) ->
 pub(super) fn column_blob_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_void {
     let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
 
-    if raw_pg_stmt.is_null() || unsafe { (*raw_pg_stmt).is_pg == 0 } {
+    if raw_pg_stmt.is_null() || unsafe { (&*raw_pg_stmt).is_pg == 0 } {
         return get_orig_sqlite3_column_blob().map(|f| unsafe { f(p_stmt, idx) }).unwrap_or(ptr::null());
     }
 
@@ -194,7 +194,7 @@ pub(super) fn column_bytes_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int 
     log_debug_lazy!("COLUMN_BYTES: stmt={:p} idx={}", p_stmt, idx);
     let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
 
-    if raw_pg_stmt.is_null() || unsafe { (*raw_pg_stmt).is_pg == 0 } {
+    if raw_pg_stmt.is_null() || unsafe { (&*raw_pg_stmt).is_pg == 0 } {
         return get_orig_sqlite3_column_bytes().map(|f| unsafe { f(p_stmt, idx) }).unwrap_or(0);
     }
 

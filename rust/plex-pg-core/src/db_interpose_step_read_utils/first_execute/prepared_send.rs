@@ -95,7 +95,8 @@ pub(super) unsafe fn send_query_for_read(
     crate::db_interpose_conn_utils::rust_step_conn_cancel_and_drain(exec_conn, scope.as_ptr());
 
     let timeout = CString::new(STATEMENT_TIMEOUT_SQL).unwrap();
-    let to_res = crate::libpq_helpers::rust_pq_exec((*exec_conn).conn, timeout.as_ptr());
+    let ec_ref = &*exec_conn;
+    let to_res = crate::libpq_helpers::rust_pq_exec(ec_ref.conn, timeout.as_ptr());
     if !to_res.is_null() {
         crate::libpq_helpers::rust_pq_clear(to_res);
     }
@@ -118,7 +119,7 @@ pub(super) unsafe fn send_query_for_read(
         return Ok(());
     }
 
-    let err = crate::libpq_helpers::rust_pq_error_message((*exec_conn).conn);
+    let err = crate::libpq_helpers::rust_pq_error_message(ec_ref.conn);
     log_error(&format!(
         "PQsend* failed: {} sql={:.200}",
         cstr_to_str(err),

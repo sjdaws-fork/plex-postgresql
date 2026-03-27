@@ -131,7 +131,7 @@ fn rust_my_sqlite3_exec_impl(
 
     let pg_conn = crate::pg_client::rust_pg_find_connection(db);
 
-    if !pg_conn.is_null() && unsafe { (*pg_conn).is_pg_active } != 0 {
+    if !pg_conn.is_null() && unsafe { (&*pg_conn).is_pg_active } != 0 {
         return exec_via_postgres(pg_conn, sql);
     }
 

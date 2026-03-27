@@ -44,10 +44,11 @@ unsafe fn column_type_debug_sql(pg_stmt: *mut PgStmt) -> *const c_char {
     if pg_stmt.is_null() {
         return ptr::null();
     }
-    if !(*pg_stmt).pg_sql.is_null() {
-        (*pg_stmt).pg_sql
+    let s = &*pg_stmt;
+    if !s.pg_sql.is_null() {
+        s.pg_sql
     } else {
-        (*pg_stmt).sql
+        s.sql
     }
 }
 
@@ -301,7 +302,7 @@ pub(super) fn column_type_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
         );
     }
 
-    if !raw_pg_stmt.is_null() && unsafe { (*raw_pg_stmt).is_pg != 0 } {
+    if !raw_pg_stmt.is_null() && unsafe { (&*raw_pg_stmt).is_pg != 0 } {
         let pg_stmt = unsafe { &mut *raw_pg_stmt };
         unsafe {
             let tls_query = tls_last_query_ptr();

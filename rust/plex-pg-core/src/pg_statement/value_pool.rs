@@ -46,6 +46,6 @@ pub fn rust_is_our_value(val: *const PgValue) -> i32 {
     if val.is_null() {
         return 0;
     }
-    let magic = unsafe { (*val).magic };
+    let magic = unsafe { (&*val).magic };
     i32::from(magic == PG_VALUE_MAGIC)
 }

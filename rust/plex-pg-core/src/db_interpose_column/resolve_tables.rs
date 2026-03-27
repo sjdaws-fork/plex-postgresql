@@ -19,7 +19,7 @@ pub(super) fn resolve_column_tables_impl(
         if *flag != 0 {
             log_debug("RESOLVE_TABLES: Recursion detected, aborting");
             if !pg_stmt.is_null() {
-                (*pg_stmt).col_tables_resolved = 1;
+                (&mut *pg_stmt).col_tables_resolved = 1;
             }
             return -1;
         }

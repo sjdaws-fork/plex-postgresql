@@ -4,7 +4,7 @@
 /// Replaces the C `pg_config.c` module.
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
-use std::sync::Once;
+use std::sync::OnceLock;
 
 use crate::db_interpose_helpers::cstr_to_str_or_empty;
 use crate::env_utils;
@@ -297,8 +297,7 @@ impl PgEnvConfig {
     }
 }
 
-static CONFIG_INIT: Once = Once::new();
-static mut GLOBAL_CONFIG: PgConnConfig = PgConnConfig {
+static DEFAULT_CONFIG: PgConnConfig = PgConnConfig {
     host: [0; 256],
     port: 0,
     database: [0; 128],
@@ -307,8 +306,10 @@ static mut GLOBAL_CONFIG: PgConnConfig = PgConnConfig {
     schema: [0; 64],
 };
 
+static GLOBAL_CONFIG: OnceLock<PgConnConfig> = OnceLock::new();
+
 fn init_config_once() {
-    CONFIG_INIT.call_once(|| {
+    GLOBAL_CONFIG.get_or_init(|| {
         let mut cfg = PgConnConfig {
             host: [0; 256],
             port: 0,
@@ -318,26 +319,24 @@ fn init_config_once() {
             schema: [0; 64],
         };
         let _ = pg_config_load(&mut cfg as *mut PgConnConfig);
-        unsafe {
-            std::ptr::write(std::ptr::addr_of_mut!(GLOBAL_CONFIG), cfg);
-        }
 
-        let cfg_ptr = std::ptr::addr_of!(GLOBAL_CONFIG);
-        let host = unsafe { cstr_to_str_or_empty((*cfg_ptr).host.as_ptr() as *const c_char) };
-        let user = unsafe { cstr_to_str_or_empty((*cfg_ptr).user.as_ptr() as *const c_char) };
-        let db = unsafe { cstr_to_str_or_empty((*cfg_ptr).database.as_ptr() as *const c_char) };
-        let schema = unsafe { cstr_to_str_or_empty((*cfg_ptr).schema.as_ptr() as *const c_char) };
+        let host = unsafe { cstr_to_str_or_empty(cfg.host.as_ptr() as *const c_char) };
+        let user = unsafe { cstr_to_str_or_empty(cfg.user.as_ptr() as *const c_char) };
+        let db = unsafe { cstr_to_str_or_empty(cfg.database.as_ptr() as *const c_char) };
+        let schema = unsafe { cstr_to_str_or_empty(cfg.schema.as_ptr() as *const c_char) };
         let msg = format!(
             "PostgreSQL config: {}@{}:{}/{} (schema: {})",
             user,
             host,
-            unsafe { (*cfg_ptr).port },
+            cfg.port,
             db,
             schema
         );
         if let Ok(cs) = CString::new(msg) {
             crate::pg_logging::rust_logging_write(1, cs.as_ptr());
         }
+
+        cfg
     });
 }
 
@@ -351,7 +350,7 @@ pub extern "C" fn pg_config_init() {
 #[no_mangle]
 pub extern "C" fn pg_config_get() -> *mut PgConnConfig {
     init_config_once();
-    std::ptr::addr_of_mut!(GLOBAL_CONFIG)
+    GLOBAL_CONFIG.get().unwrap_or(&DEFAULT_CONFIG) as *const PgConnConfig as *mut PgConnConfig
 }
 
 #[no_mangle]
