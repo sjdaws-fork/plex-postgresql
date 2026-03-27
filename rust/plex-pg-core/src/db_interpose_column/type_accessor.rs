@@ -290,7 +290,7 @@ pub(super) fn column_type_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
     unsafe { bump_column_type_counters() };
 
     log_debug_lazy!("COLUMN_TYPE: stmt={:p} idx={}", p_stmt, idx);
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
     let dbg_sql = unsafe { column_type_debug_sql(raw_pg_stmt) };
     let dbg_db = get_orig_sqlite3_db_handle().map(|f| unsafe { f(p_stmt) }).unwrap_or(ptr::null_mut());
     unsafe {

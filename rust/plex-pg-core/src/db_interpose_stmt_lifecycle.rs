@@ -12,6 +12,11 @@ use statement_ops::{clear_bindings_impl, finalize_impl, note_stmt_prepare_impl, 
 const SQLITE_OK: c_int = 0;
 const SQLITE_ERROR: c_int = 1;
 
+use crate::pg_statement::c_abi::{
+    pg_find_any_stmt, pg_find_stmt, pg_find_cached_stmt,
+    pg_clear_cached_stmt, pg_unregister_stmt, pg_stmt_unref, pg_stmt_clear_result,
+};
+
 extern "C" {
     static mut orig_sqlite3_reset: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
     static mut orig_sqlite3_finalize: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>;
@@ -20,14 +25,6 @@ extern "C" {
     static mut orig_sqlite3_sql: Option<unsafe extern "C" fn(*mut sqlite3_stmt) -> *const c_char>;
 
     fn platform_print_backtrace(reason: *const c_char, skip_frames: c_int);
-
-    fn pg_find_any_stmt(stmt: *mut sqlite3_stmt) -> *mut crate::ffi_types::PgStmt;
-    fn pg_find_stmt(stmt: *mut sqlite3_stmt) -> *mut crate::ffi_types::PgStmt;
-    fn pg_find_cached_stmt(stmt: *mut sqlite3_stmt) -> *mut crate::ffi_types::PgStmt;
-    fn pg_clear_cached_stmt(stmt: *mut sqlite3_stmt);
-    fn pg_unregister_stmt(stmt: *mut sqlite3_stmt);
-    fn pg_stmt_unref(stmt: *mut crate::ffi_types::PgStmt);
-    fn pg_stmt_clear_result(stmt: *mut crate::ffi_types::PgStmt);
 }
 
 #[no_mangle]

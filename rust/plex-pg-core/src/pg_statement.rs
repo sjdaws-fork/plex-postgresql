@@ -38,7 +38,7 @@ use std::sync::{Once, RwLock};
 #[cfg(test)]
 use crate::ffi_types::PgStmt;
 
-mod c_abi;
+pub(crate) mod c_abi;
 mod metadata_api;
 mod metadata_helpers;
 mod registry;

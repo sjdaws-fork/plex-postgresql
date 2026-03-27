@@ -110,7 +110,7 @@ unsafe fn load_live_scalar_state(
 
 pub(super) fn column_int_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
     validate_type_consistency(p_stmt, idx, "column_int");
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
 
     if !raw_pg_stmt.is_null() && unsafe { (&*raw_pg_stmt).is_pg != 0 } {
         let pg_stmt = unsafe { &mut *raw_pg_stmt };
@@ -161,7 +161,7 @@ pub(super) fn column_int_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
 
 pub(super) fn column_int64_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> i64 {
     validate_type_consistency(p_stmt, idx, "column_int64");
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
 
     if !raw_pg_stmt.is_null() && unsafe { (&*raw_pg_stmt).is_pg != 0 } {
         let pg_stmt = unsafe { &mut *raw_pg_stmt };
@@ -217,7 +217,7 @@ pub(super) fn column_int64_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> i64 {
 
 pub(super) fn column_double_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> f64 {
     validate_type_consistency(p_stmt, idx, "column_double");
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
 
     if !raw_pg_stmt.is_null() && unsafe { (&*raw_pg_stmt).is_pg != 0 } {
         let pg_stmt = unsafe { &mut *raw_pg_stmt };

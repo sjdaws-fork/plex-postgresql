@@ -31,6 +31,7 @@ mod impl_unix {
     static mut DYNAMIC_CAST: Option<DynamicCastFn> = None;
 
     #[inline]
+    #[allow(dead_code)]
     unsafe fn read_option<T: Copy>(slot: *const Option<T>) -> Option<T> {
         ptr::read(slot)
     }

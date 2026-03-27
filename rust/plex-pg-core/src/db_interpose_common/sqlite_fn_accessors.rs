@@ -18,6 +18,7 @@ macro_rules! orig_fn_accessor {
     ($accessor:ident, $static_name:ident, $ty:ty) => {
         /// Read the original sqlite3 function pointer (set once at init, read-only after).
         #[inline]
+        #[allow(dead_code)]
         pub(crate) fn $accessor() -> Option<$ty> {
             // Safety: written once during shim init, read-only after.
             unsafe { std::ptr::read(std::ptr::addr_of!($static_name)) }

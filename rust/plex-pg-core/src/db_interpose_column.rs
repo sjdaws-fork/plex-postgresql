@@ -102,8 +102,9 @@ thread_local! {
     static COLUMN_TEXT_BUF_IDX: Cell<usize> = Cell::new(0);
 }
 
+use crate::pg_statement::c_abi::pg_find_any_stmt;
+
 extern "C" {
-    fn pg_find_any_stmt(stmt: *mut sqlite3_stmt) -> *mut PgStmt;
     fn pg_get_thread_connection(db_path: *const c_char) -> *mut PgConnection;
     fn pg_get_thread_connection_excluding(
         db_path: *const c_char,
