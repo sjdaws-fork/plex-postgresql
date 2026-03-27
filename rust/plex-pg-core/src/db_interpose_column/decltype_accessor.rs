@@ -95,7 +95,7 @@ unsafe fn oid_decltype(
 }
 
 pub(super) fn column_decltype_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_char {
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
 
     if raw_pg_stmt.is_null() || unsafe { (&*raw_pg_stmt).is_pg == 0 } {
         return passthrough_decltype(p_stmt, idx);

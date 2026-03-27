@@ -66,6 +66,8 @@ struct SqlTranslation {
     error: [c_char; 256],
 }
 
+use crate::pg_statement::c_abi::{pg_stmt_create, pg_register_stmt};
+
 extern "C" {
     static mut worker_running: c_int;
 
@@ -121,12 +123,6 @@ extern "C" {
     fn pg_exception_note_query(sql: *const c_char);
 
     fn pg_note_stmt_prepare(stmt: *mut sqlite3_stmt, sql: *const c_char);
-    fn pg_stmt_create(
-        conn: *mut PgConnection,
-        sql: *const c_char,
-        stmt: *mut sqlite3_stmt,
-    ) -> *mut PgStmt;
-    fn pg_register_stmt(sqlite_stmt: *mut sqlite3_stmt, pg_stmt: *mut PgStmt);
     fn rewrite_blobs_schema_migrations(sql: *const c_char, db_path: *const c_char) -> *mut c_char;
     fn pg_hash_sql(sql: *const c_char) -> u64;
 

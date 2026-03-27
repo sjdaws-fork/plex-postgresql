@@ -97,6 +97,12 @@ pub struct PgStmt {
     pub col_tables_resolved: c_int,
 }
 
+impl Default for PgStmt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PgStmt {
     /// Create a new PgStmt with all fields zeroed/empty.
     pub fn new() -> Self {

@@ -92,9 +92,7 @@ pub(super) fn note_bind_phase(phase: &[u8], p_stmt: *mut sqlite3_stmt, pg_stmt: 
     if let Some(f) = get_orig_sqlite3_db_handle() {
         db = unsafe { f(p_stmt) };
     }
-    unsafe {
-        pg_exception_note_phase(phase.as_ptr() as *const c_char, sql, p_stmt, db);
-    }
+    pg_exception_note_phase(phase.as_ptr() as *const c_char, sql, p_stmt as *const c_void, db as *const c_void);
 }
 
 pub(super) fn bind_reset_disabled() -> bool {
@@ -170,6 +168,7 @@ pub(super) unsafe fn clear_metadata_result_if_needed(pg_stmt: *mut PgStmt) {
     }
 }
 
+#[allow(dead_code)]
 pub(super) unsafe fn is_preallocated_buffer(stmt: *mut PgStmt, idx: usize) -> bool {
     if stmt.is_null() {
         return false;

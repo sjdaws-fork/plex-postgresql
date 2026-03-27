@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn column_count_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
     if !raw_pg_stmt.is_null() && unsafe { (&*raw_pg_stmt).is_pg != 0 } {
         let pg_stmt = unsafe { &mut *raw_pg_stmt };
         // Check if we need metadata BEFORE acquiring stmt mutex to avoid
@@ -27,7 +27,7 @@ pub(super) fn column_count_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
 }
 
 pub(super) fn column_name_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_char {
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
     let mut result: *const c_char = ptr::null();
     let mut use_orig = true;
 
@@ -79,7 +79,7 @@ pub(super) fn column_name_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const 
 }
 
 pub(super) fn data_count_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
 
     if !raw_pg_stmt.is_null() && unsafe { (&*raw_pg_stmt).is_pg != 0 } {
         let pg_stmt = unsafe { &mut *raw_pg_stmt };

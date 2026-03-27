@@ -35,7 +35,7 @@ pub(crate) fn validate_type_consistency(
         return;
     }
 
-    let raw_pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let raw_pg_stmt = pg_find_any_stmt(p_stmt);
     if raw_pg_stmt.is_null() || unsafe { (&*raw_pg_stmt).is_pg == 0 } {
         return;
     }

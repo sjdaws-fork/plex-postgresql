@@ -1,4 +1,3 @@
-use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};

@@ -176,7 +176,7 @@ unsafe fn write_live_text_output(
 }
 
 pub(super) fn column_text_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_uchar {
-    let dbg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let dbg_stmt = pg_find_any_stmt(p_stmt);
     let dbg_sql = if !dbg_stmt.is_null() {
         let ds = unsafe { &*dbg_stmt };
         if !ds.pg_sql.is_null() {

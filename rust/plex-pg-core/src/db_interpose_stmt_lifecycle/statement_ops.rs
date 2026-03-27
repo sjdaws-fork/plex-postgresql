@@ -46,12 +46,12 @@ pub(super) fn note_stmt_prepare_impl(p_stmt: *mut sqlite3_stmt, sql: *const c_ch
 }
 
 pub(super) fn reset_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
-    let pg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
+    let pg_stmt = pg_find_any_stmt(p_stmt);
     if !pg_stmt.is_null() {
         return unsafe { reset_pg_stmt_locked(p_stmt, pg_stmt) };
     }
 
-    let cached = unsafe { pg_find_cached_stmt(p_stmt) };
+    let cached = pg_find_cached_stmt(p_stmt);
     if !cached.is_null() {
         return unsafe { reset_pg_stmt_locked(p_stmt, cached) };
     }

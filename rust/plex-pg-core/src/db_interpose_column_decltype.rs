@@ -37,12 +37,10 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
             "DECLTYPE_CACHE: Connection {:p} is streaming_active, getting alternate",
             pg_conn
         );
-        let alt = unsafe {
-            crate::pg_client::pg_get_thread_connection_excluding(
-                pc.db_path.as_ptr(),
-                pg_conn as *const c_void,
-            )
-        };
+        let alt = crate::pg_client::pg_get_thread_connection_excluding(
+            pc.db_path.as_ptr(),
+            pg_conn as *const c_void,
+        );
         if !alt.is_null()
             && unsafe { !(&*alt).conn.is_null() }
             && alt != pg_conn
@@ -61,13 +59,11 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
 
     let cc = unsafe { &mut *cache_conn };
     let _conn_guard = unsafe { PthreadMutexGuard::lock(&mut cc.mutex as *mut _) };
-    let res = unsafe {
-        crate::libpq_helpers::rust_pq_exec(
-            cc.conn,
-            b"SELECT table_name, column_name, udt_name FROM information_schema.columns WHERE table_schema = 'plex' AND table_name NOT IN ('sqlite_column_types', 'sqlite_sequence') ORDER BY table_name, ordinal_position\0"
-                .as_ptr() as *const c_char,
-        )
-    };
+    let res = crate::libpq_helpers::rust_pq_exec(
+        cc.conn,
+        b"SELECT table_name, column_name, udt_name FROM information_schema.columns WHERE table_schema = 'plex' AND table_name NOT IN ('sqlite_column_types', 'sqlite_sequence') ORDER BY table_name, ordinal_position\0"
+            .as_ptr() as *const c_char,
+    );
 
     if res.is_null() || crate::libpq_helpers::rust_pq_result_status(res) != PGRES_TUPLES_OK {
         log_error(&format!(
@@ -76,7 +72,7 @@ fn preload_decltype_cache(pg_conn: *mut PgConnection) {
                 "NULL result".to_string()
             } else {
                 cstr_to_string_or(
-                    unsafe { crate::libpq_helpers::rust_pq_error_message(cc.conn) },
+                    crate::libpq_helpers::rust_pq_error_message(cc.conn),
                     "?",
                 )
             }

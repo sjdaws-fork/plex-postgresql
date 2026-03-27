@@ -224,59 +224,57 @@ pub fn rust_step_conn_cancel_and_drain(
         return;
     }
 
-    unsafe {
-        // Fast path: if connection is idle (not busy), skip the expensive
-        // PQcancel + drain entirely. This saves a TCP roundtrip per call.
-        crate::libpq_helpers::rust_pq_consume_input(c.conn);
-        if crate::libpq_helpers::rust_pq_is_busy(c.conn) == 0 {
-            // Quick drain: clear any already-buffered results without cancel.
-            let pending = crate::libpq_helpers::rust_pq_get_result(c.conn);
-            if pending.is_null() {
-                return; // Nothing pending — skip entirely.
-            }
-            crate::libpq_helpers::rust_pq_clear(pending);
-            // Drain any remaining.
-            loop {
-                let more = crate::libpq_helpers::rust_pq_get_result(c.conn);
-                if more.is_null() {
-                    break;
-                }
-                crate::libpq_helpers::rust_pq_clear(more);
-            }
-            return;
+    // Fast path: if connection is idle (not busy), skip the expensive
+    // PQcancel + drain entirely. This saves a TCP roundtrip per call.
+    crate::libpq_helpers::rust_pq_consume_input(c.conn);
+    if crate::libpq_helpers::rust_pq_is_busy(c.conn) == 0 {
+        // Quick drain: clear any already-buffered results without cancel.
+        let pending = crate::libpq_helpers::rust_pq_get_result(c.conn);
+        if pending.is_null() {
+            return; // Nothing pending — skip entirely.
         }
-
-        // Slow path: connection is busy — cancel and drain.
-        crate::libpq_helpers::rust_pq_set_nonblocking(c.conn, 0);
-        let cancel: *mut PGcancel = crate::libpq_helpers::rust_pq_get_cancel(c.conn);
-        if !cancel.is_null() {
-            let mut errbuf = [0 as c_char; 256];
-            crate::libpq_helpers::rust_pq_cancel(
-                cancel,
-                errbuf.as_mut_ptr(),
-                errbuf.len() as c_int,
-            );
-            crate::libpq_helpers::rust_pq_free_cancel(cancel);
-        }
-
-        let mut drain_count = 0;
+        crate::libpq_helpers::rust_pq_clear(pending);
+        // Drain any remaining.
         loop {
-            let pending: *mut PGresult = crate::libpq_helpers::rust_pq_get_result(c.conn);
-            if pending.is_null() {
+            let more = crate::libpq_helpers::rust_pq_get_result(c.conn);
+            if more.is_null() {
                 break;
             }
-            drain_count += 1;
-            crate::libpq_helpers::rust_pq_clear(pending);
-            if drain_count > 1000 {
-                break;
-            }
+            crate::libpq_helpers::rust_pq_clear(more);
         }
-        if drain_count > 3 {
-            let tag = cstr_to_str(scope_tag);
-            log_info_lazy!(
-                "{}: Drained {} orphaned results total from connection {:p}",
-                tag, drain_count, conn
-            );
+        return;
+    }
+
+    // Slow path: connection is busy — cancel and drain.
+    crate::libpq_helpers::rust_pq_set_nonblocking(c.conn, 0);
+    let cancel: *mut PGcancel = crate::libpq_helpers::rust_pq_get_cancel(c.conn);
+    if !cancel.is_null() {
+        let mut errbuf = [0 as c_char; 256];
+        crate::libpq_helpers::rust_pq_cancel(
+            cancel,
+            errbuf.as_mut_ptr(),
+            errbuf.len() as c_int,
+        );
+        crate::libpq_helpers::rust_pq_free_cancel(cancel);
+    }
+
+    let mut drain_count = 0;
+    loop {
+        let pending: *mut PGresult = crate::libpq_helpers::rust_pq_get_result(c.conn);
+        if pending.is_null() {
+            break;
         }
+        drain_count += 1;
+        crate::libpq_helpers::rust_pq_clear(pending);
+        if drain_count > 1000 {
+            break;
+        }
+    }
+    if drain_count > 3 {
+        let tag = cstr_to_str(scope_tag);
+        log_info_lazy!(
+            "{}: Drained {} orphaned results total from connection {:p}",
+            tag, drain_count, conn
+        );
     }
 }

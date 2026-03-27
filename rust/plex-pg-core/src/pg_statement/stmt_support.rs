@@ -47,6 +47,7 @@ pub(super) fn stmt_unref_ptr(pg_stmt: usize) {
     rust_stmt_unref(pg_stmt as *mut PgStmt);
 }
 
+#[allow(dead_code)]
 pub(super) unsafe fn is_preallocated_buffer(stmt: &PgStmt, idx: usize) -> bool {
     let val = stmt.param_values[idx] as usize;
     if val == 0 {

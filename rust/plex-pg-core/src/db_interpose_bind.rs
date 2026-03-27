@@ -48,15 +48,8 @@ static PHASE_BIND_BLOB64: &[u8] = b"bind_blob64\0";
 static PHASE_BIND_VALUE: &[u8] = b"bind_value\0";
 static PHASE_BIND_NULL: &[u8] = b"bind_null\0";
 
-extern "C" {
-    fn pg_find_any_stmt(stmt: *mut sqlite3_stmt) -> *mut PgStmt;
-    fn pg_exception_note_phase(
-        phase: *const c_char,
-        sql: *const c_char,
-        stmt: *mut sqlite3_stmt,
-        db: *mut sqlite3,
-    );
-}
+use crate::pg_statement::c_abi::pg_find_any_stmt;
+use crate::db_interpose_common::pg_exception_note_phase;
 
 #[no_mangle]
 pub extern "C" fn rust_my_sqlite3_bind_int(

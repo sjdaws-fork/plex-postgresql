@@ -18,7 +18,5 @@ pub fn rust_stmt_create(
     };
     stmt.ref_count.store(1, Ordering::Release);
 
-    let stmt_ptr = Box::into_raw(Box::new(stmt));
-
-    stmt_ptr
+    Box::into_raw(Box::new(stmt))
 }

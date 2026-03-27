@@ -39,7 +39,7 @@ pub extern "C" fn rust_step_write_prepare_connection(
             return STEP_RESULT_ERROR;
         }
         let stmt = &mut *pg_stmt;
-        let mut stmt_guard: Option<StmtGuard> = Some(PgStmt::lock_mutex(pg_stmt));
+        let mut _stmt_guard: Option<StmtGuard> = Some(PgStmt::lock_mutex(pg_stmt));
 
         let mut exec_conn = *exec_conn_io;
         if exec_conn.is_null() || (&*exec_conn).conn.is_null() {
@@ -47,9 +47,9 @@ pub extern "C" fn rust_step_write_prepare_connection(
                 "STEP WRITE: NULL connection, retrying in 500ms (exec_conn={:p})",
                 exec_conn
             ));
-            stmt_guard = None; // unlock
+            _stmt_guard = None; // unlock
             libc::usleep(500_000);
-            stmt_guard = Some(PgStmt::lock_mutex(pg_stmt)); // relock
+            _stmt_guard = Some(PgStmt::lock_mutex(pg_stmt)); // relock
 
             let retry_db = sqlite3_db_handle(stmt.shadow_stmt);
             let retry_handle = crate::pg_client::rust_pg_find_connection(retry_db);
@@ -64,7 +64,7 @@ pub extern "C" fn rust_step_write_prepare_connection(
             if exec_conn.is_null() || (&*exec_conn).conn.is_null() {
                 log_error("STEP WRITE: NULL connection after retry - giving up");
                 stmt.write_executed = 1;
-                stmt_guard = None; // unlock
+                _stmt_guard = None; // unlock
                 if !pg_conn_error_out.is_null() {
                     *pg_conn_error_out = 1;
                 }
@@ -84,7 +84,7 @@ pub extern "C" fn rust_step_write_prepare_connection(
             log_error("STEP WRITE: conn became NULL after lock (TOCTOU race)");
             conn_guard.unlock();
             stmt.write_executed = 1;
-            stmt_guard = None; // unlock
+            _stmt_guard = None; // unlock
             if !pg_conn_error_out.is_null() {
                 *pg_conn_error_out = 1;
             }
@@ -101,7 +101,7 @@ pub extern "C" fn rust_step_write_prepare_connection(
             let Some(alt_db_path) = alt_db_path else {
                 log_error("STEP WRITE: live db_path unavailable for alternate connection");
                 stmt.write_executed = 1;
-                stmt_guard = None; // unlock
+                _stmt_guard = None; // unlock
                 if !pg_conn_error_out.is_null() {
                     *pg_conn_error_out = 1;
                 }
@@ -126,7 +126,7 @@ pub extern "C" fn rust_step_write_prepare_connection(
                     log_error("STEP WRITE: alt conn also unavailable");
                     conn_guard.unlock();
                     stmt.write_executed = 1;
-                    stmt_guard = None; // unlock
+                    _stmt_guard = None; // unlock
                     if !pg_conn_error_out.is_null() {
                         *pg_conn_error_out = 1;
                     }
@@ -140,7 +140,7 @@ pub extern "C" fn rust_step_write_prepare_connection(
                     alt_conn,
                 ));
                 stmt.write_executed = 1;
-                stmt_guard = None; // unlock
+                _stmt_guard = None; // unlock
                 if !pg_conn_error_out.is_null() {
                     *pg_conn_error_out = 1;
                 }
@@ -193,7 +193,7 @@ pub extern "C" fn rust_step_write_prepare_connection(
                     ec.is_pg_active = 0;
                     conn_guard.unlock();
                     stmt.write_executed = 1;
-                    stmt_guard = None; // unlock
+                    _stmt_guard = None; // unlock
                     if !pg_conn_error_out.is_null() {
                         *pg_conn_error_out = 1;
                     }
@@ -216,7 +216,7 @@ pub extern "C" fn rust_step_write_prepare_connection(
                     ec.is_pg_active = 0;
                     conn_guard.unlock();
                     stmt.write_executed = 1;
-                    stmt_guard = None; // unlock
+                    _stmt_guard = None; // unlock
                     if !pg_conn_error_out.is_null() {
                         *pg_conn_error_out = 1;
                     }

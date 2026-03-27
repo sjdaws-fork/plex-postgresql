@@ -43,9 +43,10 @@ const PGRES_SINGLE_TUPLE: c_int = 9;
 const CONNECTION_OK: c_int = 0;
 const PG_DIAG_SQLSTATE: c_int = b'C' as c_int;
 
+use crate::c_abi::resolve_column_tables;
+
 extern "C" {
     fn sqlite3_db_handle(stmt: *mut sqlite3_stmt) -> *mut sqlite3;
-    fn resolve_column_tables(pg_stmt: *mut PgStmt, pg_conn: *mut PgConnection) -> c_int;
     fn log_sql_fallback(
         original_sql: *const c_char,
         translated_sql: *const c_char,

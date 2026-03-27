@@ -167,7 +167,7 @@ pub(super) fn resolve_column_tables_impl(
     let rc = unsafe { &mut *resolve_conn };
     let _conn_guard = unsafe { PthreadMutexGuard::lock(&mut rc.mutex as *mut _) };
     let res =
-        unsafe { crate::libpq_helpers::rust_pq_exec(rc.conn, query_cs.as_ptr()) };
+        crate::libpq_helpers::rust_pq_exec(rc.conn, query_cs.as_ptr());
 
     if res.is_null() || crate::libpq_helpers::rust_pq_result_status(res) != PGRES_TUPLES_OK {
         log_error(&format!(
@@ -176,7 +176,7 @@ pub(super) fn resolve_column_tables_impl(
                 "NULL result".to_string()
             } else {
                 cstr_to_string_or(
-                    unsafe { crate::libpq_helpers::rust_pq_error_message(rc.conn) },
+                    crate::libpq_helpers::rust_pq_error_message(rc.conn),
                     "?",
                 )
             }
