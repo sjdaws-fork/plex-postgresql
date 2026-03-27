@@ -66,15 +66,16 @@ pub(super) fn create_connection_struct(
             return std::ptr::null_mut();
         }
         libc::pthread_mutexattr_settype(&mut attr as *mut _, libc::PTHREAD_MUTEX_RECURSIVE);
-        if libc::pthread_mutex_init(&mut (*conn_ptr).mutex as *mut _, &attr as *const _) != 0 {
+        let cp = &mut *conn_ptr;
+        if libc::pthread_mutex_init(&mut cp.mutex as *mut _, &attr as *const _) != 0 {
             log_error("pthread_mutex_init failed for pg_connection_t");
             libc::pthread_mutexattr_destroy(&mut attr as *mut _);
             libc::free(conn_ptr as *mut libc::c_void);
             return std::ptr::null_mut();
         }
         libc::pthread_mutexattr_destroy(&mut attr as *mut _);
-        (*conn_ptr).shadow_db = shadow_db;
-        write_str_to_cbuf(&mut (*conn_ptr).db_path, db_path);
+        cp.shadow_db = shadow_db;
+        write_str_to_cbuf(&mut cp.db_path, db_path);
         conn_ptr
     }
 }
@@ -84,7 +85,8 @@ pub(super) fn destroy_connection_struct(conn: *mut PgConnection) {
         return;
     }
     unsafe {
-        libc::pthread_mutex_destroy(&mut (*conn).mutex as *mut _);
+        let c = &mut *conn;
+        libc::pthread_mutex_destroy(&mut c.mutex as *mut _);
         libc::free(conn as *mut libc::c_void);
     }
 }

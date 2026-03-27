@@ -104,24 +104,28 @@ unsafe fn my_sqlite3_step_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
         if !s.shadow_stmt.is_null() {
             let db = call_sqlite3_db_handle(s.shadow_stmt);
             let handle_conn = crate::pg_client::rust_pg_find_connection(db);
-            if !handle_conn.is_null()
-                && (*handle_conn).is_pg_active != 0
-                && crate::db_interpose_helpers::rust_is_library_or_blobs_db_path(
-                    (*handle_conn).db_path.as_ptr(),
-                ) != 0
-            {
-                if !(*handle_conn).conn.is_null() {
-                    exec_conn = handle_conn;
-                } else {
-                    let thread_conn =
-                        crate::pg_client::rust_pool_get_connection((*handle_conn).db_path.as_ptr())
-                            as *mut PgConnection;
-                    if !thread_conn.is_null()
-                        && (*thread_conn).is_pg_active != 0
-                        && !(*thread_conn).conn.is_null()
-                    {
-                        exec_conn = thread_conn;
-                        crate::pg_client::rust_pool_touch_connection(exec_conn as *const c_void);
+            if !handle_conn.is_null() {
+                let hc = &*handle_conn;
+                if hc.is_pg_active != 0
+                    && crate::db_interpose_helpers::rust_is_library_or_blobs_db_path(
+                        hc.db_path.as_ptr(),
+                    ) != 0
+                {
+                    if !hc.conn.is_null() {
+                        exec_conn = handle_conn;
+                    } else {
+                        let thread_conn =
+                            crate::pg_client::rust_pool_get_connection(hc.db_path.as_ptr())
+                                as *mut PgConnection;
+                        if !thread_conn.is_null() {
+                            let tc = &*thread_conn;
+                            if tc.is_pg_active != 0
+                                && !tc.conn.is_null()
+                            {
+                                exec_conn = thread_conn;
+                                crate::pg_client::rust_pool_touch_connection(exec_conn as *const c_void);
+                            }
+                        }
                     }
                 }
             }
@@ -130,7 +134,7 @@ unsafe fn my_sqlite3_step_impl(p_stmt: *mut sqlite3_stmt) -> c_int {
 
     if !pg_stmt.is_null() && !exec_conn.is_null() {
         let s = &*pg_stmt;
-        if !s.pg_sql.is_null() && !(*exec_conn).conn.is_null() {
+        if !s.pg_sql.is_null() && !(&*exec_conn).conn.is_null() {
             let (param_values, stmt_is_pg, read_done, has_cached_result, write_executed, pg_sql) = {
                 let _stmt_guard = PgStmt::lock_mutex(pg_stmt);
                 let max_params = s.param_count.max(0) as usize;

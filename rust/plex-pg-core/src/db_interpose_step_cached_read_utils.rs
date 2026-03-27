@@ -119,11 +119,11 @@ pub extern "C" fn rust_step_cached_read_prepare_stmt(
     if new_stmt.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe {
-        (*new_stmt).pg_sql = libc::strdup(translated_sql);
-        (*new_stmt).is_pg = 2;
-        (*new_stmt).is_cached = 1;
-    }
+    // SAFETY: new_stmt is non-null (checked above).
+    let ns = unsafe { &mut *new_stmt };
+    ns.pg_sql = unsafe { libc::strdup(translated_sql) };
+    ns.is_pg = 2;
+    ns.is_cached = 1;
     crate::pg_statement::rust_cached_stmt_register(p_stmt as usize, new_stmt as usize);
     new_stmt
 }
@@ -140,7 +140,7 @@ pub extern "C" fn rust_step_cached_read_execute(
         if !pg_conn_error_out.is_null() {
             *pg_conn_error_out = 0;
         }
-        if stmt.is_null() || conn.is_null() || (*conn).conn.is_null() || translated_sql.is_null() {
+        if stmt.is_null() || conn.is_null() || (&*conn).conn.is_null() || translated_sql.is_null() {
             return STEP_RESULT_FALLBACK;
         }
         let s = &mut *stmt;

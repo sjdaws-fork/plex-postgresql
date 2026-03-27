@@ -31,7 +31,7 @@ pub(super) fn value_type_impl(p_val: *mut sqlite3_value) -> c_int {
     let call_num = VALUE_TYPE_CALLS.fetch_add(1, Ordering::Relaxed);
     unsafe {
         let tls_query = tls_last_query_ptr();
-        *tls_query = (*ctx.pg_stmt).pg_sql;  // accessed before mutex lock, must use raw ptr
+        *tls_query = (&*ctx.pg_stmt).pg_sql;  // accessed before mutex lock
     }
 
     let pg_stmt_ref = unsafe { &mut *ctx.pg_stmt };

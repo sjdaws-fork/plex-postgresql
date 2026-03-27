@@ -30,7 +30,7 @@ pub(super) fn first_execute_impl(
             return STEP_RESULT_ERROR;
         }
         let mut stmt_guard = Some(PgStmt::lock_mutex(pg_stmt));
-        (*pg_stmt).executing_thread = libc::pthread_self();
+        (&mut *pg_stmt).executing_thread = libc::pthread_self();
 
         let mut exec_conn = match acquire_exec_connection(
             pg_stmt,
@@ -48,7 +48,7 @@ pub(super) fn first_execute_impl(
                 Err(rc) => return rc,
             };
 
-        (*pg_stmt).conn = exec_conn;
+        (&mut *pg_stmt).conn = exec_conn;
         if let Err(rc) = ensure_connection_ready(
             pg_stmt,
             exec_conn,
@@ -90,7 +90,7 @@ pub(super) fn first_execute_impl(
         }
 
         if use_streaming {
-            if crate::libpq_helpers::rust_pq_set_single_row_mode((*exec_conn).conn) == 0 {
+            if crate::libpq_helpers::rust_pq_set_single_row_mode((&*exec_conn).conn) == 0 {
                 log_error("PQsetSingleRowMode failed, falling back to eager fetch");
                 use_streaming = false;
             }

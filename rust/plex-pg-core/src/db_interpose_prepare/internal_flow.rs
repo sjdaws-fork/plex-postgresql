@@ -149,15 +149,15 @@ fn maybe_log_txn_route(
     if skip_now {
         TXN_ROUTE_SKIPPED.fetch_add(1, Ordering::Relaxed);
     }
-    if !pg_conn.is_null()
-        && unsafe { (*pg_conn).is_pg_active } != 0
-        && crate::db_interpose_helpers::rust_is_library_db_path(unsafe {
-            (*pg_conn).db_path.as_ptr()
-        }) != 0
-        && (is_read || is_write)
-        && !skip_now
-    {
-        TXN_ROUTE_PG.fetch_add(1, Ordering::Relaxed);
+    if !pg_conn.is_null() {
+        let c = unsafe { &*pg_conn };
+        if c.is_pg_active != 0
+            && crate::db_interpose_helpers::rust_is_library_db_path(c.db_path.as_ptr()) != 0
+            && (is_read || is_write)
+            && !skip_now
+        {
+            TXN_ROUTE_PG.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     log_info_lazy!(
@@ -181,8 +181,9 @@ fn maybe_log_txn_route(
 unsafe fn clear_connection_error_state(db: *mut sqlite3) {
     let pg_conn_for_clear = crate::pg_client::rust_pg_find_connection(db);
     if !pg_conn_for_clear.is_null() {
-        (*pg_conn_for_clear).last_error_code = SQLITE_OK;
-        (*pg_conn_for_clear).last_error[0] = 0;
+        let c = &mut *pg_conn_for_clear;
+        c.last_error_code = SQLITE_OK;
+        c.last_error[0] = 0;
     }
 }
 

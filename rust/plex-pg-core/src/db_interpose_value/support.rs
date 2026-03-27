@@ -25,7 +25,8 @@ pub(super) fn fake_value_thread_ok(fake: *const PgFakeValue) -> bool {
     if fake.is_null() {
         return false;
     }
-    unsafe { libc::pthread_equal((*fake).owner_thread, libc::pthread_self()) != 0 }
+    let f = unsafe { &*fake };
+    unsafe { libc::pthread_equal(f.owner_thread, libc::pthread_self()) != 0 }
 }
 
 pub(super) unsafe fn load_fake_value_context(
@@ -37,22 +38,26 @@ pub(super) unsafe fn load_fake_value_context(
     }
 
     let fake = pg_check_fake_value(p_val);
-    if fake.is_null() || (*fake).pg_stmt.is_null() {
+    if fake.is_null() {
+        return None;
+    }
+    let f = &*fake;
+    if f.pg_stmt.is_null() {
         return None;
     }
     if !fake_value_thread_ok(fake) {
         log_error(&format!(
             "{}: fake value from different thread (stmt={:p})",
             label,
-            (*fake).pg_stmt
+            f.pg_stmt
         ));
         return None;
     }
 
     Some(FakeValueContext {
-        pg_stmt: (*fake).pg_stmt as *mut PgStmt,
-        row: (*fake).row_idx,
-        col: (*fake).col_idx,
+        pg_stmt: f.pg_stmt as *mut PgStmt,
+        row: f.row_idx,
+        col: f.col_idx,
     })
 }
 

@@ -178,12 +178,11 @@ unsafe fn write_live_text_output(
 pub(super) fn column_text_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_uchar {
     let dbg_stmt = unsafe { pg_find_any_stmt(p_stmt) };
     let dbg_sql = if !dbg_stmt.is_null() {
-        unsafe {
-            if !(*dbg_stmt).pg_sql.is_null() {
-                (*dbg_stmt).pg_sql
-            } else {
-                (*dbg_stmt).sql
-            }
+        let ds = unsafe { &*dbg_stmt };
+        if !ds.pg_sql.is_null() {
+            ds.pg_sql
+        } else {
+            ds.sql
         }
     } else {
         ptr::null()
@@ -200,7 +199,7 @@ pub(super) fn column_text_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> *const 
 
     validate_type_consistency(p_stmt, idx, "column_text");
 
-    if dbg_stmt.is_null() || unsafe { (*dbg_stmt).is_pg == 0 } {
+    if dbg_stmt.is_null() || unsafe { (&*dbg_stmt).is_pg == 0 } {
         return get_orig_sqlite3_column_text().map(|f| unsafe { f(p_stmt, idx) }).unwrap_or(ptr::null());
     }
 

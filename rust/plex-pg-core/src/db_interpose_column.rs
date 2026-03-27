@@ -23,7 +23,7 @@ mod type_accessor;
 mod value_accessor;
 
 use crate::db_interpose_common::{
-    fake_value_mutex, fake_value_next, fake_value_pool, tls_column_type_calls_ptr,
+    tls_column_type_calls_ptr,
     tls_in_resolve_tables_ptr, tls_last_query_ptr, PgFakeValue, MAX_FAKE_VALUES,
     PG_FAKE_VALUE_MAGIC, GLOBAL_COLUMN_TYPE_CALLS,
     get_orig_sqlite3_column_count, get_orig_sqlite3_column_type,

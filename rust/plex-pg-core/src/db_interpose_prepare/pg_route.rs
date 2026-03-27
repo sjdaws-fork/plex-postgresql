@@ -2,13 +2,14 @@ use super::*;
 use crate::log_info_lazy;
 
 fn should_route_via_pg(pg_conn: *mut PgConnection, is_read: bool, is_write: bool) -> bool {
-    !pg_conn.is_null()
-        && unsafe { (*pg_conn).is_pg_active } != 0
-        && unsafe { !(*pg_conn).conn.is_null() }
+    if pg_conn.is_null() {
+        return false;
+    }
+    let c = unsafe { &*pg_conn };
+    c.is_pg_active != 0
+        && !c.conn.is_null()
         && (is_read || is_write)
-        && crate::db_interpose_helpers::rust_is_library_db_path(unsafe {
-            (*pg_conn).db_path.as_ptr()
-        }) != 0
+        && crate::db_interpose_helpers::rust_is_library_db_path(c.db_path.as_ptr()) != 0
 }
 
 pub(super) unsafe fn should_use_dummy_shadow(

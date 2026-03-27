@@ -485,11 +485,11 @@ pub fn rust_common_handle_exception(
         let should_log = verbose_exceptions
             || (is_db_exception && (this_thread_used_shim || log_nonshim_db))
             || ((total_count as c_int) <= MAX_LOGGED_TOTAL
-                && (tracker.is_null() || (*tracker).count <= MAX_LOGGED_PER_TYPE)
+                && (tracker.is_null() || (&*tracker).count <= MAX_LOGGED_PER_TYPE)
                 && this_thread_used_shim);
 
         let should_trace =
-            is_db_exception || (!tracker.is_null() && (*tracker).logged_with_trace == 0);
+            is_db_exception || (!tracker.is_null() && (&*tracker).logged_with_trace == 0);
 
         if should_log {
             let demangled =
@@ -497,7 +497,7 @@ pub fn rust_common_handle_exception(
 
             if should_trace {
                 if !tracker.is_null() {
-                    (*tracker).logged_with_trace = 1;
+                    (&mut *tracker).logged_with_trace = 1;
                 }
                 if is_db_exception || verbose_exceptions {
                     rust_pg_exception_dump_recent_queries();
