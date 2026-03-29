@@ -336,7 +336,7 @@ pub(super) fn column_type_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
         );
     }
 
-    if !raw_pg_stmt.is_null() && unsafe { (&*raw_pg_stmt).is_pg != 0 } {
+    let result = if !raw_pg_stmt.is_null() && unsafe { (&*raw_pg_stmt).is_pg != 0 } {
         let pg_stmt = unsafe { &mut *raw_pg_stmt };
         unsafe {
             let tls_query = tls_last_query_ptr();
@@ -351,13 +351,13 @@ pub(super) fn column_type_impl(p_stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
                 unsafe { resolve_live_column_type(pg_stmt, p_stmt, idx) }
             }
         };
-        // All logging happens AFTER releasing pg_stmt.mutex to avoid
-        // ABBA deadlock with the LOGGER mutex.
         column_type_emit_log(raw_pg_stmt, p_stmt, &ctx);
-        return result;
-    }
+        result
+    } else {
+        passthrough_column_type(p_stmt, idx)
+    };
 
-    passthrough_column_type(p_stmt, idx)
+    result
 }
 
 /// Emit all diagnostic / trace logging for a column_type call.
