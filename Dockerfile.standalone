@@ -101,6 +101,7 @@ COPY schema/sqlite_column_types.sql /usr/local/lib/plex-postgresql/
 COPY schema/pg_compat_functions.sql /usr/local/lib/plex-postgresql/
 COPY scripts/migrate_lib.sh /usr/local/lib/plex-postgresql/
 COPY scripts/migrate_table.py /usr/local/lib/plex-postgresql/
+COPY scripts/doctor.sh /usr/local/lib/plex-postgresql/
 
 # Install cont-init.d script (runs BEFORE Plex starts, WITHOUT LD_PRELOAD)
 # Numbered 39 so it runs before 40-plex-first-run

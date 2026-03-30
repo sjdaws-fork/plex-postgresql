@@ -88,6 +88,7 @@ COPY schema/sqlite_column_types.sql /usr/local/lib/plex-postgresql/
 COPY schema/pg_compat_functions.sql /usr/local/lib/plex-postgresql/
 COPY scripts/migrate_lib.sh /usr/local/lib/plex-postgresql/
 COPY scripts/migrate_table.py /usr/local/lib/plex-postgresql/
+COPY scripts/doctor.sh /usr/local/lib/plex-postgresql/
 
 # Copy the initialization script for s6-overlay
 # This will run BEFORE Plex starts as part of the init sequence

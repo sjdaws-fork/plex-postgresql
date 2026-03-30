@@ -72,11 +72,17 @@ check_and_migrate() {
         return 1
     fi
 
-    # Check if PostgreSQL already has data
+    # Check if PostgreSQL already has data (check multiple tables, not just metadata_items)
     local pg_count=$(psql -t -c "SELECT COUNT(*) FROM $PG_SCHEMA.metadata_items;" 2>/dev/null | tr -d ' ' || echo "0")
+    local pg_sections=$(psql -t -c "SELECT COUNT(*) FROM $PG_SCHEMA.library_sections;" 2>/dev/null | tr -d ' ' || echo "0")
+    local pg_accounts=$(psql -t -c "SELECT COUNT(*) FROM $PG_SCHEMA.accounts;" 2>/dev/null | tr -d ' ' || echo "0")
+    local pg_has_data=0
+    if [[ "$pg_count" -gt 0 ]] || [[ "$pg_sections" -gt 0 ]] || [[ "$pg_accounts" -gt 0 ]]; then
+        pg_has_data=1
+    fi
 
-    if [[ "$pg_count" -gt 0 ]]; then
-        echo -e "${YELLOW}PostgreSQL already has $pg_count items.${NC}"
+    if [[ "$pg_has_data" -eq 1 ]]; then
+        echo -e "${YELLOW}PostgreSQL already has data (metadata_items=$pg_count, library_sections=$pg_sections, accounts=$pg_accounts).${NC}"
 
         if [[ "$MIGRATION_INTERACTIVE" == "1" ]]; then
             echo ""
@@ -264,8 +270,11 @@ migrate_sqlite_to_pg() {
                 migrate_py="/usr/local/lib/plex-postgresql/migrate_table.py"
             fi
 
+            local log_dir="${LOG_DIR:-/var/log/plex-postgresql}"
+            mkdir -p "$log_dir" 2>/dev/null || true
+
             if python3 "$migrate_py" \
-                "$SQLITE_DB" "$table" "$sqlite_select" "$pg_cols_list" "$schema" 2>/dev/null; then
+                "$SQLITE_DB" "$table" "$sqlite_select" "$pg_cols_list" "$schema" 2>>"$log_dir/migration_errors.log"; then
                 echo -e "${GREEN}OK${NC}"
                 ((migrated++))
             else
