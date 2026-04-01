@@ -106,6 +106,10 @@ fi
 
 echo "=== Building subreaper wrapper ==="
 cat > subreaper.c << 'SUBREAPER_EOF'
+/* subreaper: wrap a child process with PR_SET_CHILD_SUBREAPER so that
+ * orphaned grandchildren (e.g. PMS re-exec via vfork) are reparented
+ * here instead of PID 1. We wait for ALL descendants, not just the
+ * direct child, so s6 sees us alive the entire time. */
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -113,7 +117,12 @@ cat > subreaper.c << 'SUBREAPER_EOF'
 #include <stdio.h>
 #include <errno.h>
 static volatile pid_t child_pid = 0;
-void fwd(int s){if(child_pid>0)kill(child_pid,s);}
+static volatile int got_sigterm = 0;
+void fwd(int s){
+  if(s==SIGTERM||s==SIGINT) got_sigterm=1;
+  /* Forward to all processes in our process group */
+  kill(0,s);
+}
 int main(int c,char**v){
   if(c<2){fprintf(stderr,"usage: subreaper cmd [args...]\n");return 1;}
   prctl(PR_SET_CHILD_SUBREAPER,1,0,0,0);
@@ -121,14 +130,21 @@ int main(int c,char**v){
   child_pid=fork();
   if(child_pid==0){execvp(v[1],v+1);perror("exec");_exit(127);}
   if(child_pid<0){perror("fork");return 1;}
-  int st;pid_t p;
-  while((p=wait(&st))>0||errno==EINTR){
+  int st,exit_code=0;pid_t p;
+  /* Wait for ALL children, not just the direct child.
+   * When PMS vfork+exec's a new copy and the parent exits, the new
+   * PMS process is reparented to us (subreaper). We keep waiting
+   * until there are no more children (ECHILD). */
+  while((p=wait(&st))>0||(p<0&&errno==EINTR)){
+    if(p<=0) continue;
     if(p==child_pid){
-      if(WIFEXITED(st))return WEXITSTATUS(st);
-      return 128+WTERMSIG(st);
+      /* Record direct child exit code, but keep waiting for grandchildren */
+      exit_code=WIFEXITED(st)?WEXITSTATUS(st):128+WTERMSIG(st);
+      child_pid=0; /* no longer forward signals to dead child */
     }
   }
-  return 0;}
+  return exit_code;
+}
 SUBREAPER_EOF
 gcc -static -O2 -o subreaper subreaper.c
 cp subreaper /libs/
