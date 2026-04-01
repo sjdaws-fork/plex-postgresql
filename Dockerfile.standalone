@@ -116,7 +116,7 @@ RUN printf '#!/bin/bash\nif pgrep -f "Plex Media Server" >/dev/null 2>&1 && nc -
         > /etc/services.d/plex/finish && \
     chmod +x /etc/services.d/plex/finish
 
-# Inject shim env only for the actual Plex binary, not wrapper/helper processes.
+# Inject shim env and wrap PMS with subreaper to prevent re-exec crash loop.
 RUN printf '%s\n' \
       '#!/usr/bin/env bash' \
       'mkdir -p /run/plex-temp' \
@@ -126,7 +126,7 @@ RUN printf '%s\n' \
       'if [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then' \
       '  export OPENSSL_armcap="${PLEX_PG_OPENSSL_ARMCAP:-0}"' \
       'fi' \
-      'exec "/usr/lib/plexmediaserver/Plex Media Server" "$@"' \
+      'exec /usr/local/bin/subreaper "/usr/lib/plexmediaserver/Plex Media Server" "$@"' \
       > /usr/local/lib/plex-postgresql/plex-with-shim.sh && \
     chmod +x /usr/local/lib/plex-postgresql/plex-with-shim.sh && \
     sed -i 's|s6-setuidgid abc "/usr/lib/plexmediaserver/Plex Media Server"|s6-setuidgid abc /usr/local/lib/plex-postgresql/plex-with-shim.sh|' \
