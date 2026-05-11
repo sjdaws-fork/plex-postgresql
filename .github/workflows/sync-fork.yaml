@@ -1,0 +1,22 @@
+name: Sync fork with upstream
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          token: ${{ github.token }}
+      - name: Rebase upstream
+        uses: imba-tjd/rebase-upstream-action@master
+        with:
+          upstream: cgnl/plex-postgresql
+          branch:   main
